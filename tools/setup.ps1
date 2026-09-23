@@ -29,7 +29,8 @@ param(
     [switch]$Force,
     [switch]$SkipSdk,
     [switch]$SkipWtl,
-    [switch]$SkipLunasvg
+    [switch]$SkipLunasvg,
+    [switch]$SkipCui
 )
 
 $ErrorActionPreference = 'Continue'
@@ -39,6 +40,10 @@ $third    = Join-Path $root '3rdparty'
 $download = Join-Path $root 'downloads'
 $fetch    = Join-Path $PSScriptRoot 'fetch.ps1'
 $sz       = 'C:\Program Files\7-Zip\7z.exe'
+
+# columns_ui-sdk 的锁定版本。要升级就改这里，然后重新编译验证。
+# 许可 0BSD（比 MIT/ISC 还宽松，连署名都不要求）。
+$CuiSdkCommit = '69972e36febc4bfc2685fa1a7620d0ee8789e10f'   # 2026-09-14
 
 function Say($msg, $color = 'Gray') { Write-Host ("[{0:HH:mm:ss}] {1}" -f (Get-Date), $msg) -ForegroundColor $color }
 function Step($msg) { Write-Host "`n=== $msg ===" -ForegroundColor Cyan }
@@ -120,7 +125,7 @@ if (-not $SkipSdk) {
 # 而逐个文件下载每个都很小、失败可续。
 # ---------------------------------------------------------------------------
 if (-not $SkipWtl) {
-    Step '2/3  WTL 10'
+    Step '2/4  WTL 10'
 
     $wtlInc = Join-Path $third 'WTL\Include'
     if ((Test-Path (Join-Path $wtlInc 'atlapp.h')) -and -not $Force) {
@@ -137,7 +142,7 @@ if (-not $SkipWtl) {
 # 3. lunasvg —— 渲染 SVG 图标
 # ---------------------------------------------------------------------------
 if (-not $SkipLunasvg) {
-    Step '3/3  lunasvg'
+    Step '3/4  lunasvg'
 
     $lsDir = Join-Path $third 'lunasvg'
     if ((Test-Path (Join-Path $lsDir 'include\lunasvg.h')) -and -not $Force) {
@@ -153,13 +158,38 @@ if (-not $SkipLunasvg) {
 }
 
 # ---------------------------------------------------------------------------
+# 4. columns_ui-sdk —— CUI 面板接口
+#
+# 基础 SDK 里完全没有 CUI 接口，必须引这个外部 SDK。
+#
+# 【锁 commit，不要跟分支】它的签名对版本敏感（get_wnd() 现在是 const、
+# create_or_transfer_window 收 const window_host_ptr& 之类），跟分支的话
+# 上游一改我们某天就编不过。升级就改 $CuiSdkCommit 并重新编译验证。
+# ---------------------------------------------------------------------------
+if (-not $SkipCui) {
+    Step '4/4  columns_ui-sdk (CUI)'
+
+    $cuiDir = Join-Path $third 'columns_ui-sdk'
+    if ((Test-Path (Join-Path $cuiDir 'window.h')) -and -not $Force) {
+        Say "  已存在，跳过" DarkGray
+    } else {
+        New-Item -ItemType Directory -Force -Path $cuiDir | Out-Null
+        # 只要仓库根目录的源码 —— docs/ 与 .github/ 用不上
+        $ok = Get-GithubTree -Owner 'reupen' -Repo 'columns_ui-sdk' -Branch $CuiSdkCommit `
+                             -PathPrefix '' -DestRoot $cuiDir -IncludeRegex '^[^/]+\.(h|cpp)$'
+        if (-not $ok) { Say "  columns_ui-sdk 未完整获取，CUI 面板会编不过" Yellow }
+    }
+}
+
+# ---------------------------------------------------------------------------
 Step '结果'
 foreach ($p in @(
     @{ n = 'foobar2000 SDK'; f = "$third\foobar2000\SDK\foobar2000_SDK.vcxproj" },
     @{ n = 'pfc';            f = "$third\pfc\pfc.vcxproj" },
     @{ n = 'libPPUI';        f = "$third\libPPUI\libPPUI.vcxproj" },
     @{ n = 'WTL';            f = "$third\WTL\Include\atlapp.h" },
-    @{ n = 'lunasvg';        f = "$third\lunasvg\include\lunasvg.h" }
+    @{ n = 'lunasvg';        f = "$third\lunasvg\include\lunasvg.h" },
+    @{ n = 'columns_ui-sdk'; f = "$third\columns_ui-sdk\window.h" }
 )) {
     $present = Test-Path $p.f
     Say ("  {0,-16} {1}" -f $p.n, $(if ($present) { '就绪' } else { '缺失' })) $(if ($present) { 'Green' } else { 'Red' })

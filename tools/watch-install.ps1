@@ -52,42 +52,75 @@ if (-not (Test-Path $src)) { Say "找不到新编译的 DLL：$src" Red; exit 1 
 $srcInfo = Get-Item $src
 Say ("待安装: {0}  ({1:N0} B, {2:HH:mm:ss})" -f $srcInfo.Name, $srcInfo.Length, $srcInfo.LastWriteTime) Cyan
 
-# ---- 1. 等到进程退出 --------------------------------------------------------
-if (Get-Process -Name $ProcessName -ErrorAction SilentlyContinue) {
-    Say "$ProcessName 正在运行，等待它退出（最多 $WaitSeconds 秒）..."
-    $deadline = (Get-Date).AddSeconds($WaitSeconds)
-    while ((Get-Date) -lt $deadline) {
-        if (-not (Get-Process -Name $ProcessName -ErrorAction SilentlyContinue)) { break }
-        Start-Sleep -Milliseconds 700
-    }
-    if (Get-Process -Name $ProcessName -ErrorAction SilentlyContinue) {
-        Say "等待超时，$ProcessName 仍在运行，放弃。" Red
-        exit 2
-    }
-    Say "$ProcessName 已退出" Green
-} else {
-    Say "$ProcessName 本来就没运行，直接安装"
-}
+# ---- 1+2. 等退出 + 拷贝，合成一个循环 ---------------------------------------
+#
+# 为什么不写成「等一次退出 → 拷一次」：
+#   播放器会**快速重启** —— foobar2000 自己的「立即重启」（改 UI 设置时会弹）
+#   只停机约 1 秒。我们探测到退出、正要拷贝时，新进程可能已经把 DLL 重新锁上了。
+#   一次性逻辑此时只有两条烂路：
+#     * 轮询太粗 -> 整个空档被跳过，守候进程一直傻等，新版**没装上还不报错**；
+#     * 拷贝重试 20 次全失败 -> 直接 exit 3，同样没装上。
+#     这两条都让「没装上」这件事不够显眼。
+#
+# 循环版：拷贝不成就回到循环顶，接着等**下一次**退出，直到整体超时。
+#   成功的判据是**哈希一致**，不是「Copy-Item 没抛异常」——
+#   文件被占用时 Copy-Item 会抛，但半途失败之类的情况要靠哈希才认得出。
+#
+# 轮询间隔 150ms 是拿事故换来的：原本 700ms，加上 Get-Process 自身的开销，
+# 实际周期接近 900ms，1 秒的空档就这么被跳过去了。
 
-# ---- 2. 拷贝（带重试，刚退出时句柄可能还没释放）-----------------------------
 New-Item -ItemType Directory -Force -Path $destD | Out-Null
 
-$copied = $false
-for ($i = 1; $i -le 20; $i++) {
-    try {
-        Copy-Item -LiteralPath $src -Destination $dest -Force -ErrorAction Stop
-        $copied = $true
+$deadline  = (Get-Date).AddSeconds($WaitSeconds)
+$installed = $false
+$saidWaiting = $false
+
+while ((Get-Date) -lt $deadline) {
+
+    # a) 进程还在 -> 接着等。轮询必须密（见上面的说明）。
+    if (Get-Process -Name $ProcessName -ErrorAction SilentlyContinue) {
+        if (-not $saidWaiting) {
+            Say "$ProcessName 正在运行，等待它退出（最多 $WaitSeconds 秒）..."
+            $saidWaiting = $true
+        }
+        Start-Sleep -Milliseconds 150
+        continue
+    }
+
+    # b) 进程不在了 -> 试拷贝。刚退出时句柄可能还没释放，给几次机会。
+    for ($i = 1; $i -le 12; $i++) {
+        try {
+            Copy-Item -LiteralPath $src -Destination $dest -Force -ErrorAction Stop
+            $installed = $true
+            break
+        } catch {
+            Start-Sleep -Milliseconds 250
+        }
+        # 重试期间播放器又起来了就别耗着，回循环顶等下一次退出
+        if (Get-Process -Name $ProcessName -ErrorAction SilentlyContinue) { break }
+    }
+
+    if ($installed) {
+        Say "$ProcessName 已退出" Green
         break
-    } catch {
-        Say ("  第 {0} 次拷贝失败：{1}" -f $i, $_.Exception.Message.Trim()) Yellow
-        Start-Sleep -Milliseconds 500
     }
 }
 
-if (-not $copied) { Say "拷贝失败，放弃。可能句柄仍未释放。" Red; exit 3 }
+if (-not $installed) {
+    Say "等待超时（$WaitSeconds 秒内没拿到可写的窗口），放弃。" Red
+    Remove-Item $lockFile -Force -ErrorAction SilentlyContinue
+    exit 2
+}
 
+# 复核：哈希不一致就等于没装上，不能只看 Copy-Item 有没有抛
 $h1 = (Get-FileHash -LiteralPath $src  -Algorithm SHA256).Hash
 $h2 = (Get-FileHash -LiteralPath $dest -Algorithm SHA256).Hash
+if ($h1 -ne $h2) {
+    Say "拷贝后哈希不一致，安装视为失败。" Red
+    Remove-Item $lockFile -Force -ErrorAction SilentlyContinue
+    exit 3
+}
+
 Say ("已安装: {0}" -f $dest) Green
 Say ("  大小 {0:N0} B   哈希一致 {1}" -f (Get-Item $dest).Length, ($h1 -eq $h2)) Green
 

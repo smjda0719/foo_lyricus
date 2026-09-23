@@ -60,4 +60,28 @@ void DebugLog(const char* fmt, ...) {
     console::printf("Lyricus: %s", body);
 }
 
+// ---------------------------------------------------------------------------
+// 作用域计时器。见头文件里的说明。
+// ---------------------------------------------------------------------------
+
+ScopedTimer::ScopedTimer(const char* what, double warnMs)
+    : m_what(what), m_warnMs(warnMs), m_start(0) {
+    LARGE_INTEGER t{};
+    QueryPerformanceCounter(&t);
+    m_start = t.QuadPart;
+}
+
+ScopedTimer::~ScopedTimer() {
+    LARGE_INTEGER now{}, freq{};
+    QueryPerformanceCounter(&now);
+    QueryPerformanceFrequency(&freq);
+    if (freq.QuadPart == 0) return;
+
+    const double ms = static_cast<double>(now.QuadPart - m_start) * 1000.0 /
+                      static_cast<double>(freq.QuadPart);
+    if (ms >= m_warnMs) {
+        DebugLog("慢: %s 用了 %.1f ms", m_what, ms);
+    }
+}
+
 } // namespace lyricus

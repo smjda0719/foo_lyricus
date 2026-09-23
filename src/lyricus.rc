@@ -1,0 +1,50 @@
+// ---------------------------------------------------------------------------
+// Lyricus 首选项页的对话框资源
+//
+// 用 UTF-8 + #pragma code_page(65001)：rc.exe 默认按系统代码页读源文件，
+// 中文会乱码。这行是官方给的办法。
+//
+// 对话框必须是 WS_CHILD —— preferences_page_instance_impl 会断言这一点
+//（helpers/atl-misc.h:277），因为它是被**嵌进**首选项窗口的，不是独立弹窗。
+// ---------------------------------------------------------------------------
+
+#pragma code_page(65001)
+
+#include <windows.h>
+#include "resource.h"
+
+IDD_LYRICUS_PREFS DIALOGEX 0, 0, 236, 208
+STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD
+FONT 9, "MS Shell Dlg", 400, 0, 0x86
+BEGIN
+    GROUPBOX        "浮动面板配色", -1, 7, 5, 222, 140
+
+    LTEXT           "曲名", -1, 15, 22, 58, 10
+    PUSHBUTTON      "", IDC_BTN_HEADER, 78, 20, 62, 14, BS_OWNERDRAW
+
+    LTEXT           "当前歌词行", -1, 15, 41, 58, 10
+    PUSHBUTTON      "", IDC_BTN_CURRENT, 78, 39, 62, 14, BS_OWNERDRAW
+
+    LTEXT           "其它歌词行", -1, 15, 60, 58, 10
+    PUSHBUTTON      "", IDC_BTN_NORMAL, 78, 58, 62, 14, BS_OWNERDRAW
+
+    LTEXT           "次要文字", -1, 15, 79, 58, 10
+    PUSHBUTTON      "", IDC_BTN_DIM, 78, 77, 62, 14, BS_OWNERDRAW
+
+    LTEXT           "警告文字", -1, 15, 98, 58, 10
+    PUSHBUTTON      "", IDC_BTN_WARN, 78, 96, 62, 14, BS_OWNERDRAW
+
+    LTEXT           "面板底色", -1, 15, 117, 58, 10
+    PUSHBUTTON      "", IDC_BTN_BG, 78, 115, 62, 14, BS_OWNERDRAW
+
+    LTEXT           "点色块选颜色。这些设置只影响浮动面板；DUI / CUI 面板跟随宿主主题。",
+                    IDC_LBL_HINT, 150, 22, 74, 107
+
+    GROUPBOX        "整体不透明度", -1, 7, 150, 222, 36
+
+    CONTROL         "", IDC_SLIDER_ALPHA, "msctls_trackbar32",
+                    TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, 15, 163, 160, 16
+    LTEXT           "", IDC_LBL_ALPHA, 182, 165, 42, 12
+
+    PUSHBUTTON      "恢复默认", IDC_BTN_RESET, 7, 191, 62, 14
+END

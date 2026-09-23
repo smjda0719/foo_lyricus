@@ -1,0 +1,275 @@
+#include "stdafx.h"
+#include "lyrics_view.h"
+#include "playback_state.h"
+
+#include <map>
+#include <string>
+#include <tuple>
+#include <vector>
+
+namespace lyricus {
+namespace {
+
+HFONT CreateFontNow(int dpi, int pt, bool bold) {
+    return CreateFontW(-MulDiv(pt, dpi, 72), 0, 0, 0,
+                       bold ? FW_SEMIBOLD : FW_NORMAL,
+                       FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                       OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                       ANTIALIASED_QUALITY,   // 透明底上用 ANTIALIASED，ClearType 依赖不透明背景
+                       DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+}
+
+// 字体缓存。
+//
+// 【为什么要缓存】CreateFontW 比看上去贵得多 —— 它要解析字体名、去字体库里查匹配，
+// 不是简单分配一个对象。而 DrawLyricsView 每次重绘都要造 3 个字体。
+// 实测「面板定时器一拍」稳定在 5~9ms，其中一条就是从这儿来的；
+// 而面板**每 250ms 就要重绘一次**（进度条在动），所以这是持续开销，不是偶发。
+//
+// 字体句柄进程内一直留着不释放 —— 就那么几个，不值得为它维护生命周期。
+// 缓存键是 (dpi, 字号, 粗体)：DPI 会随显示器变化，不改这三个参数就不用重建。
+//
+// 线程约定：渲染层只在主线程用（和整个工程一致），所以静态 map 不需要加锁。
+HFONT MakeFont(int dpi, int pt, bool bold) {
+    static std::map<std::tuple<int, int, bool>, HFONT> cache;
+
+    const auto key = std::make_tuple(dpi, pt, bold);
+    const auto it = cache.find(key);
+    if (it != cache.end()) return it->second;
+
+    HFONT f = CreateFontNow(dpi, pt, bold);
+    cache.emplace(key, f);
+    return f;
+}
+
+// 单行文本的高度缓存。
+//
+// 【为什么要缓存】DrawTextW(DT_CALCRECT) 不是免费操作 —— 要走一遍文本整形。
+// 而一帧里同一行会被量 2~3 次（先 MeasureLine 探路，再 DrawLine 里又量一次），
+// 可见的 20 行就是四五十次；面板**每 250ms 重绘一次**（进度条在动），
+// 于是同一批字每秒被量近 200 次，而它们中间绝大多数根本没变。
+//
+// 键是 (字体, 文本)：DT_SINGLELINE 不换行，所以高度与 maxWidth 无关，
+// 不用把它放进键里。键取得精确，命中就与现场重算完全等价，不会改变排版。
+//
+// 容量超了直接清空重来 —— 一首歌的可见行数就那么几十条，
+// 真清空也是极低频事件，不值得为它维护 LRU。
+std::map<std::pair<HFONT, std::wstring>, int>& HeightCache() {
+    static std::map<std::pair<HFONT, std::wstring>, int> cache;
+    return cache;
+}
+
+int MeasureLineRaw(HDC dc, const wchar_t* text, HFONT font, int maxWidth) {
+    RECT r{ 0, 0, maxWidth, 0 };
+    DrawTextW(dc, text, -1, &r,
+              DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX | DT_CALCRECT);
+    return r.bottom - r.top;
+}
+
+int CachedLineHeight(HDC dc, const wchar_t* text, HFONT font, int maxWidth) {
+    auto& cache = HeightCache();
+
+    const auto key = std::make_pair(font, std::wstring(text));
+    const auto it = cache.find(key);
+    if (it != cache.end()) return it->second;
+
+    const int h = MeasureLineRaw(dc, text, font, maxWidth);
+
+    if (cache.size() >= 1024) cache.clear();
+    cache.emplace(key, h);
+    return h;
+}
+
+// 只量高度，不画。用于「先算总高再决定铺几行」。
+int MeasureLine(HDC dc, const wchar_t* text, HFONT font, int maxWidth) {
+    const HGDIOBJ oldFont = SelectObject(dc, font);
+    const int h = CachedLineHeight(dc, text, font, maxWidth);
+    SelectObject(dc, oldFont);
+    return h;
+}
+
+// 画一行，返回「实际高度 + 行距」供调用方推进光标。
+// 用 DT_CALCRECT 量真实高度而不是写死像素 —— 这是 DPI 无关的关键。
+int DrawLine(HDC dc, const wchar_t* text, int x, int y, int maxWidth,
+             HFONT font, COLORREF color, int gapAfter) {
+    const HGDIOBJ oldFont = SelectObject(dc, font);
+    SetTextColor(dc, color);
+
+    // 高度直接取缓存，不再为了「量一下」多画一次 DrawTextW。
+    // 量出来的值和原来 DT_CALCRECT 的结果完全一致（单行高度只由字体决定），
+    // 所以排版不变，只是省掉一次文本整形。
+    const int height = CachedLineHeight(dc, text, font, maxWidth);
+
+    RECT draw{ x, y, x + maxWidth, y + height };
+    DrawTextW(dc, text, -1, &draw, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
+
+    SelectObject(dc, oldFont);
+    return height + gapAfter;
+}
+
+// 百分比字号 -> 实际 pt。
+//
+// 刻意**不做**「按面板高度自动缩放字号」：字号该由用户拍板，
+// 面板高度影响的是**行数**（见下面 span 那段）。两者混在一起的话，
+// 同一个设置值在独立面板（460x150 逻辑像素）和 DUI 元素（可能很高）里
+// 会得到不同字号，用户根本没法预期自己调的是什么。
+int ScalePt(int basePt, int pct) {
+    const int pt = MulDiv(basePt, pct, 100);
+    return (pt < 1) ? 1 : pt;
+}
+
+// 夹取到 [lo, hi]。
+// 不用 std::clamp：本文件里 windows.h 的 min/max 宏和 <algorithm> 的老问题
+// 已经踩过一次（std::max 解析不出来），索性全部手写比较。
+int ClampInt(int v, int lo, int hi) {
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+} // namespace
+
+int DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& theme,
+                   const LyricsViewLayout& layout) {
+    if (dc == nullptr) return rc.top;
+
+    SetBkMode(dc, TRANSPARENT);
+
+    const int dpi = (theme.dpi > 0) ? theme.dpi : 96;
+    auto S = [dpi](int v) { return MulDiv(v, dpi, 96); };
+
+    const int padX  = S(20);
+    int maxW = (rc.right - rc.left) - padX * 2;
+    if (maxW < 1) maxW = 1;      // 面板窄到不合理时兜底，避免负宽度
+    const int left  = rc.left + padX;
+    const int top   = rc.top + S(14);
+    const int limit = rc.bottom;
+
+    const int pct = (layout.fontPct > 0) ? layout.fontPct : 100;
+
+    HFONT fHeader  = MakeFont(dpi, ScalePt(11, pct), false);   // 曲名：刻意比歌词小，别抢戏
+    HFONT fCurrent = MakeFont(dpi, ScalePt(15, pct), true);    // 当前歌词行
+    HFONT fBody    = MakeFont(dpi, ScalePt(11, pct), false);   // 其它歌词行
+
+    const auto& st = PlaybackState::Get();
+    int y = top;
+
+    // ---- 曲名 ----
+    if (st.HasTrack()) {
+        y += DrawLine(dc, st.DisplayName().c_str(), left, y, maxW,
+                      fHeader, theme.headerText, S(8));
+    } else {
+        y += S(8);
+    }
+
+    // ---- 歌词 ----
+    const LyricDocument& doc = st.Lyrics();
+    if (doc.IsEmpty()) {
+        if (!st.HasTrack()) {
+            // 没在播放：什么都不说，留白
+        } else {
+            const wchar_t* msg = L"（无歌词）";
+            std::wstring sub = st.LyricPath().empty() ? std::wstring()
+                                                      : FileNameOf(st.LyricPath());
+            const int gap = S(4);
+            const int h1 = MeasureLine(dc, msg, fBody, maxW);
+            const int h2 = sub.empty() ? 0 : MeasureLine(dc, sub.c_str(), fBody, maxW);
+            const int block = h1 + (h2 > 0 ? h2 + gap : 0);
+
+            int dy = y + ((limit - y) - block) / 2;
+            if (dy < y) dy = y;
+
+            dy += DrawLine(dc, msg, left, dy, maxW, fBody, theme.warnText, gap);
+            if (h2 > 0) {
+                DrawLine(dc, sub.c_str(), left, dy, maxW, fBody, theme.dimText, 0);
+            }
+            y = limit;
+        }
+    } else {
+        const size_t cur   = st.CurrentLine();
+        const size_t total = doc.Count();
+
+        const int gapCurrent = S(10);
+        const int gapNormal  = S(6);
+        const int avail      = limit - y;
+
+        if (cur != LyricDocument::npos && total > 0 && avail > 0) {
+            const wchar_t* curText = doc.At(cur).text.c_str();
+            const int curTextH = MeasureLine(dc, curText, fCurrent, maxW);
+
+            // 当前行的垂直锚点。
+            //
+            // ratio = 50 时锚点落在歌词区正中，与旧版行为一致 ——
+            // 旧版把整块居中，而上下预算对称，块中心就是当前行中心。
+            // 所以把这个值默认成 50 是**忠实保留**，不是新调的手感。
+            const int ratio  = ClampInt(layout.currentRatio, 0, 100);
+            const int anchor = y + MulDiv(avail, ratio, 100);
+
+            int curTop = anchor - curTextH / 2;
+            // 锚点算出的位置可能把当前行顶出歌词区（ratio 取极端值时），夹回来。
+            curTop = ClampInt(curTop, y, limit - curTextH);
+            if (curTop < y) curTop = y;   // 歌词区比一行还矮时的最后兜底
+
+            // span = 0 表示「按可用高度自适应」。这是默认行为，也是三种宿主
+            // 共用一个设置还能各自合理的原因：独立面板只有 460x150 逻辑像素
+            // （副屏远距离看，3 行正合适，见 D-013），而 DUI 元素可能很高，
+            // 写死行数会在 DUI 里浪费大片空间。
+            const int span = (layout.span > 0) ? layout.span : 0;
+
+            // ---- 往上铺 ----
+            // above[0] 是紧邻当前行的上一行，依次向远处排。
+            std::vector<size_t> above;
+            int up = curTop;
+            for (size_t i = cur; i-- > 0; ) {
+                if (span > 0 && above.size() >= static_cast<size_t>(span)) break;
+                const int h = MeasureLine(dc, doc.At(i).text.c_str(), fBody, maxW) + gapNormal;
+                if (up - h < y) break;      // 越过歌词区上边界就停
+                up -= h;
+                above.push_back(i);
+            }
+
+            // ---- 往下铺 ----
+            std::vector<size_t> below;
+            int down = curTop + curTextH + gapCurrent;
+            for (size_t i = cur + 1; i < total; ++i) {
+                if (span > 0 && below.size() >= static_cast<size_t>(span)) break;
+                const int h = MeasureLine(dc, doc.At(i).text.c_str(), fBody, maxW) + gapNormal;
+                if (down + h > limit) break;
+                below.push_back(i);
+                down += h;
+            }
+
+            // 上方：above 是「由近及远」，画的时候要从最远的一行开始（倒序）。
+            // up 此刻正好停在最上面那一行的 y 上。
+            for (size_t k = above.size(); k-- > 0; ) {
+                up += DrawLine(dc, doc.At(above[k]).text.c_str(), left, up, maxW,
+                               fBody, theme.normalText, gapNormal);
+            }
+
+            // 当前行
+            DrawLine(dc, curText, left, curTop, maxW,
+                     fCurrent, theme.currentText, gapCurrent);
+
+            // 下方：正序，光标从当前行下面接着走。
+            int dy = curTop + curTextH + gapCurrent;
+            for (size_t idx : below) {
+                dy += DrawLine(dc, doc.At(idx).text.c_str(), left, dy, maxW,
+                               fBody, theme.normalText, gapNormal);
+            }
+            y = dy;
+
+            // 行数上限生效时，上下会各自留出空白 —— 这是预期行为：
+            // 用户要的是「只显示 N 行」，不是「把 N 行撑满整个区域」。
+        }
+    }
+
+    // 字体由 MakeFont 缓存持有，进程内复用 —— **这里绝不能删**，
+    // 删了缓存里就是野句柄，下一帧 SelectObject 会拿到已释放的 GDI 对象。
+    return y;
+}
+
+HFONT GetCachedUiFont(int dpi, int pt, bool bold) {
+    return MakeFont(dpi, pt, bold);
+}
+
+} // namespace lyricus

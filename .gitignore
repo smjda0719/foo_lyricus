@@ -22,3 +22,6 @@ lyricus-debug.log
 *.swp
 Thumbs.db
 desktop.ini
+
+# ---- 回滚用的已知良好 DLL（构建产物，不进库；rollback.ps1 保留）----
+backup/*.dll

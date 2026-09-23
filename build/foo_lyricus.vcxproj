@@ -68,7 +68,7 @@
       <SDLCheck>true</SDLCheck>
       <!-- /utf-8: 源码是 UTF-8；/d2notypeopt: 官方 sample 也用它，配合 D2D -->
       <AdditionalOptions>/utf-8 /d2notypeopt %(AdditionalOptions)</AdditionalOptions>
-      <AdditionalIncludeDirectories>$(SdkDir);$(LyricusRoot)\3rdparty;$(LyricusRoot)\3rdparty\WTL\Include;$(LyricusRoot)\3rdparty\lunasvg\include;$(LyricusRoot)\3rdparty\lunasvg\plutovg\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SdkDir);$(LyricusRoot)\3rdparty;$(LyricusRoot)\3rdparty\WTL\Include;$(LyricusRoot)\3rdparty\lunasvg\include;$(LyricusRoot)\3rdparty\lunasvg\plutovg\include;$(LyricusRoot)\3rdparty\columns_ui-sdk;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WIN32;_WINDOWS;_USRDLL;_WINDLL;NDEBUG;_CRT_SECURE_NO_WARNINGS;LUNASVG_BUILD_STATIC;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
     </ClCompile>
@@ -95,19 +95,35 @@
     <ClCompile Include="..\src\main.cpp" />
     <ClCompile Include="..\src\debug_log.cpp" />
     <ClCompile Include="..\src\config.cpp" />
+    <ClCompile Include="..\src\settings.cpp" />
+    <ClCompile Include="..\src\prefs_page.cpp" />
+    <ClCompile Include="..\src\lyric_search.cpp" />
+    <ClCompile Include="..\src\online_lyric.cpp" />
     <ClCompile Include="..\src\lyric.cpp" />
     <ClCompile Include="..\src\playback_state.cpp" />
     <ClCompile Include="..\src\control_window.cpp" />
     <ClCompile Include="..\src\menu.cpp" />
     <ClCompile Include="..\src\initquit.cpp" />
     <ClCompile Include="..\src\svg_icon.cpp" />
+    <ClCompile Include="..\src\lyrics_view.cpp" />
+    <ClCompile Include="..\src\dui_element.cpp" />
+    <ClCompile Include="..\src\cui_panel.cpp" />
+    <!-- libPPUI 的 WIN32_OP_FAIL()：ui_element_impl_withpopup 的 bump 路径要用到
+         （bump → BumpableElem → CFlashWindow::ShowAbove → WIN32_OP）。
+         该符号唯一实现在 libPPUI/win32_op.cpp；而 libPPUI 自己的 vcxproj 因为缺少
+         WTL 包含路径编不出 .lib，所以把这一个源文件直接并进来 —— 它只依赖 pfc
+         与 exception_win32，不需要 libPPUI 的其它源码。 -->
+    <ClCompile Include="..\3rdparty\libPPUI\win32_op.cpp" />
     <!-- lunasvg：SVG 解析 + plutovg 光栅化。用通配符，避免逐个文件列清单。 -->
     <ClCompile Include="..\3rdparty\lunasvg\source\*.cpp" />
     <ClCompile Include="..\3rdparty\lunasvg\plutovg\source\*.c" />
+    <!-- columns_ui-sdk：CUI 面板接口。基础 SDK 里没有，只能引这个（0BSD，锁了 commit）。 -->
+    <ClCompile Include="..\3rdparty\columns_ui-sdk\*.cpp" />
   </ItemGroup>
 
   <ItemGroup>
     <ClInclude Include="..\src\svg_icon.h" />
+    <ClInclude Include="..\src\lyrics_view.h" />
     <ClInclude Include="..\3rdparty\lunasvg\include\*.h" />
     <ClInclude Include="..\3rdparty\lunasvg\source\*.h" />
     <ClInclude Include="..\3rdparty\lunasvg\plutovg\include\*.h" />
@@ -118,6 +134,14 @@
     <ClInclude Include="..\src\lyric.h" />
     <ClInclude Include="..\src\playback_state.h" />
     <ClInclude Include="..\src\control_window.h" />
+    <ClInclude Include="..\src\resource.h" />
+  </ItemGroup>
+
+  <!-- 首选项页的对话框资源。
+       preferences_page_impl<TDialog> 要求对话框资源（见 helpers/atl-misc.h:271-280），
+       所以本工程从这里开始有 .rc 了。 -->
+  <ItemGroup>
+    <ResourceCompile Include="..\src\lyricus.rc" />
   </ItemGroup>
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

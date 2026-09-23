@@ -3,6 +3,7 @@
 #include "debug_log.h"
 
 #include <algorithm>
+#include <cstring>    // memcpy / strlen / _wcsicmp（MSVC 扩展，显式写出不靠传递包含）
 #include <cwctype>
 
 namespace lyricus {
@@ -163,15 +164,6 @@ std::string WideToUtf8(const std::wstring& wide) {
     WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), static_cast<int>(wide.size()),
                         &out[0], n, nullptr, nullptr);
     return out;
-}
-
-std::wstring MakeLyricPathForAudio(const std::wstring& audioPath) {
-    const size_t dot = audioPath.find_last_of(L'.');
-    const size_t slash = audioPath.find_last_of(L"\\/");
-    if (dot != std::wstring::npos && (slash == std::wstring::npos || dot > slash)) {
-        return audioPath.substr(0, dot) + L".lrc";
-    }
-    return audioPath + L".lrc";
 }
 
 size_t LyricDocument::LineIndexAt(double timeSec) const {

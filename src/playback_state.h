@@ -16,6 +16,35 @@
 
 namespace lyricus {
 
+// RefreshPosition() 这一拍到底变了什么。
+//
+// 【为什么不直接返回 bool】两者的代价差得远：
+//   * 换行     —— 要重画整块歌词
+//   * 位置变化 —— 只影响进度条和时间文字
+// 而位置**每 250ms 就变一次**（播放时一直在走），换行几分钟才一次。
+// 混成一个 bool 的话调用方只能每次都全量重画，实测这导致面板每秒重绘 4 次、
+// 每次 5~7ms，白白占住主线程 20~28ms/s —— 用户拖专辑进库时，
+// foobar2000 自己也在抢主线程，这就是那份卡顿的来源（见 D-031）。
+enum class TickChange {
+    None,       // 什么都没变
+    Position,   // 只有播放位置在走，当前歌词行没变
+    Line,       // 当前歌词行变了
+};
+
+// 「只有播放位置在走」时，各宿主统一的重绘节流间隔（毫秒）。
+//
+// 定时器仍是 250ms 一拍（要保证换行、换曲能被及时发现），
+// 但位置变化没必要每拍都重画：它只影响进度条和时间文字，
+// 而进度条在 4 分钟的曲子上每秒才走约 1 个像素 —— 4Hz 里
+// 有 3 次画出来的画面和上一次完全一样，时间文字本来也只每秒变一次。
+//
+// 取 1000ms 就是「信息一点都不丢」的上限。换行 / 换曲 / 改设置 / 用户拖动
+// 都**不受这个节流限制**，各自有独立触发条件，仍然立刻重绘。
+//
+// 三个宿主（独立面板 / DUI 元素 / CUI 面板）共用同一个值：
+// 它们烧的是同一条主线程，没有理由各不相同。
+constexpr ULONGLONG kPositionRepaintMs = 1000;
+
 class PlaybackState {
 public:
     static PlaybackState& Get();
@@ -25,8 +54,9 @@ public:
     void OnStop();
 
     // --- 由窗口定时器驱动 ---
-    // 刷新播放位置。返回 true 表示「当前歌词行」变了，调用方应当重绘。
-    bool RefreshPosition();
+    // 刷新播放状态与位置，并报告这一拍变了什么。
+    // 调用方按 TickChange 决定是「立刻重绘」还是「可以攒一攒」。
+    TickChange RefreshPosition();
 
     // 状态代次：换曲、加载/清除歌词时都会自增。
     // 调用方只要发现自己记的值不一致就重绘 —— 比逐字段比对可靠。
@@ -65,6 +95,15 @@ private:
     PlaybackState(const PlaybackState&) = delete;
     PlaybackState& operator=(const PlaybackState&) = delete;
 
+    // 发起一次在线查询（LRCLIB）。调用方是 RefreshPosition()，理由见下面
+    // m_onlineWanted 的说明。重复调用同一曲目会被忽略。
+    void StartOnlineLookup();
+
+    // 后台线程把结果投递回主线程后的处理。
+    // gen / url 用来判断这份结果是不是已经过期（期间换曲了）。
+    void ApplyOnlineResult(unsigned gen, const std::string& url,
+                           const struct OnlineLyricResult& res);
+
     bool                m_hasTrack   = false;
     bool                m_isPlaying  = false;
     unsigned            m_revision   = 1;
@@ -80,6 +119,28 @@ private:
     float               m_volumeDb    = 0.0f;   // playback_control 的音量单位是 dB，0 为满音量
     bool                m_isMuted     = false;
     size_t              m_currentLine = LyricDocument::npos;
+
+    // ---- 标签缓存 ----
+    // ReloadLyrics() 取一次，歌词搜索和在线查询共用。
+    // 在这里存一份而不是各自渲染：titleformat 每次都重新跑一遍没意义，
+    // 而且两边用**不同**的值去查同一首歌会很难排查。
+    std::wstring        m_tagArtist, m_tagTitle, m_tagAlbum;
+
+    // ---- 在线歌词（LRCLIB，见 online_lyric.h）----
+
+    // 本地没找到歌词时置位。**真正的发起在 RefreshPosition() 里**，不在这里：
+    // OnNewTrack 不能调 playback_control（SDK 明令禁止），那一刻拿不到曲子时长，
+    // 而时长是核对 /api/search 返回值的关键判据（见 D-024）。
+    // 为了一个查询把上面的禁令破掉，不值得。
+    bool                m_onlineWanted = false;
+
+    // 正在查询的曲目 URL。非空 = 这首已经在查。
+    // online_lyric.h 明确说了模块本身**不做去重**，重复触发要调用方自己拦。
+    std::string         m_onlinePendingUrl;
+
+    // 换曲时自增。回调回来时对不上就说明用户已经换歌了，结果直接丢弃 ——
+    // 后台查询可能几十秒才回来，期间换歌是常态。
+    unsigned            m_onlineGeneration = 0;
 };
 
 // 取路径的文件名部分（含扩展名）

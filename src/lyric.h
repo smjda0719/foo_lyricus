@@ -47,9 +47,13 @@ private:
     std::vector<LyricLine> m_lines;
 };
 
-// 由音频文件路径推导同目录同名的 .lrc 路径。
-// 例：D:\music\a.flac -> D:\music\a.lrc
-std::wstring MakeLyricPathForAudio(const std::wstring& audioPath);
+// 歌词**文件的查找**已经搬到 lyric_search.h 的 FindLyricFile() ——
+// 那边做的是多策略匹配（精确 / 去前缀 / 标签构造 / 模糊），
+// 不再是「同目录同名」这一条。
+//
+// 原来的 MakeLyricPathForAudio() 已删除：它只覆盖最理想的一种摆放
+// （D:\music\a.flac -> D:\music\a.lrc），实测遇到「厂牌 - 曲名.wav」
+// 配「曲名.lrc」必然落空。留着会让人误以为那就是当前的匹配逻辑。
 
 // UTF-8 窄字符串 -> 宽字符串（用于 SDK 返回的 UTF-8 路径）
 std::wstring Utf8ToWide(const char* utf8);

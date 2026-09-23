@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "control_window.h"
 #include "playback_state.h"
+#include "lyrics_view.h"
 #include "svg_icon.h"
 #include "debug_log.h"
 
@@ -48,6 +49,8 @@ constexpr DWORD kMinBuildForBackdrop = 22621;
 // 250ms 对行级歌词足够；将来做逐字歌词需要更高频率或高精度计时器插值。
 constexpr UINT_PTR kRefreshTimerId  = 1;
 constexpr UINT     kRefreshInterval = 250;
+// 位置变化的节流间隔 kPositionRepaintMs 定义在 playback_state.h ——
+// 三个宿主共用同一个值。
 
 // 默认窗口尺寸，定义在 96 dpi 下，实际创建时按系统 DPI 缩放
 constexpr int kDefaultW96 = 460;
@@ -85,13 +88,10 @@ int BackdropValueFor(BackdropMode mode) {
     }
 }
 
-// 整体半透明的程度（0-255）。太小会看不清字，太大就看不出透。
-constexpr BYTE kTranslucentAlpha = 215;
-
-// 面板底色（BGRA 顺序里用到的三个分量）。分层渲染的 alpha 修正要靠它做比对。
-constexpr BYTE kPanelB = 30;
-constexpr BYTE kPanelG = 28;
-constexpr BYTE kPanelR = 28;
+// 底色与整体不透明度**曾经**是这里的常量（kPanelB/G/R + kTranslucentAlpha）。
+// 现在它们搬到了 config.h 的 PanelAppearance —— 因为浮动面板的外观做成了
+// 可配置的（首选项 → 显示 → Lyricus，带取色器），默认值就写在那个结构体上。
+// 这里不再留常量：留着会变成"改了不生效"的第二份真相。
 
 const wchar_t* ModeDisplayName(BackdropMode mode) {
     switch (mode) {
@@ -281,7 +281,17 @@ RECT ControlWindow::ComputeInitialRect() const {
     const int sx = static_cast<int>(cfg_panel_x.get());
     const int sy = static_cast<int>(cfg_panel_y.get());
 
-    if (sx >= 0 && sy >= 0) {
+    // -1 是「从未保存过」的哨兵值（见 config.h 里 cfg_panel_x/y 的说明）。
+    //
+    // ⚠️ 这里**不能**写成 `sx >= 0 && sy >= 0`。
+    //    主显示器**左边或上边**的显示器坐标是负的 —— 那样写会把
+    //    「面板放在左侧副屏」这种完全合法的位置当成「没保存过」，
+    //    于是每次启动都跳回主屏居中。
+    //
+    //    实测踩到：副屏在主屏左侧（X 从 -1463 起），面板拖到 x = -929，
+    //    重启后日志里出现"无保存位置"，面板跑到主屏中央。
+    //    这个 bug 一直存在，只是之前面板恰好在正坐标（1901,67）才没暴露。
+    if (sx != -1 && sy != -1) {
         const int sw = static_cast<int>(cfg_panel_w.get());
         const int sh = static_cast<int>(cfg_panel_h.get());
         RECT saved{ sx, sy, sx + sw, sy + sh };
@@ -312,6 +322,10 @@ RECT ControlWindow::ComputeInitialRect() const {
 
 bool ControlWindow::EnsureCreated() {
     if (m_hwnd != nullptr && IsWindow(m_hwnd)) return true;
+
+    // 先把外观读进来。不能指望定时器 —— 首帧绘制发生在第一次定时器之前，
+    // 那之前用默认值画出来会闪一下「出厂配色」。
+    m_appearance = GetPanelAppearance();
 
     HINSTANCE instance = core_api::get_my_instance();
 
@@ -369,6 +383,26 @@ bool ControlWindow::EnsureCreated() {
 
 void ControlWindow::ApplyBackdrop() {
     if (m_hwnd == nullptr || !IsWindow(m_hwnd)) return;
+
+    // ---- 兜底：DWM 材质一律降级成半透明自绘 ----------------------------------
+    //
+    // 理由见 D-009：DWMWA_SYSTEMBACKDROP_TYPE 那几个材质与普通 GDI 绘制**不兼容** ——
+    // 相关 API 全部返回 S_OK，但客户区里的绘制内容不会被呈现到屏幕上
+    // （表现是面板一片空白，只有截图时能看见）。
+    //
+    // 万一配置里存着 Mica / Acrylic / Mica Alt（早期版本留下的，或有人手工改过），
+    // 面板**每次启动都会空白**，而用户完全看不出原因 —— 菜单里还显示"设置成功"。
+    // 与其留着这种状态，不如在这里直接改掉并记一笔。
+    {
+        const BackdropMode raw = static_cast<BackdropMode>(cfg_backdrop_mode.get());
+        if (raw == BackdropMode::Mica || raw == BackdropMode::Acrylic ||
+            raw == BackdropMode::MicaAlt) {
+            DebugLog("ApplyBackdrop: 配置里是「%s」—— 该材质与 GDI 绘制不兼容（D-009），"
+                     "已自动降级为「半透明（自绘）」",
+                     BackdropModeName(raw));
+            cfg_backdrop_mode = static_cast<int>(BackdropMode::Translucent);
+        }
+    }
 
     const BackdropMode mode = static_cast<BackdropMode>(cfg_backdrop_mode.get());
 
@@ -675,11 +709,48 @@ LRESULT ControlWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_TIMER:
         if (wp == kRefreshTimerId) {
+            // 每 250ms 一次的热路径。阈值取 5ms —— 超过就说明这一拍太重了，
+            // 连续几拍偏重就是肉眼可见的卡顿。
+            ScopedTimer tick("面板定时器一拍", 5.0);
+
             auto& st = PlaybackState::Get();
-            const bool lineChanged  = st.RefreshPosition();
+            const TickChange change = st.RefreshPosition();
+            const bool lineChanged  = (change != TickChange::None);
             const bool stateChanged = (st.Revision() != m_lastRevision);
 
-            if (lineChanged || stateChanged) {
+            // 用户改了「高级首选项」里的字号 / 行数 / 当前位置 —— 那套配置
+            // **没有变更通知**，只能每帧轮询比对（三个 int，代价可忽略）。
+            const LyricDisplayConfig cfg = GetLyricDisplayConfig();
+            const bool cfgChanged = (cfg != m_displayCfg);
+            if (cfgChanged) {
+                m_displayCfg = cfg;
+                m_layout = { cfg.fontPct, cfg.span, cfg.currentRatio };
+                DebugLog("显示设置变更 -> %s", DescribeDisplayConfig(cfg).c_str());
+            }
+
+            // 首选项页改的配色 / 不透明度，同样靠轮询（7 个值，代价可忽略）。
+            // 这样首选项页和面板之间没有任何回调耦合 ——
+            // 页面关掉、销毁都不会影响面板，反过来也一样。
+            const PanelAppearance ap = GetPanelAppearance();
+            const bool apChanged = (ap != m_appearance);
+            if (apChanged) {
+                m_appearance = ap;
+                DebugLog("外观变更 -> 曲名=#%02X%02X%02X 当前行=#%02X%02X%02X 底色=#%02X%02X%02X alpha=%d",
+                         GetRValue(ap.header), GetGValue(ap.header), GetBValue(ap.header),
+                         GetRValue(ap.current), GetGValue(ap.current), GetBValue(ap.current),
+                         GetRValue(ap.bg), GetGValue(ap.bg), GetBValue(ap.bg),
+                         ap.alpha);
+            }
+
+            // 只有「位置在走、歌词行没变」时才受节流限制，
+            // 而且这一拍还会被下面更"有意思"的变化再次覆盖 —— 见 kPositionRepaintMs。
+            const ULONGLONG now = GetTickCount64();
+            const bool positionDue =
+                (change == TickChange::Position) &&
+                (now - m_lastPositionRepaint >= kPositionRepaintMs);
+
+            if (lineChanged || stateChanged || cfgChanged || apChanged || positionDue) {
+                m_lastPositionRepaint = now;
                 m_lastRevision = st.Revision();
                 if (static_cast<BackdropMode>(cfg_backdrop_mode.get()) == BackdropMode::Translucent) {
                     RenderLayered();
@@ -705,6 +776,7 @@ LRESULT ControlWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_DESTROY:
         KillTimer(hwnd, kRefreshTimerId);
+        ReleaseLayeredCache();
         if (!m_skipSaveOnDestroy) SavePosition();
         m_hwnd = nullptr;
         return 0;
@@ -739,122 +811,52 @@ void ControlWindow::PaintContent(HDC dc) {
 }
 
 void ControlWindow::DrawTextContent(HDC dc, const RECT& rc) {
-    SetBkMode(dc, TRANSPARENT);
-
-    const BackdropMode mode = static_cast<BackdropMode>(cfg_backdrop_mode.get());
-
     const int dpi = GetDeviceCaps(dc, LOGPIXELSY);
-    auto scale = [dpi](int v) { return MulDiv(v, dpi, 96); };
-    auto makeFont = [dpi](int pt, bool bold) {
-        return CreateFontW(-MulDiv(pt, dpi, 72), 0, 0, 0,
-                           bold ? FW_SEMIBOLD : FW_NORMAL,
-                           FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                           OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                           ANTIALIASED_QUALITY,   // 透明底上用 ANTIALIASED，ClearType 依赖不透明背景
-                           DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-    };
 
-    RECT area = rc;
-    area.left  += scale(20);
-    area.right -= scale(20);
-    area.top   += scale(14);
-
-    // 先算出控制条位置。歌词区限定在「曲名之下、控制条之上」，两者各占各的位置、
+    // 先算出控制条位置。歌词区限定在「顶边到控制条上沿」，两者各占各的位置、
     // 互不侵占 —— 之前诊断行插进歌词块，就是没把区域划分干净。
     LayoutControls(rc, dpi);
-    const int bottomLimit = m_ctrlBarTop;
 
-    HFONT fHeader  = makeFont(11, false);   // 顶部曲名（刻意比歌词小，别抢戏）
-    HFONT fCurrent = makeFont(15, true);    // 当前歌词行
-    HFONT fBody    = makeFont(11, false);   // 其它歌词行
+    // 曲名 + 歌词交给公共渲染层。
+    // 抽出去的理由：DUI 元素和 CUI 面板要共用同一份绘制，否则三套实现会慢慢跑偏。
+    //
+    // 配色是**浮动面板专有**的：它没有宿主可跟随，所以读自己的配置
+    // （首选项 → 显示 → Lyricus）。DUI / CUI 面板走各自的宿主主题，不读这里。
+    LyricsViewTheme theme;
+    theme.dpi = dpi;
+    theme.headerText  = m_appearance.header;
+    theme.currentText = m_appearance.current;
+    theme.normalText  = m_appearance.normal;
+    theme.dimText     = m_appearance.dim;
+    theme.warnText    = m_appearance.warn;
 
-    // 用「量出来的高度」推进，而不是写死像素 —— DPI 变化时不会挤在一起
-    int y = area.top;
-    RECT line = area;
+    RECT lyricArea = rc;
+    lyricArea.bottom = m_ctrlBarTop;
+    DrawLyricsView(dc, lyricArea, theme, m_layout);
 
-    const auto& st = PlaybackState::Get();
-
-    line.top = y;
-    const std::wstring header = st.HasTrack() ? st.DisplayName()
-                                              : std::wstring(L"Lyricus（未播放）");
-    y += DrawMeasuredLine(dc, header.c_str(), line, fHeader, RGB(235, 235, 240), scale(6));
-
-    std::wstring source;
-    if (!st.Lyrics().IsEmpty())     source = L"歌词：" + FileNameOf(st.LyricPath());
-    else if (st.HasTrack())         source = L"未找到同名 .lrc";
-
-    // 来源信息不在这儿画 —— 挪到底部那条，把纵向空间让给歌词
-    y += scale(6);
-
-    // 歌词正文：以当前行为中心显示若干行，当前行用大号加粗白字突出
-    const LyricDocument& doc = st.Lyrics();
-    if (doc.IsEmpty()) {
-        if (st.HasTrack()) {
-            // 提示同样要垂直居中，否则会孤零零贴在顶部
-            const wchar_t* msg = L"（无歌词）菜单 View → Lyricus → 重新加载歌词 / 选择歌词文件";
-            const int w = area.right - area.left;
-            const int gap = scale(4);
-            const int h1 = MeasureLine(dc, msg, fBody, w);
-            const int h2 = source.empty() ? 0 : MeasureLine(dc, source.c_str(), fBody, w);
-            const int block = h1 + (h2 > 0 ? h2 + gap : 0);
-
-            int dy = y + ((bottomLimit - y) - block) / 2;
-            if (dy < y) dy = y;
-
-            line.top = dy;
-            dy += DrawMeasuredLine(dc, msg, line, fBody, RGB(205, 165, 165), gap);
-            if (h2 > 0) {
-                line.top = dy;
-                DrawMeasuredLine(dc, source.c_str(), line, fBody, RGB(150, 150, 158), 0);
-            }
-        }
-    } else {
-        const size_t cur   = st.CurrentLine();
-        const size_t total = doc.Count();
-        constexpr size_t kSpan = 2;          // 当前行前后各显示几行
-        size_t first = 0;
-        if (cur != LyricDocument::npos && cur > kSpan) first = cur - kSpan;
-
-        const int gapCurrent = scale(10);
-        const int gapNormal  = scale(6);
-        const int bottom     = bottomLimit;
-
-        // 先量出总高、剔除放不下的行，再**垂直居中**。
-        // 直接从上往下画会让歌词块贴着顶部排，最后一行被窗口底边切掉。
-        std::vector<size_t> show;
-        int blockHeight = 0;
-        for (size_t i = first; i < total && show.size() < kSpan * 2 + 1; ++i) {
-            const bool isCurrent = (i == cur);
-            HFONT f = isCurrent ? fCurrent : fBody;
-            const int h   = MeasureLine(dc, doc.At(i).text.c_str(), f, area.right - area.left);
-            const int gap = isCurrent ? gapCurrent : gapNormal;
-            if (y + blockHeight + h > bottom) break;
-            blockHeight += h + gap;
-            show.push_back(i);
-        }
-
-        int drawY = y + ((bottom - y) - blockHeight) / 2;
-        if (drawY < y) drawY = y;
-
-        for (size_t idx : show) {
-            const bool isCurrent = (idx == cur);
-            line.top = drawY;
-            drawY += DrawMeasuredLine(dc, doc.At(idx).text.c_str(), line,
-                                      isCurrent ? fCurrent : fBody,
-                                      isCurrent ? RGB(255, 255, 255) : RGB(172, 172, 180),
-                                      isCurrent ? gapCurrent : gapNormal);
-        }
-    }
-
-    // 控制条（占用了原先底部预留条的位置）
+    // 控制条
     DrawControls(dc, dpi);
+}
 
-    DeleteObject(fHeader);
-    DeleteObject(fCurrent);
-    DeleteObject(fBody);
+void ControlWindow::ReleaseLayeredCache() {
+    if (m_layeredDC != nullptr) {
+        if (m_layeredOldBmp != nullptr) SelectObject(m_layeredDC, m_layeredOldBmp);
+        DeleteDC(m_layeredDC);
+        m_layeredDC = nullptr;
+    }
+    if (m_layeredDib != nullptr) {
+        DeleteObject(m_layeredDib);
+        m_layeredDib = nullptr;
+    }
+    m_layeredOldBmp = nullptr;
+    m_layeredBits   = nullptr;
+    m_layeredW      = 0;
+    m_layeredH      = 0;
 }
 
 void ControlWindow::RenderLayered() {
+    ScopedTimer timer("RenderLayered（重绘 + 提交）", 5.0);
+
     if (m_hwnd == nullptr || !IsWindow(m_hwnd)) return;
     if (static_cast<BackdropMode>(cfg_backdrop_mode.get()) != BackdropMode::Translucent) return;
 
@@ -867,56 +869,93 @@ void ControlWindow::RenderLayered() {
     HDC screenDC = GetDC(nullptr);
     if (screenDC == nullptr) return;
 
-    BITMAPV5HEADER bi{};
-    bi.bV5Size        = sizeof(bi);
-    bi.bV5Width       = w;
-    bi.bV5Height      = -h;          // 负值 = 自上而下，与 GDI 坐标一致
-    bi.bV5Planes      = 1;
-    bi.bV5BitCount    = 32;
-    bi.bV5Compression = BI_BITFIELDS;
-    bi.bV5RedMask     = 0x00FF0000;
-    bi.bV5GreenMask   = 0x0000FF00;
-    bi.bV5BlueMask    = 0x000000FF;
-    bi.bV5AlphaMask   = 0xFF000000;
+    // 尺寸没变就复用上一帧的 DIB 和内存 DC —— 见 control_window.h 里缓存成员的说明。
+    // 尺寸变了（改字号、拖窗口）才重建，重建前先把旧的拆干净。
+    if (m_layeredDC == nullptr || m_layeredDib == nullptr ||
+        m_layeredW != w || m_layeredH != h) {
+        ReleaseLayeredCache();
 
-    void* bits = nullptr;
-    HBITMAP dib = CreateDIBSection(screenDC, reinterpret_cast<BITMAPINFO*>(&bi),
-                                   DIB_RGB_COLORS, &bits, nullptr, 0);
-    if (dib == nullptr || bits == nullptr) {
-        if (dib != nullptr) DeleteObject(dib);
-        ReleaseDC(nullptr, screenDC);
-        DebugLog("RenderLayered: CreateDIBSection 失败");
-        return;
+        BITMAPV5HEADER bi{};
+        bi.bV5Size        = sizeof(bi);
+        bi.bV5Width       = w;
+        bi.bV5Height      = -h;          // 负值 = 自上而下，与 GDI 坐标一致
+        bi.bV5Planes      = 1;
+        bi.bV5BitCount    = 32;
+        bi.bV5Compression = BI_BITFIELDS;
+        bi.bV5RedMask     = 0x00FF0000;
+        bi.bV5GreenMask   = 0x0000FF00;
+        bi.bV5BlueMask    = 0x000000FF;
+        bi.bV5AlphaMask   = 0xFF000000;
+
+        void* bits = nullptr;
+        HBITMAP dib = CreateDIBSection(screenDC, reinterpret_cast<BITMAPINFO*>(&bi),
+                                       DIB_RGB_COLORS, &bits, nullptr, 0);
+        if (dib == nullptr || bits == nullptr) {
+            if (dib != nullptr) DeleteObject(dib);
+            ReleaseDC(nullptr, screenDC);
+            DebugLog("RenderLayered: CreateDIBSection 失败");
+            return;
+        }
+
+        HDC dc = CreateCompatibleDC(screenDC);
+        if (dc == nullptr) {
+            DeleteObject(dib);
+            ReleaseDC(nullptr, screenDC);
+            DebugLog("RenderLayered: CreateCompatibleDC 失败");
+            return;
+        }
+
+        m_layeredDC     = dc;
+        m_layeredDib    = dib;
+        m_layeredOldBmp = static_cast<HBITMAP>(SelectObject(dc, dib));
+        m_layeredBits   = bits;
+        m_layeredW      = w;
+        m_layeredH      = h;
     }
 
+    void* const bits = m_layeredBits;
+
+    // 底色与不透明度来自配置（首选项 → 显示 → Lyricus）。
+    //
+    // 先取一份**局部快照**，整个渲染过程都用同一组值 ——
+    // 否则万一配置在渲染途中被改（比如用户正在拖不透明度滑块），
+    // 铺底和下面的 alpha 修正会用到不同的值，画面会花掉。
+    const PanelAppearance ap = m_appearance;
+    const BYTE bgB   = GetBValue(ap.bg);
+    const BYTE bgG   = GetGValue(ap.bg);
+    const BYTE bgR   = GetRValue(ap.bg);
+    const BYTE alpha = static_cast<BYTE>(ClampAlpha(ap.alpha));
+
     // 1) 手工铺底。GDI 完全不管理 alpha 通道，底色只能自己按 BGRA 写进去。
+    //
+    // 复用位图意味着底色可能和上一帧不同（用户调了透明度），
+    // 所以这一遍**每次都要写**，不能省 —— 省掉就会留下上一帧的 alpha。
     const size_t pixelCount = static_cast<size_t>(w) * static_cast<size_t>(h);
     {
         BYTE* p = static_cast<BYTE*>(bits);
         for (size_t i = 0; i < pixelCount; ++i) {
-            p[0] = kPanelB;
-            p[1] = kPanelG;
-            p[2] = kPanelR;
-            p[3] = kTranslucentAlpha;
+            p[0] = bgB;
+            p[1] = bgG;
+            p[2] = bgR;
+            p[3] = alpha;
             p += 4;
         }
     }
 
-    HDC memDC = CreateCompatibleDC(screenDC);
-    const HGDIOBJ oldBmp = SelectObject(memDC, dib);
+    HDC memDC = m_layeredDC;
 
     // 2) 文字照常交给 GDI。GDI 只改 RGB，不会破坏上面写好的 alpha 值。
     DrawTextContent(memDC, rc);
 
     // 2.5) 修正 alpha 并预乘。
-    //   (a) GDI 不写 alpha —— 文字像素的 alpha 仍是底色的 215，表现为「字也是透明的」。
+    //   (a) GDI 不写 alpha —— 文字像素的 alpha 仍是底色的那个值，表现为「字也是透明的」。
     //       凡是与底色不同的像素就是文字（含抗锯齿边缘），把它提到完全不透明。
     //   (b) UpdateLayeredWindow(ULW_ALPHA) 要求源位图是**预乘 alpha** 的，
     //       即 RGB 必须已经乘过 alpha/255，否则文字会偏暗偏糊。
     {
         BYTE* p = static_cast<BYTE*>(bits);
         for (size_t i = 0; i < pixelCount; ++i, p += 4) {
-            if (p[0] != kPanelB || p[1] != kPanelG || p[2] != kPanelR) {
+            if (p[0] != bgB || p[1] != bgG || p[2] != bgR) {
                 p[3] = 255;
             }
             p[0] = static_cast<BYTE>(p[0] * p[3] / 255);
@@ -939,9 +978,6 @@ void ControlWindow::RenderLayered() {
     BLENDFUNCTION blend{ AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
     UpdateLayeredWindow(m_hwnd, screenDC, &dst, &size, memDC, &src, 0, &blend, ULW_ALPHA);
 
-    SelectObject(memDC, oldBmp);
-    DeleteObject(dib);
-    DeleteDC(memDC);
     ReleaseDC(nullptr, screenDC);
 }
 
@@ -1090,10 +1126,9 @@ void ControlWindow::DrawControls(HDC dc, int dpi) {
     }
 
     // 时间
-    HFONT fSmall = CreateFontW(-MulDiv(10, dpi, 72), 0, 0, 0, FW_NORMAL,
-                               FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                               OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                               ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    // 时间。字体走缓存 —— 这行每帧都要画（时间每秒都在变），
+    // 原来每帧 CreateFontW 一个再删掉，是白扔的开销。
+    HFONT fSmall = GetCachedUiFont(dpi, 10, false);
     {
         const std::wstring text = FormatTime(st.PositionSec()) + L" / " + FormatTime(st.LengthSec());
         const HGDIOBJ oldFont = SelectObject(dc, fSmall);
@@ -1132,7 +1167,7 @@ void ControlWindow::DrawControls(HDC dc, int dpi) {
         DrawSlider(dc, m_rcVolumeBar, v, S(4), RGB(74, 74, 82), RGB(206, 210, 220));
     }
 
-    DeleteObject(fSmall);
+    // fSmall 归字体缓存所有，这里不删 —— 见 GetCachedUiFont 的说明。
 }
 
 std::wstring ControlWindow::IconPath(const wchar_t* name) const {
