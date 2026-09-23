@@ -7,6 +7,7 @@
 
 #include <winhttp.h>
 
+#include <atomic>      // 网易云限流的进程级冷却
 #include <cstdarg>
 #include <cstdio>
 #include <cstdint>
@@ -1328,6 +1329,49 @@ bool IsNetEaseRetryableCode(int code) {
     return code == 405 || (code >= 500 && code < 600);
 }
 
+// 网易云限流的**进程级冷却**。
+//
+// ===========================================================================
+//  撞到墙就别再撞 —— 这是被真实日志逼出来的
+// ===========================================================================
+//
+// 实测（2026-09-24）：一旦被限流，405 会**持续好几分钟**。而我们的重试是
+// 800/1600/2500ms —— 在几分钟的封禁窗口里等于白等 5 秒，然后才转去 LRCLIB。
+// 日志里一次换曲白跑了 9.5 秒后台，全都是注定失败的请求。
+//
+// 为什么会触发限流：我为了看候选连打了三十几次搜索接口（教训见 D-036），
+// 加上用户快速连点切歌。总之它会发生，插件就该学会停手。
+//
+// 行为：撞到限流就记下"封禁到这个时刻"，期间**直接跳过网易云**
+// （不发请求、不重试），转去 LRCLIB。连续撞到就指数加长，上限 10 分钟。
+// 冷却期间**绝不**写未命中标记 —— 那是"没问出来"，不是"没有"。
+//
+// 用 atomic 是因为查询跑在后台线程（fb2k::splitTask），可能同时有好几个。
+std::atomic<ULONGLONG> g_netEaseBlockedUntil{0};
+std::atomic<int>       g_netEaseBlockStreak{0};
+std::atomic<bool>      g_netEaseSkipLogged{false};
+
+constexpr ULONGLONG kNetEaseCooldownBaseMs = 60u * 1000u;      // 首次冷却 1 分钟
+constexpr ULONGLONG kNetEaseCooldownMaxMs  = 10u * 60u * 1000u; // 上限 10 分钟
+
+void NetEaseEnterCooldown() {
+    const int streak = g_netEaseBlockStreak.fetch_add(1) + 1;
+
+    ULONGLONG ms = kNetEaseCooldownBaseMs;
+    for (int i = 1; i < streak && ms < kNetEaseCooldownMaxMs; ++i) ms *= 2;
+    if (ms > kNetEaseCooldownMaxMs) ms = kNetEaseCooldownMaxMs;
+
+    g_netEaseBlockedUntil.store(GetTickCount64() + ms);
+    g_netEaseSkipLogged.store(false);
+    OnlineLog("在线歌词：网易云限流 —— 冷却 %llu 秒后再试（连续第 %d 次）",
+              ms / 1000, streak);
+}
+
+// 冷却期内的最短重试间隔（毫秒）。**不是**平均间隔的限速，
+// 只是防止同一瞬间挤进好几个请求。
+constexpr ULONGLONG kNetEaseMinIntervalMs = 1200;
+std::atomic<ULONGLONG> g_netEaseLastRequestTick{0};
+
 // 在若干候选里挑一份歌词。
 //
 // 规则是**两趟**，不是一趟：
@@ -2089,6 +2133,32 @@ bool TryNetEase(const OnlineLyricRequest& req, ULONGLONG retryDeadline,
     const std::wstring title = TrimWs(req.title);
     if (title.empty()) return false;   // 没有曲名就没法搜
 
+    // ---- 0. 冷却中就直接跳过，一个请求都不发 ----
+    //
+    // 这一步是**省时间**的关键：被限流时每次换曲本来要白烧 ~5 秒在重试上。
+    // 跳过时仍然置 requestFailed（= "没问出来"），所以不会写假的"没有"。
+    if (GetTickCount64() < g_netEaseBlockedUntil.load()) {
+        requestFailed = true;
+        note = L"网易云处于限流冷却中";
+        // 只记第一条，别每次换曲都刷屏
+        if (!g_netEaseSkipLogged.exchange(true)) {
+            OnlineLog("在线歌词：网易云仍在限流冷却中，本轮直接跳过（改查 LRCLIB）");
+        }
+        return false;
+    }
+
+    // ---- 0.5 同一瞬间别挤进多个请求 ----
+    // 快速连点切歌时会连着发，这多半就是触发限流的原因之一。
+    {
+        const ULONGLONG now = GetTickCount64();
+        const ULONGLONG last = g_netEaseLastRequestTick.load();
+        if (last != 0 && now - last < kNetEaseMinIntervalMs) {
+            const ULONGLONG waitMs = kNetEaseMinIntervalMs - (now - last);
+            Sleep(static_cast<DWORD>(waitMs));
+        }
+        g_netEaseLastRequestTick.store(GetTickCount64());
+    }
+
     // ---- 1. 搜索 ----
     //
     // ⚠️ 这里有个**重试循环**，而不是一次 HttpGet 就完事。
@@ -2119,7 +2189,10 @@ bool TryNetEase(const OnlineLyricRequest& req, ULONGLONG retryDeadline,
         }
 
         const int bizCode = ParseNetEaseCode(search.body);
-        if (bizCode == 200) break;   // 正常
+        if (bizCode == 200) {
+            g_netEaseBlockStreak.store(0);   // 通了就把连续计数清零
+            break;
+        }
 
         // 业务码非 200：限流之类。**绝不能**当成"没有"。
         if (IsNetEaseRetryableCode(bizCode) &&
@@ -2131,6 +2204,10 @@ bool TryNetEase(const OnlineLyricRequest& req, ULONGLONG retryDeadline,
             Sleep(waitMs);
             continue;
         }
+
+        // 重试用尽。限流的话进入**进程级冷却**，省得后面每次换曲都白烧 5 秒
+        // （见 g_netEaseBlockedUntil 的说明）。
+        if (bizCode == 405) NetEaseEnterCooldown();
 
         requestFailed = true;   // 不是"没有"，是"没问出来" -> 不写未命中标记
         OnlineLog("在线歌词：网易云业务码 %d（HTTP 200）—— 本轮不写未命中标记", bizCode);
