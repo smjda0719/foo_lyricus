@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Lyricus - foo_lyricus.dll
+
+  设计说明：
+  * 工具集固定 v145（本机只有 VS2026 这一套；SDK 自带工程写的是 v143，已实测需重定向）
+  * WindowsTargetPlatformVersion = 10.0，即"使用已安装的最新 10.x SDK"（本机 10.0.26100.0）
+  * 不通过 ProjectReference 引用 SDK 工程，而是直接链接预编译好的 .lib：
+      - SDK 自带工程的包含目录没带 WTL，直接引用会编译失败
+      - 直接链库可控、构建更快
+    因此首次构建前需要先编出这些库，见 build-sdk.ps1
+  * 目前只配置了 x64（SDK 的 Win32 库尚未编译）；要出 32 位时补 Win32 配置与对应库
+-->
+<Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <ProjectGuid>{7E3F1B4A-9C21-4E77-9E2B-3A5D6C8F0A11}</ProjectGuid>
+    <RootNamespace>lyricus</RootNamespace>
+    <Keyword>Win32Proj</Keyword>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <LyricusRoot>$(ProjectDir)..</LyricusRoot>
+    <SdkDir>$(LyricusRoot)\3rdparty\foobar2000</SdkDir>
+    <!-- SDK 各库的输出目录形如  <proj>\<Platform>\<Configuration>\<name>.lib -->
+    <SdkLibFlavor>$(Platform)\$(Configuration)</SdkLibFlavor>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props"
+            Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')"
+            Label="LocalAppDataPlatform" />
+  </ImportGroup>
+
+  <PropertyGroup>
+    <OutDir>$(LyricusRoot)\bin\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(LyricusRoot)\intermediate\$(ProjectName)\$(Platform)\$(Configuration)\</IntDir>
+    <TargetName>foo_lyricus</TargetName>
+  </PropertyGroup>
+
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <WarningLevel>Level3</WarningLevel>
+      <!-- SDK 头文件用了大量旧式写法，严格一致性模式会报错 -->
+      <ConformanceMode>false</ConformanceMode>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <SDLCheck>true</SDLCheck>
+      <!-- /utf-8: 源码是 UTF-8；/d2notypeopt: 官方 sample 也用它，配合 D2D -->
+      <AdditionalOptions>/utf-8 /d2notypeopt %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalIncludeDirectories>$(SdkDir);$(LyricusRoot)\3rdparty;$(LyricusRoot)\3rdparty\WTL\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>WIN32;_WINDOWS;_USRDLL;_WINDLL;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>$(SdkDir)\shared\shared-$(Platform).lib;$(SdkDir)\SDK\$(SdkLibFlavor)\foobar2000_SDK.lib;$(SdkDir)\foobar2000_component_client\$(SdkLibFlavor)\foobar2000_component_client.lib;$(LyricusRoot)\3rdparty\pfc\$(SdkLibFlavor)\pfc.lib;dwmapi.lib;d2d1.lib;dwrite.lib;windowscodecs.lib;shlwapi.lib;comctl32.lib;comdlg32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
+    <ClCompile>
+      <Optimization>MaxSpeed</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+    </ClCompile>
+    <Link>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+    </Link>
+  </ItemDefinitionGroup>
+
+  <ItemGroup>
+    <ClCompile Include="..\src\main.cpp" />
+    <ClCompile Include="..\src\debug_log.cpp" />
+    <ClCompile Include="..\src\config.cpp" />
+    <ClCompile Include="..\src\lyric.cpp" />
+    <ClCompile Include="..\src\playback_state.cpp" />
+    <ClCompile Include="..\src\control_window.cpp" />
+    <ClCompile Include="..\src\menu.cpp" />
+    <ClCompile Include="..\src\initquit.cpp" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ClInclude Include="..\src\stdafx.h" />
+    <ClInclude Include="..\src\debug_log.h" />
+    <ClInclude Include="..\src\config.h" />
+    <ClInclude Include="..\src\lyric.h" />
+    <ClInclude Include="..\src\playback_state.h" />
+    <ClInclude Include="..\src\control_window.h" />
+  </ItemGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

@@ -1,0 +1,24 @@
+# ---- 构建产物 ----
+bin/
+intermediate/
+*.user
+*.aps
+.vs/
+Debug/
+Release/
+
+# ---- 外部依赖 ----
+# 体积大（277 MB），而且 foobar2000 SDK 与 WTL 有各自的许可协议，
+# 不适合放进版本库。恢复方式见 docs/setup.md。
+3rdparty/
+downloads/
+
+# ---- 调试产物 ----
+captures/
+report.txt
+lyricus-debug.log
+
+# ---- 编辑器 / 系统 ----
+*.swp
+Thumbs.db
+desktop.ini
