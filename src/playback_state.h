@@ -37,6 +37,9 @@ public:
 
     bool                 HasTrack()  const { return m_hasTrack; }
     const std::wstring&  TrackPath() const { return m_trackPath; }
+    // 给人看的曲目名：优先用标签渲染出的 "%artist% - %title%"，
+    // 标签为空时退回文件名（去掉扩展名）。
+    const std::wstring&  DisplayName() const { return m_displayName; }
     const std::wstring&  LyricPath() const { return m_lyricPath; }
     const LyricDocument& Lyrics()    const { return m_lyrics; }
     double               PositionSec() const { return m_positionSec; }
@@ -67,6 +70,8 @@ private:
     unsigned            m_revision   = 1;
     std::string         m_trackUrl;      // metadb 给的原始 URL（file://...）
     std::wstring        m_trackPath;     // 转换后的本地文件系统路径
+    std::wstring        m_displayName;   // 由标签渲染，供界面显示
+    metadb_handle_ptr   m_trackHandle;   // 拿标签用
     std::wstring        m_lyricPath;
     LyricDocument       m_lyrics;
     double              m_positionSec = 0.0;

@@ -91,6 +91,17 @@ $h2 = (Get-FileHash -LiteralPath $dest -Algorithm SHA256).Hash
 Say ("已安装: {0}" -f $dest) Green
 Say ("  大小 {0:N0} B   哈希一致 {1}" -f (Get-Item $dest).Length, ($h1 -eq $h2)) Green
 
+# ---- 2.5 顺带部署 SVG 图标 --------------------------------------------------
+# 运行期从 DLL 同级的 resources\ 目录加载，所以必须一起拷过去。
+$resSrc = Join-Path $root 'resources'
+if (Test-Path $resSrc) {
+    $resDst = Join-Path $destD 'resources'
+    New-Item -ItemType Directory -Force -Path $resDst | Out-Null
+    Copy-Item (Join-Path $resSrc '*.svg') $resDst -Force -ErrorAction SilentlyContinue
+    $n = (Get-ChildItem $resDst -Filter *.svg -ErrorAction SilentlyContinue | Measure-Object).Count
+    Say ("  已部署 {0} 个 SVG 图标" -f $n) Green
+}
+
 # ---- 3. 可选重新启动 --------------------------------------------------------
 if ($Relaunch) {
     if (Test-Path $ExePath) {

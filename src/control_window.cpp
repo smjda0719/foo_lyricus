@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "control_window.h"
 #include "playback_state.h"
+#include "svg_icon.h"
 #include "debug_log.h"
 
 #include <algorithm>
@@ -774,9 +775,8 @@ void ControlWindow::DrawTextContent(HDC dc, const RECT& rc) {
     const auto& st = PlaybackState::Get();
 
     line.top = y;
-    const std::wstring header = st.HasTrack()
-                              ? FileStemOf(st.TrackPath())
-                              : std::wstring(L"Lyricus（未播放）");
+    const std::wstring header = st.HasTrack() ? st.DisplayName()
+                                              : std::wstring(L"Lyricus（未播放）");
     y += DrawMeasuredLine(dc, header.c_str(), line, fHeader, RGB(235, 235, 240), scale(6));
 
     std::wstring source;
@@ -790,12 +790,22 @@ void ControlWindow::DrawTextContent(HDC dc, const RECT& rc) {
     const LyricDocument& doc = st.Lyrics();
     if (doc.IsEmpty()) {
         if (st.HasTrack()) {
-            line.top = y;
-            y += DrawMeasuredLine(dc, L"（无歌词）菜单 View → Lyricus → 重新加载歌词 / 选择歌词文件",
-                                  line, fBody, RGB(205, 165, 165), scale(4));
-            if (!source.empty()) {
-                line.top = y;
-                y += DrawMeasuredLine(dc, source.c_str(), line, fBody, RGB(150, 150, 158), 0);
+            // 提示同样要垂直居中，否则会孤零零贴在顶部
+            const wchar_t* msg = L"（无歌词）菜单 View → Lyricus → 重新加载歌词 / 选择歌词文件";
+            const int w = area.right - area.left;
+            const int gap = scale(4);
+            const int h1 = MeasureLine(dc, msg, fBody, w);
+            const int h2 = source.empty() ? 0 : MeasureLine(dc, source.c_str(), fBody, w);
+            const int block = h1 + (h2 > 0 ? h2 + gap : 0);
+
+            int dy = y + ((bottomLimit - y) - block) / 2;
+            if (dy < y) dy = y;
+
+            line.top = dy;
+            dy += DrawMeasuredLine(dc, msg, line, fBody, RGB(205, 165, 165), gap);
+            if (h2 > 0) {
+                line.top = dy;
+                DrawMeasuredLine(dc, source.c_str(), line, fBody, RGB(150, 150, 158), 0);
             }
         }
     } else {
@@ -914,6 +924,11 @@ void ControlWindow::RenderLayered() {
             p[2] = static_cast<BYTE>(p[2] * p[3] / 255);
         }
     }
+
+    // 2.6) SVG 图标。**必须在这之后混** —— 上面的 alpha 修正会把所有非背景
+    //      像素的 alpha 拉到 255，先混进来的图标抗锯齿边缘会被毁成硬边。
+    DrawIconOverlay(static_cast<unsigned char*>(bits), w, h, w * 4,
+                    static_cast<int>(GetDpiForWindowSafe(m_hwnd)));
 
     // 3) 提交
     RECT wr{};
@@ -1048,14 +1063,21 @@ void ControlWindow::DrawControls(HDC dc, int dpi) {
     };
 
     buttonBg(CtrlId::Prev, m_rcPrev);
-    DrawTransportGlyph(dc, m_rcPrev, 0, RGB(212, 212, 220));
-
     buttonBg(CtrlId::PlayPause, m_rcPlayPause);
-    DrawTransportGlyph(dc, m_rcPlayPause, (st.IsPlaying() && !st.IsPaused()) ? 2 : 1,
-                       RGB(255, 255, 255));
-
     buttonBg(CtrlId::Next, m_rcNext);
-    DrawTransportGlyph(dc, m_rcNext, 3, RGB(212, 212, 220));
+    buttonBg(CtrlId::VolumeIcon, m_rcVolumeIcon);   // 之前漏了，音量按钮一直没有悬停底板
+
+    // 分层模式下图标走 DrawIconOverlay（在 alpha 修正之后混合），
+    // 这里只在非分层路径上画几何图形兜底。
+    const bool layered =
+        (static_cast<BackdropMode>(cfg_backdrop_mode.get()) == BackdropMode::Translucent);
+
+    if (!layered) {
+        DrawTransportGlyph(dc, m_rcPrev, 0, RGB(212, 212, 220));
+        DrawTransportGlyph(dc, m_rcPlayPause, (st.IsPlaying() && !st.IsPaused()) ? 2 : 1,
+                           RGB(255, 255, 255));
+        DrawTransportGlyph(dc, m_rcNext, 3, RGB(212, 212, 220));
+    }
 
     // 进度条
     if (m_rcProgress.right > m_rcProgress.left) {
@@ -1082,8 +1104,8 @@ void ControlWindow::DrawControls(HDC dc, int dpi) {
         SelectObject(dc, oldFont);
     }
 
-    // 音量图标（几何图形，不依赖符号字体）
-    {
+    // 音量图标（几何图形，不依赖符号字体）；分层模式下同样由图标叠层负责
+    if (!layered) {
         const RECT& r = m_rcVolumeIcon;
         const int cy = (r.top + r.bottom) / 2;
         RECT body{ r.left + S(3), cy - S(3), r.left + S(3) + S(5), cy + S(3) };
@@ -1111,6 +1133,50 @@ void ControlWindow::DrawControls(HDC dc, int dpi) {
     }
 
     DeleteObject(fSmall);
+}
+
+std::wstring ControlWindow::IconPath(const wchar_t* name) const {
+    wchar_t buf[MAX_PATH]{};
+    const DWORD n = GetModuleFileNameW(core_api::get_my_instance(), buf, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return std::wstring();
+
+    std::wstring p(buf, n);
+    const size_t slash = p.find_last_of(L"\\/");
+    if (slash != std::wstring::npos) p.resize(slash + 1);
+    p += L"resources\\";
+    p += name;
+    p += L".svg";
+    return p;
+}
+
+void ControlWindow::DrawIconOverlay(unsigned char* dst, int w, int h, int stride, int dpi) {
+    if (dst == nullptr || w <= 0 || h <= 0) return;
+
+    const int iconH = MulDiv(14, dpi, 96);   // 图标高度，按 DPI 缩放
+    const auto& st = PlaybackState::Get();
+
+    // 悬停/按下的反馈 = 底板（DrawControls 里画）+ 图标变亮，两者一起给。
+    // active 优先于 hot —— 按住时鼠标必然还在上面，不能只显示悬停态。
+    auto tintFor = [this](CtrlId id, unsigned normal) -> unsigned {
+        if (m_active == id) return 0x9CCBFFu;   // 按下：淡蓝
+        if (m_hot == id)    return 0xFFFFFFu;   // 悬停：纯白
+        return normal;
+    };
+
+    auto drawIn = [&](const wchar_t* name, const RECT& r, unsigned rgb) {
+        const RasterIcon* icon = GetSvgIcon(IconPath(name), iconH);
+        if (icon == nullptr) return;   // 文件缺失就静默跳过，不阻塞其它绘制
+        const int x = r.left + ((r.right - r.left) - icon->width) / 2;
+        const int y = r.top + ((r.bottom - r.top) - icon->height) / 2;
+        BlendIcon(dst, w, h, stride, x, y, *icon, rgb);
+    };
+
+    drawIn(L"prev",   m_rcPrev,       tintFor(CtrlId::Prev, 0xC8C8D2u));
+    // 播放/暂停是主操作，常态就给亮色；悬停再提到纯白
+    drawIn((st.IsPlaying() && !st.IsPaused()) ? L"pause" : L"play",
+           m_rcPlayPause, tintFor(CtrlId::PlayPause, 0xF2F2F8u));
+    drawIn(L"next",   m_rcNext,       tintFor(CtrlId::Next, 0xC8C8D2u));
+    drawIn(L"volume", m_rcVolumeIcon, tintFor(CtrlId::VolumeIcon, 0xC8C8D2u));
 }
 
 } // namespace lyricus

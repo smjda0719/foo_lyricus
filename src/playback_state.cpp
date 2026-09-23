@@ -34,6 +34,22 @@ namespace {
 constexpr size_t kManualMapMaxEntries = 128;
 using MapEntry = std::pair<std::string, std::string>;
 
+// 曲目显示名用的 titleformat 脚本。
+// 方括号部分在标签缺失时整段消失，所以只有标题的曲子不会显示成 " - 标题"。
+titleformat_object::ptr GetDisplayNameScript() {
+    static titleformat_object::ptr script;
+    static bool tried = false;
+    if (!tried) {
+        tried = true;
+        try {
+            titleformat_compiler::get()->compile_safe(script, "[%artist% - ]%title%");
+        } catch (...) {
+            script.release();   // 编译失败就退回文件名
+        }
+    }
+    return script;
+}
+
 std::vector<MapEntry> ParseManualMap() {
     std::vector<MapEntry> out;
     const pfc::string8 raw = cfg_manual_lyric_map.get();
@@ -139,6 +155,25 @@ void PlaybackState::OnNewTrack(metadb_handle_ptr track) {
         }
     }
     DebugLog("换曲: %s", WideToUtf8(m_trackPath).c_str());
+
+    // 显示名：优先用标签。文件名里常带音轨号和版本后缀（"06 xxx [Remastered]"），
+    // 标签里才是给人看的曲名。
+    m_trackHandle = track;
+    m_displayName.clear();
+    {
+        const titleformat_object::ptr script = GetDisplayNameScript();
+        if (!script.is_empty()) {
+            try {
+                pfc::string8 rendered;
+                track->format_title(nullptr, rendered, script, nullptr);
+                m_displayName = Utf8ToWide(rendered.get_ptr());
+            } catch (...) {
+                m_displayName.clear();
+            }
+        }
+        if (m_displayName.empty()) m_displayName = FileStemOf(m_trackPath);
+        DebugLog("显示名: %s", WideToUtf8(m_displayName).c_str());
+    }
 
     // 手动指定的歌词优先 —— 按曲目查表。
     // 先处理「选文件时没在播放」留下的待定记录，让它归属到当前曲目。

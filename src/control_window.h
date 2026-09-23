@@ -67,6 +67,11 @@ private:
     CtrlId HitTestControls(POINT clientPt, double* ratioOut) const;
     void   ActivateControl(CtrlId id, double ratio);
 
+    // SVG 图标叠层。**必须在分层渲染的 alpha 修正之后调用** —— 那一步会把
+    // 非背景像素的 alpha 拉到 255，先混进去的图标边缘会被毁掉。
+    void   DrawIconOverlay(unsigned char* dst, int w, int h, int stride, int dpi);
+    std::wstring IconPath(const wchar_t* name) const;
+
     RECT   m_rcPrev{}, m_rcPlayPause{}, m_rcNext{}, m_rcProgress{}, m_rcTime{},
            m_rcVolumeIcon{}, m_rcVolumeBar{};
     CtrlId m_hot    = CtrlId::None;   // 鼠标悬停

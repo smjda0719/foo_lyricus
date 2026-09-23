@@ -120,6 +120,15 @@ if ($Install) {
     Copy-Item $dll (Join-Path $destDir 'foo_lyricus.dll') -Force
     Write-Ok "$destDir\foo_lyricus.dll"
 
+    # SVG 图标：运行期从 DLL 同级的 resources\ 加载，必须一起部署
+    $resSrc = Join-Path $root 'resources'
+    if (Test-Path $resSrc) {
+        $resDst = Join-Path $destDir 'resources'
+        New-Item -ItemType Directory -Force -Path $resDst | Out-Null
+        Copy-Item (Join-Path $resSrc '*.svg') $resDst -Force
+        Write-Ok "$resDst  ($((Get-ChildItem $resDst -Filter *.svg).Count) 个 SVG)"
+    }
+
     if (Get-Process foobar2000 -ErrorAction SilentlyContinue) {
         Write-Host "  注意：foobar2000 正在运行，需要重启才会加载新版本。" -ForegroundColor Yellow
     }

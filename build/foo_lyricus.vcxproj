@@ -68,8 +68,8 @@
       <SDLCheck>true</SDLCheck>
       <!-- /utf-8: 源码是 UTF-8；/d2notypeopt: 官方 sample 也用它，配合 D2D -->
       <AdditionalOptions>/utf-8 /d2notypeopt %(AdditionalOptions)</AdditionalOptions>
-      <AdditionalIncludeDirectories>$(SdkDir);$(LyricusRoot)\3rdparty;$(LyricusRoot)\3rdparty\WTL\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>WIN32;_WINDOWS;_USRDLL;_WINDLL;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(SdkDir);$(LyricusRoot)\3rdparty;$(LyricusRoot)\3rdparty\WTL\Include;$(LyricusRoot)\3rdparty\lunasvg\include;$(LyricusRoot)\3rdparty\lunasvg\plutovg\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>WIN32;_WINDOWS;_USRDLL;_WINDLL;NDEBUG;_CRT_SECURE_NO_WARNINGS;LUNASVG_BUILD_STATIC;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
     </ClCompile>
     <Link>
@@ -100,9 +100,18 @@
     <ClCompile Include="..\src\control_window.cpp" />
     <ClCompile Include="..\src\menu.cpp" />
     <ClCompile Include="..\src\initquit.cpp" />
+    <ClCompile Include="..\src\svg_icon.cpp" />
+    <!-- lunasvg：SVG 解析 + plutovg 光栅化。用通配符，避免逐个文件列清单。 -->
+    <ClCompile Include="..\3rdparty\lunasvg\source\*.cpp" />
+    <ClCompile Include="..\3rdparty\lunasvg\plutovg\source\*.c" />
   </ItemGroup>
 
   <ItemGroup>
+    <ClInclude Include="..\src\svg_icon.h" />
+    <ClInclude Include="..\3rdparty\lunasvg\include\*.h" />
+    <ClInclude Include="..\3rdparty\lunasvg\source\*.h" />
+    <ClInclude Include="..\3rdparty\lunasvg\plutovg\include\*.h" />
+    <ClInclude Include="..\3rdparty\lunasvg\plutovg\source\*.h" />
     <ClInclude Include="..\src\stdafx.h" />
     <ClInclude Include="..\src\debug_log.h" />
     <ClInclude Include="..\src\config.h" />
