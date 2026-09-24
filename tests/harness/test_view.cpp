@@ -421,48 +421,85 @@ void TestTranslationPrimary() {
           "两种模式的**行数**一样（只是谁当正文换了）");
 }
 
-// 特别长的歌词行 —— 用户 2026-09-24 提「我们还没遇到那种特别长的歌词」。
+// 超长歌词行必须**折行**，不能截断。
 //
-// 这条不是"功能测试"，是**记录现在的行为**：DrawLine 用的是 DT_SINGLELINE，
-// 所以超宽的行会被**截断**（既不会换行，也不会省略号）。
-// 先把它量出来写进断言，将来真遇到超长行时才有据可依。
-void TestVeryLongLine() {
-    std::printf("\n== 特别长的歌词行（记录现状）==\n");
+// 出处：用户 2026-09-24「这张截图也反映了歌词截断的问题」——
+// captures/lyricus-20260925-004755.png 里那行
+// 「池光化新茶 掺着新雪 煨了炉火曾入」贴到右边就没了。
+// 根因是 DrawLine 用了 DT_SINGLELINE：既不换行，也不给省略号。
+//
+// 【为什么要做"对照渲染"】只量宽度分不出折行和截断：两种做法下
+// 那一行都会顶满可用宽度。真正的区别是**占几条横带** ——
+// 同一段文字折行后必然多占横带，截断则和短行一模一样。
+// 所以这里把"长行 / 短行"两版各渲染一次，只比较横带数。
+namespace {
 
-    const std::string raw =
-        "[00:00.00]short\n"
-        "[00:05.00]this is an extremely long lyric line that goes far beyond the "
-        "width of any panel we would ever render it in, just to see what happens\n"
-        "[00:10.00]short again\n";
+struct Rendered {
+    int bands  = 0;   // 横带条数（阈值 140）
+    int widest = 0;   // 最宽一条横带的像素宽
+    long ink   = 0;   // 过阈值像素总数 —— 内容有没有被丢掉，看这个
+};
 
+Rendered RenderWithMiddleLine(const char* middle) {
+    Rendered r;
+
+    std::string raw = std::string("[00:00.00]short\n[00:05.00]") + middle +
+                      "\n[00:10.00]short again\n";
     std::vector<unsigned char> b(raw.begin(), raw.end());
     auto doc = lyricus::LyricDocument::Parse(b);
 
     lyricus::PlaybackState::Get().SetFake(true, L"Test - Song", doc, 1);
 
     Canvas cv;
-    if (!cv.Create()) return;
+    if (!cv.Create()) return r;
     lyricus::LyricsViewTheme theme;
     theme.dpi = 96;
     RECT rc{ 0, 0, kWidth, kHeight };
     lyricus::DrawLyricsView(cv.dc, rc, theme, lyricus::LyricsViewLayout{100, 0, 50});
 
-    // 找出所有横带，看那行长歌词是不是被截断了
     const auto bands = cv.Bands(140);
-    int widest = 0;
+    r.bands = static_cast<int>(bands.size());
     for (const auto& bd : bands) {
         int l = kWidth, rr = -1;
         for (int y = bd.first; y <= bd.second; ++y)
             for (int x = 0; x < kWidth; ++x)
-                if (cv.Bright(x, y, 140)) { if (x < l) l = x; if (x > rr) rr = x; }
-        if (rr >= l && rr - l + 1 > widest) widest = rr - l + 1;
+                if (cv.Bright(x, y, 140)) {
+                    ++r.ink;
+                    if (x < l) l = x;
+                    if (x > rr) rr = x;
+                }
+        if (rr >= l && rr - l + 1 > r.widest) r.widest = rr - l + 1;
     }
+    return r;
+}
+
+} // namespace
+
+void TestVeryLongLine() {
+    std::printf("\n== 特别长的歌词行 ==\n");
+
+    const char* kLong =
+        "this is an extremely long lyric line that goes far beyond the width of "
+        "any panel we would ever render it in, just to see what happens";
+
+    const Rendered lo = RenderWithMiddleLine(kLong);
+    const Rendered sh = RenderWithMiddleLine("short middle");
 
     // 绘制区 600 宽、左右各留 padX=20 -> 可用宽度约 560
-    std::printf("     最宽的一条带 %d px（可用宽度约 %d px）\n", widest, kWidth - 40);
-    Check(widest <= kWidth, "画出来的内容没有超出画布");
-    Check(widest > kWidth - 60,
-          "★ 现状：超长行被**截断**在可用宽度上（DT_SINGLELINE，不换行也不省略号）");
+    std::printf("     长行 -> %d 条横带，最宽 %d px，墨迹 %ld 像素\n",
+                lo.bands, lo.widest, lo.ink);
+    std::printf("     短行 -> %d 条横带，最宽 %d px，墨迹 %ld 像素\n",
+                sh.bands, sh.widest, sh.ink);
+    std::printf("     （可用宽度约 %d px）\n", kWidth - 40);
+
+    Check(lo.widest <= kWidth, "画出来的内容没有超出画布");
+    Check(lo.widest >= kWidth - 60, "折出来的行仍然用满了可用宽度");
+
+    // ★ 这条是整个用例的判据：折行 -> 横带变多；截断 -> 和短行一样多。
+    Check(lo.bands > sh.bands,
+          "★ 长行比短行**多占横带** —— 说明是折行，不是 DT_SINGLELINE 截断");
+    Check(lo.ink > sh.ink * 3,
+          "★ 长行的墨迹远多于短行 —— 文字没被丢掉，是换行画出来的");
 }
 
 } // namespace

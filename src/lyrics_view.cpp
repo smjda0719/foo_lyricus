@@ -42,34 +42,54 @@ HFONT MakeFont(int dpi, int pt, bool bold) {
     return f;
 }
 
-// 单行文本的高度缓存。
+// 文本行的绘制/测量标志。**这两个地方必须一模一样**。
+//
+// DT_WORDBREAK 而不是 DT_SINGLELINE —— 用户 2026-09-24 报：
+// 「这张截图也反映了歌词截断的问题」。
+//
+// 实测（captures/lyricus-20260925-004755.png）：面板上那行
+//     「池光化新茶 掺着新雪 煨了炉火曾入」
+// 右边**顶到边就没了** —— DT_SINGLELINE 既不换行也不给省略号，
+// 超出的部分直接截断，一个字都看不到。对歌词来说这是丢内容，
+// 而面板本来就有富余的垂直空间（可见 2~3 行、字号 125% 时还空着）。
+//
+// 换成 DT_WORDBREAK 之后：短行还是一行（高度不变，排版完全不动），
+// 超长行折成两行以上 —— 下面的走位逻辑本来就是按**量出来的高度**排的，
+// 所以不用改布局代码，它自然就适应了。
+//
+// ⚠️ DT_NOPREFIX 不能省：歌词里出现 `&` 时，没有它会被当成助记符前缀吃掉。
+//    这两处（MeasureLineRaw 和 DrawLine）用同一个常量，避免哪天只改一处 ——
+//    那会导致"量出来的高度"和"画出来的行数"不一致，排版直接错位。
+constexpr UINT kLineDrawFlags = DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX;
+
+// 文本行的高度缓存。
 //
 // 【为什么要缓存】DrawTextW(DT_CALCRECT) 不是免费操作 —— 要走一遍文本整形。
 // 而一帧里同一行会被量 2~3 次（先 MeasureLine 探路，再 DrawLine 里又量一次），
-// 可见的 20 行就是四五十次；面板**每 250ms 重绘一次**（进度条在动），
-// 于是同一批字每秒被量近 200 次，而它们中间绝大多数根本没变。
+// 可见的 20 行就是四五十次；面板每 250ms 重绘一次，同一批字每秒被量近 200 次，
+// 而它们中间绝大多数根本没变。
 //
-// 键是 (字体, 文本)：DT_SINGLELINE 不换行，所以高度与 maxWidth 无关，
-// 不用把它放进键里。键取得精确，命中就与现场重算完全等价，不会改变排版。
+// ⚠️ 自从改成 DT_WORDBREAK，**高度就与 maxWidth 有关了** —— 所以键必须带上它。
+//    （原来是 DT_SINGLELINE，高度只由字体决定，那时候不带宽度是对的。）
+//    键里漏了宽度的话，面板一改宽度就会命中旧高度，折行数对不上、排版错位。
 //
 // 容量超了直接清空重来 —— 一首歌的可见行数就那么几十条，
 // 真清空也是极低频事件，不值得为它维护 LRU。
-std::map<std::pair<HFONT, std::wstring>, int>& HeightCache() {
-    static std::map<std::pair<HFONT, std::wstring>, int> cache;
+std::map<std::tuple<HFONT, std::wstring, int>, int>& HeightCache() {
+    static std::map<std::tuple<HFONT, std::wstring, int>, int> cache;
     return cache;
 }
 
 int MeasureLineRaw(HDC dc, const wchar_t* text, HFONT font, int maxWidth) {
     RECT r{ 0, 0, maxWidth, 0 };
-    DrawTextW(dc, text, -1, &r,
-              DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX | DT_CALCRECT);
+    DrawTextW(dc, text, -1, &r, kLineDrawFlags | DT_CALCRECT);
     return r.bottom - r.top;
 }
 
 int CachedLineHeight(HDC dc, const wchar_t* text, HFONT font, int maxWidth) {
     auto& cache = HeightCache();
 
-    const auto key = std::make_pair(font, std::wstring(text));
+    const auto key = std::make_tuple(font, std::wstring(text), maxWidth);
     const auto it = cache.find(key);
     if (it != cache.end()) return it->second;
 
@@ -101,7 +121,7 @@ int DrawLine(HDC dc, const wchar_t* text, int x, int y, int maxWidth,
     const int height = CachedLineHeight(dc, text, font, maxWidth);
 
     RECT draw{ x, y, x + maxWidth, y + height };
-    DrawTextW(dc, text, -1, &draw, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
+    DrawTextW(dc, text, -1, &draw, kLineDrawFlags);
 
     SelectObject(dc, oldFont);
     return height + gapAfter;
