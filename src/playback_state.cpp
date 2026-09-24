@@ -524,6 +524,13 @@ void PlaybackState::StartOnlineLookup() {
                                     : ("  线索=" + WideToUtf8(req.searchHint)).c_str());
 
     const std::string url = m_trackUrl;
+
+    // 记下**实际发出去查询的歌手**，回来核对时要用同一个。
+    //
+    // 直接拿 m_tagArtist 去核对是不行的：无标签曲目那里是占位符「?」，
+    // 而真正的歌手来自用户填的文件夹线索 —— 两个值不一样，
+    // 核对那一步就会"手里没有歌手可用"而把正确结果丢掉（见 ApplyOnlineResult）。
+    m_onlineArtistUsed = req.artist;
     FetchLyricOnlineAsync(req, std::wstring(),
         [this, gen, url](OnlineLyricRequest, OnlineLyricResult res) {
             // 先查存活令牌再碰 this —— 理由见 g_onlineAlive 的声明处。
@@ -548,14 +555,28 @@ void PlaybackState::ApplyOnlineResult(unsigned gen, const std::string& url,
         return;
     }
 
-    if (!OnlineResultTrustworthy(res, m_tagTitle, m_tagArtist, m_lengthSec)) {
+    // 核对时用的歌手必须是**实际发出去查询的那个**，不能是标签里的。
+    //
+    // 【为什么】无标签曲目的 %artist% 是占位符「?」，用户给文件夹填了线索之后
+    // 真正的歌手在 m_onlineArtistUsed 里。这里要是还用 m_tagArtist，
+    // 就会出现「源头靠线索认出对了、调用方却因为手里没有歌手而丢掉」——
+    //
+    // 实测（2026-09-24）：
+    //     「爸爸……（Interlude）」 本地 49.0s / 在线 64.0s    差 15 秒
+    //     「春风来（Love Elegia Ver.）」 本地 240.0s / 在线 247.1s  差 7.1 秒
+    // 两首曲名都对、演唱者也对（阿良良木健），就因为时长超出 ±5 秒、
+    // 而"退一步看演唱者"这一步拿到的是空的，双双被丢。
+    const std::wstring artistForCheck =
+        m_onlineArtistUsed.empty() ? m_tagArtist : m_onlineArtistUsed;
+
+    if (!OnlineResultTrustworthy(res, m_tagTitle, artistForCheck, m_lengthSec)) {
         DebugLog("在线歌词：结果与当前曲目对不上，丢弃。"
                  "在线=[%s - %s, %.1fs%s]  本地=[%s - %s, %.1fs]",
                  WideToUtf8(res.matchedArtist).c_str(),
                  WideToUtf8(res.matchedTrack).c_str(),
                  res.matchedDuration,
                  res.fromSearch ? ", 模糊搜索" : ", 精确查询",
-                 WideToUtf8(m_tagArtist).c_str(),
+                 WideToUtf8(artistForCheck).c_str(),
                  WideToUtf8(m_tagTitle).c_str(),
                  m_lengthSec);
         return;

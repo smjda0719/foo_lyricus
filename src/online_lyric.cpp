@@ -439,7 +439,11 @@ struct MissMarker {
 //         且时长与演唱者**二者其一**对上即可 —— remaster 与原版差 34 秒也要能配上
 // 版本 4：识别网易云的**业务码**（HTTP 200 + {"code":405} 的限流）。
 //         v3 之前写下的"没有"里混着限流造成的假结论，必须全部作废重查。
-constexpr int kMissLogicVersion = 4;
+// 版本 5：搜索词剥音轨号 + 线索兜底。
+// 版本 6：核对时用**实际查询用的歌手**（含用户填的线索），而不是标签里的占位符。
+//         v5 期间「爸爸……（Interlude）」「春风来（Love Elegia Ver.）」这类
+//         被误判成"没有"（差 15 / 7.1 秒，而演唱者那一步手里是空的），要重查。
+constexpr int kMissLogicVersion = 6;
 
 bool ReadMissMarker(const std::wstring& path, MissMarker& out) {
     std::string text;
