@@ -414,9 +414,19 @@ bool OnlineResultTrustworthy(const OnlineLyricResult& res,
     //    表现是「明明候选里有人对得上，结果还是被丢掉了」——极难排查。
     if (localTitle.empty() || res.matchedTrack.empty()) return false;
     {
-        const std::wstring wantNorm = NormalizeLyricStem(res.matchedTrack);
+        const std::wstring wantNorm =
+            NormalizeLyricStem(StripEditionMarkerForMatch(res.matchedTrack));
+
+        // ⚠️ 本地这边也要剥版本标记 —— 和源头用**同一套**。
+        //
+        // 实测（2026-09-24）：「最后的歌（LA LA LA）[Remastered]」和
+        // 「心加心 [Remastered]」两条，源头都靠剥版本标记认对了，
+        // 却在这里被判"对不上"丢掉 —— 因为这里只做 MakeTitleCandidates、
+        // 没有剥 [Remastered]，归一化后是「…remastered」，
+        // 和在线那边的干净曲名永远不相等。
         bool titleOk = false;
-        for (const std::wstring& cand : MakeTitleCandidates(localTitle)) {
+        for (const std::wstring& cand :
+                 MakeTitleCandidates(StripEditionMarkerForMatch(localTitle))) {
             if (NormalizeLyricStem(cand) == wantNorm) { titleOk = true; break; }
         }
         if (!titleOk) return false;

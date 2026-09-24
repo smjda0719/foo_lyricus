@@ -607,6 +607,26 @@ void TestEditionMarker() {
               "★ 真实回归：本地 [Remastered] 能配上网易云原版");
         Check(picked.id == 333.0, "★ 选中的是那条原版");
     }
+
+    // ---- ★ 搜索词也必须剥版本标记 ----
+    //
+    // 实测（2026-09-24）带着 [Remastered] 发出去召回的全是垃圾：
+    //     「阿良良木健 远恋 [Remastered]」            -> 过曲名闸 0 条
+    //     「皓月、阿良良木健 依存症（…）[Remastered]」 -> 过曲名闸 0 条
+    // 而那两首在网易云上都有。剥掉之后搜索词才干净。
+    {
+        lyricus::OnlineLyricRequest req;
+        req.artist = L"阿良良木健";
+        req.title  = L"远恋 [Remastered]";
+
+        const std::wstring path = lyricus::BuildNetEaseSearchPath(req);
+        // 「远恋」的 UTF-8 百分号编码
+        Check(path.find(L"%E8%BF%9C%E6%81%8B") != std::wstring::npos,
+              "★ 搜索词里有「远恋」");
+        Check(path.find(L"Remastered") == std::wstring::npos &&
+              path.find(L"remastered") == std::wstring::npos,
+              "★ 搜索词里**没有** [Remastered]");
+    }
 }
 
 // 无标签文件：曲名带音轨号、歌手是占位符。

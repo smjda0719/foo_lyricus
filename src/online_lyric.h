@@ -175,4 +175,21 @@ std::wstring DefaultOnlineCacheDir();
 // 返回删掉了几个标记。
 size_t InvalidateMissMarkers();
 
+// 剥掉曲名末尾「同内容」的版本标记：`白夜梦 [Remastered]` -> `白夜梦`。
+//
+// 【为什么必须导出给调用方】在线查询有**两道**曲名闸：
+//   1. 源头挑候选（online_lyric.cpp 的 PickNetEaseCandidate）
+//   2. 结果回到播放器后的核对（playback_state.cpp 的 OnlineResultTrustworthy）
+// 两道都必须用**同一套**归一化。只用在一道上的话会出现
+// 「源头靠剥版本标记认对了、调用方却因为没剥而丢掉」——
+//
+// 实测（2026-09-24）：
+//     「最后的歌（LA LA LA）[Remastered]」 与在线「最后的歌（LA LA LA）」
+//     「心加心 [Remastered]」              与在线「心加心」
+// 两条都是源头选中了、调用方判"对不上"丢弃。
+//
+// ⚠️ 只剥不影响内容的标记（Remastered / Hi-Res / Interlude）——
+//     Live / Instrumental / Cover / Ver. **不剥**，那些版本内容真的不一样。
+std::wstring StripEditionMarkerForMatch(const std::wstring& title);
+
 } // namespace lyricus

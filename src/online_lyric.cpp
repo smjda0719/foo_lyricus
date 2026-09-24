@@ -443,7 +443,11 @@ struct MissMarker {
 // 版本 6：核对时用**实际查询用的歌手**（含用户填的线索），而不是标签里的占位符。
 //         v5 期间「爸爸……（Interlude）」「春风来（Love Elegia Ver.）」这类
 //         被误判成"没有"（差 15 / 7.1 秒，而演唱者那一步手里是空的），要重查。
-constexpr int kMissLogicVersion = 6;
+// 版本 7：版本标记（[Remastered] 之类）在**搜索词**和**调用方核对**两处也要剥。
+//         v6 期间「最后的歌（LA LA LA）[Remastered]」「心加心 [Remastered]」
+//         被源头选中却在核对时丢掉；「远恋 [Remastered]」
+//         「依存症（Love Theory Ver.）[Remastered]」连候选都没搜到。
+constexpr int kMissLogicVersion = 7;
 
 bool ReadMissMarker(const std::wstring& path, MissMarker& out) {
     std::string text;
@@ -1963,6 +1967,10 @@ HttpReply HttpGet(const std::wstring& host, const std::wstring& pathAndQuery,
 // 百分号编码复用上面那个 PercentEncode（LRCLIB 那条路也在用）——
 // 别再写第二个：同一件事有两份实现，将来改一处漏一处就是"中文曲名
 // 在 LRCLIB 上好好的、在网易云上 400"这种最难查的 bug。
+// 前置声明：定义在文件更靠后的「曲名末尾的版本标记」那一节
+//（那节是后加的，位置在 PickNetEaseCandidate 之前，而本函数在它之前）。
+std::wstring StripEditionMarker(const std::wstring& title);
+
 // titleOverride 为空 = 用剥掉音轨号之后的曲名（默认，也是绝大多数情况该用的）。
 // hintOverride  为空 = 用 req.searchHint。传非空 = 用指定的线索。
 // 两者都是为了支持多趟搜索 —— 见 TryNetEase 里那段说明。
@@ -1977,8 +1985,12 @@ std::wstring BuildNetEaseSearchPath(const OnlineLyricRequest& req,
     // 原来只在候选核验里剥、搜索词没剥，于是第一关就搜错了东西 ——
     // 后面两道闸门再准也救不回来（日志里表现成「过曲名闸 0 条」，
     // 看起来像"网易云没有这首歌"，其实是"我们搜错词了"）。
+    // 两条路都要剥干净：TryNetEase 传进来的 titleOverride 已经在那边剥过，
+    // 而**默认这条路**（不传 override）也必须一样 —— 否则同一个函数
+    // 因为调用方式不同而给出不同的搜索词，测试一断言就露馅了
+    // （这条正是被单测 `搜索词里没有 [Remastered]` 抓出来的）。
     const std::wstring t = titleOverride.empty()
-                               ? StripLeadingTrackNumber(TrimWs(req.title))
+                               ? StripLeadingTrackNumber(StripEditionMarker(TrimWs(req.title)))
                                : titleOverride;
 
     std::wstring q = TrimWs(req.artist);
@@ -2256,18 +2268,31 @@ bool TryNetEase(const OnlineLyricRequest& req, ULONGLONG retryDeadline,
     // 不能"挤掉原有的机会"。实测两种结果都出现过 ——
     //     `奇爱人生 爸爸`      -> 命中「爸爸……（Interlude）」     ✓
     //     `奇爱人生·终焉版 哀歌` -> 寻爱一生 / 众人划桨开大船 …    ✗
-    const std::wstring strippedTitle = StripLeadingTrackNumber(title);
+    // ⚠️ 搜索词里的曲名要剥**两样**：版本标记 + 音轨号。
+    //
+    // 只剥音轨号是不够的 —— 实测（2026-09-24）带着 [Remastered] 发出去，
+    // 召回的是完全不相干的东西：
+    //     查「阿良良木健 远恋 [Remastered]」           -> 过曲名闸 0 条
+    //     查「皓月、阿良良木健 依存症（…）[Remastered]」-> 过曲名闸 0 条
+    // 而那两首在网易云上都有（「远恋」237s、「依存症 (Love Theory Ver.)」290.1s）。
+    // 剥掉之后搜索词变干净，闸门才有东西可对。
+    //
+    // 顺序：先剥版本标记（它在末尾），再剥音轨号（它在开头）。
+    // 反过来的话「07 哀歌 [Remastered]」会先被音轨号那步当"开头是数字+空格"处理 ——
+    // 虽然结果也对，但语义上先剥末尾更清楚。
+    const std::wstring noEdition = StripEditionMarker(title);
+    const std::wstring strippedTitle = StripLeadingTrackNumber(noEdition);
     const std::wstring hint          = TrimWs(req.searchHint);
 
     // 每一趟就是一对 (曲名, 线索)。
     struct SearchPass { std::wstring title; std::wstring hint; };
     std::vector<SearchPass> passes;
-    passes.push_back({ strippedTitle, std::wstring() });                  // 1) 剥过音轨号
-    if (title != strippedTitle) {
-        passes.push_back({ title, std::wstring() });                      // 2) 原曲名
+    passes.push_back({ strippedTitle, std::wstring() });   // 1) 剥版本标记 + 剥音轨号
+    if (noEdition != strippedTitle) {
+        passes.push_back({ noEdition, std::wstring() });   // 2) 只剥版本标记
     }
     if (!hint.empty()) {
-        passes.push_back({ title, hint });                                // 3) 线索兜底
+        passes.push_back({ noEdition, hint });             // 3) 线索兜底
     }
 
     std::vector<NetEaseSong> songs;
@@ -2602,6 +2627,10 @@ std::wstring DefaultOnlineCacheDir() {
         dir.clear();
     }
     return dir + L"cache";
+}
+
+std::wstring StripEditionMarkerForMatch(const std::wstring& title) {
+    return StripEditionMarker(title);
 }
 
 size_t InvalidateMissMarkers() {
