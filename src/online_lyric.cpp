@@ -1240,12 +1240,28 @@ bool IsNetEaseCreditLine(const std::string& raw) {
     return false;
 }
 
+// 剥掉名单后补在开头的那条分隔线。
+//
+// 用户 2026-09-24 定的形态：原来提的是"加一行空歌词"，
+// 后来改成"换成分隔线" —— 因为空行要多改一处解析器，而那是全工程共用的，
+// 随便动有解析风险。分隔线是一行普通的 LRC，解析器原样接受。
+//
+// 【想换样式就改这里一行】候选：`———`、`♪`、`· · ·`、`┈┈┈`。
+// ⚠️ 用 WideToUtf8 而不是直接写窄字符串字面量：后者对不对取决于工程的
+//    源码/执行字符集设置（/utf-8），换个构建配置就可能变成乱码。
+//    走一次转换就与那些设置无关了。
+const std::string& NetEaseIntroSeparator() {
+    static const std::string s = WideToUtf8(L"———");
+    return s;
+}
+
 std::string StripNetEaseCredits(const std::string& lrc) {
     std::string out;
-    out.reserve(lrc.size());
+    out.reserve(lrc.size() + 64);
 
     bool stripping = true;
     int  removed   = 0;
+    std::string firstStamp;   // 第一行被剥掉的那个时间戳，用来放分隔线
     size_t pos = 0;
 
     while (pos <= lrc.size()) {
@@ -1256,6 +1272,17 @@ std::string StripNetEaseCredits(const std::string& lrc) {
         bool drop = false;
         if (stripping) {
             if (IsNetEaseCreditLine(line)) {
+                if (removed == 0) {
+                    // 记住第一个被剥掉的时间戳（形如 "[00:00.000]"）。
+                    // 后面要在**同一个时刻**放一行分隔线，把时间轴补齐 ——
+                    // 见下面那段说明。
+                    const size_t open  = line.find('[');
+                    const size_t close = (open == std::string::npos)
+                                             ? std::string::npos : line.find(']', open);
+                    if (close != std::string::npos) {
+                        firstStamp = line.substr(open, close - open + 1);
+                    }
+                }
                 drop = true;
                 ++removed;
             } else {
@@ -1271,14 +1298,44 @@ std::string StripNetEaseCredits(const std::string& lrc) {
     if (removed > 0) {
         OnlineLog("在线歌词：网易云 —— 剥掉了开头 %d 行制作人员名单", removed);
     }
-    // 全被剥光说明这份"歌词"整篇都是名单（纯音乐条目常见）—— 当没有处理。
+
+    // 判空**必须在补分隔线之前**。
+    //
+    // 顺序反了会出一个很隐蔽的 bug：整篇都是名单的条目（纯音乐，网易云上很常见）
+    // 剥完是空的，本该返回空 -> 调用方显示「（无歌词）」；
+    // 但先补了分隔线的话 out 就非空了，于是被当成"有歌词"，
+    // 整首歌显示一条横线 —— 比一片空白更让人困惑。
     bool hasContent = false;
     for (size_t i = 0; i < out.size(); ++i) {
         if (out[i] != '[' && out[i] != ']' && out[i] != ':' && out[i] != '.' &&
             out[i] != '\n' && out[i] != '\r' && out[i] != ' ' && out[i] != '\t' &&
             !(out[i] >= '0' && out[i] <= '9')) { hasContent = true; break; }
     }
-    return hasContent ? out : std::string();
+    if (!hasContent) return std::string();
+
+    // ---- 在开头补一行**分隔线** ----
+    //
+    // 【为什么】剥掉名单之后歌词往往从一个很晚的时间戳才开始
+    // （实测《晴天》：名单占到 [00:27.010]，真歌词 [00:29.260] 才出现）。
+    // 而 LyricDocument::LineIndexAt() 里有一句
+    //     if (t < m_lines.front().timeSec) return 0;   // ← 返回**第一行**
+    // 于是前奏那几十秒里，第一句真歌词被当成"当前行"高亮着 —— 还没唱到。
+    //
+    // 补一行之后：前奏期间当前行是这一行（屏幕上是一条分隔线），
+    // 真正要唱的那句作为**下一行**在下面等着。
+    //
+    // 【为什么是分隔线而不是空行】
+    // 解析器**主动丢弃空文本行**（lyric.cpp：夹具里歌词之间夹着空行，
+    // 不能渲染成空行）。想要空行就得改解析器，而解析器是全工程共用的 ——
+    // 实测那么改会一次性打挂 26 条解析断言（行数、时间戳、编码全都对不上）。
+    // 分隔线是**一行有文字的普通 LRC**，现有解析器原样接受，
+    // **一行 parser 都不用动**。
+    //
+    // 只在真的剥掉了东西、且拿到了时间戳时补 —— 没剥过就不该多出一行。
+    if (removed > 0 && !firstStamp.empty()) {
+        out.insert(0, firstStamp + NetEaseIntroSeparator() + "\n");
+    }
+    return out;
 }
 
 // 取网易云响应体里的业务错误码。

@@ -1,0 +1,8 @@
+[21:51:04] 守候中：D:\C#\lyric-plugin\bin\x64\Release\foo_lyricus.dll
+[21:51:04]   轮询 1000 ms；目标 C:\Users\HUAWEI\AppData\Roaming\foobar2000-v2\user-components-x64\foo_lyricus\foo_lyricus.dll
+[21:51:35] 发现新构建 791,040 B  86389289E55B6253
+    [21:51:36] 已把在用的旧版改名让路（镜像锁绕过了）
+    [21:51:36] 已安装: C:\Users\HUAWEI\AppData\Roaming\foobar2000-v2\user-components-x64\foo_lyricus\foo_lyricus.dll
+    [21:51:36]   （要回滚就把它改回 foo_lyricus.dll —— 需先完全退出播放器）
+    [21:51:36] 播放器仍在运行 —— 它执行的是内存里的旧代码，新版下次启动生效。
+[21:51:36] 第 1 次安装完成。重启播放器后生效。

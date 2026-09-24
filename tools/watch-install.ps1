@@ -1,16 +1,31 @@
 <#
-  等待 foobar2000 退出 -> 自动安装新编译的组件 -> 可选自动重新启动。
+  守候进程：盯着编译产物，一有新版本就自动热安装。
 
-  为什么需要它：
-    组件 DLL 一旦被 foobar2000 加载就会被文件锁锁住，既不能覆盖也不能改名。
-    所以每次迭代的固定动作是「关播放器 -> 拷贝 -> 开播放器」。
-    这个脚本把「等它退出 + 拷贝 + 重启」自动化，用户只需要关一次播放器，
-    不必等对面回话。
+  为什么改成常驻
+  --------------
+  原来的流程是「等播放器退出 -> 拷贝 -> 重启」，而那个模式**已经过时了**：
+  它存在的唯一理由是绕开 foobar2000「立即重启」那个约 1 秒的空档
+  （旧轮询周期约 900ms，整个跳过去了，结果装了旧版还一声不吭）。
+  但 hot-install 的改名方案**根本不依赖那个时间窗口** —— 什么时候跑都行。
 
-  用法：
-    .\watch-install.ps1 -Relaunch
-    .\watch-install.ps1 -WaitSeconds 120
-    .\watch-install.ps1 -Platform Win32
+  于是守候进程该盯的不是「播放器退出了没」，而是「编译产物变了没」。
+
+  用法
+  ----
+    .\watch-install.ps1                 # 常驻，装完继续等下一次
+    .\watch-install.ps1 -Once           # 装一次就退出
+    .\watch-install.ps1 -Relaunch       # 装完自动重启播放器（会打断播放）
+    .\watch-install.ps1 -IntervalMs 500
+
+  注意
+  ----
+  * 装上去之后，**运行中的播放器仍然执行内存里的旧代码**，新版要下次启动
+    才生效 —— 这是 foobar2000 的模型，组件不能运行中重载。
+    想让"重启才生效"这件事也自动化，加 -Relaunch。
+  * 必须等编译**写完**再装。判断方式是「大小 + 修改时间连续两次采样都不变」，
+    不能只看哈希变了就动手 —— 链接器写到一半时哈希也是"变了的"，
+    那时候拷过去会装上一个半截的 DLL，而且**哈希校验查不出来**
+    （源和目标是同一份半截）。
 #>
 
 [CmdletBinding()]
@@ -18,8 +33,9 @@ param(
     [ValidateSet('x64', 'Win32')] [string]$Platform = 'x64',
     [string]$ProcessName = 'foobar2000',
     [string]$ExePath = 'C:\Program Files\foobar2000\foobar2000.exe',
-    [int]$WaitSeconds = 1800,
-    [switch]$Relaunch
+    [int]$IntervalMs = 1000,
+    [switch]$Relaunch,
+    [switch]$Once
 )
 
 $ErrorActionPreference = 'Continue'
@@ -29,13 +45,22 @@ $src   = Join-Path $root "bin\$Platform\Release\foo_lyricus.dll"
 $arch  = if ($Platform -eq 'Win32') { 'user-components' } else { 'user-components-x64' }
 $destD = Join-Path $env:APPDATA "foobar2000-v2\$arch\foo_lyricus"
 $dest  = Join-Path $destD 'foo_lyricus.dll'
+$hot   = Join-Path $PSScriptRoot 'hot-install.ps1'
 
-function Say($msg, $color = 'Gray') { Write-Host ("[{0:HH:mm:ss}] {1}" -f (Get-Date), $msg) -ForegroundColor $color }
+$log = Join-Path $root 'build\watch-install.log'
 
-# ---- 0. 单实例保护 ---------------------------------------------------------
-# 实测踩过：启动新的守候进程时忘了清理旧的，两个进程同时被 foobar2000 退出唤醒，
-# 抢着拷贝同一个目标文件 —— 后到的那个 20 次重试全部失败（另一方已经把播放器
-# 拉起来、DLL 又被锁住），日志里刷出一屏莫名其妙的错误。
+# 同时写一份日志文件：常驻进程的输出事后要能查（Write-Host 不进程重定向，
+# 所以不能指望 Start-Process -RedirectStandardOutput 把 -WindowStyle Hidden
+# 的窗口内容捞出来）。
+function Say($msg, $color = 'Gray') {
+    $line = "[{0:HH:mm:ss}] {1}" -f (Get-Date), $msg
+    Write-Host $line -ForegroundColor $color
+    try { Add-Content -LiteralPath $log -Value $line -Encoding UTF8 -ErrorAction Stop } catch { }
+}
+
+# ---- 单实例保护 -------------------------------------------------------------
+# 两个守候进程同时装同一个文件会互相踩：一个刚把目标改名让路，
+# 另一个正好在拷贝 —— 后到的会因为目标被占而失败，日志刷一屏莫名其妙的错误。
 $lockFile = Join-Path $env:TEMP 'lyricus-watch-install.lock'
 if (Test-Path $lockFile) {
     $oldPid = (Get-Content $lockFile -ErrorAction SilentlyContinue | Select-Object -First 1)
@@ -48,102 +73,77 @@ if (Test-Path $lockFile) {
 }
 $PID | Out-File -FilePath $lockFile -Encoding ascii -Force
 
-if (-not (Test-Path $src)) { Say "找不到新编译的 DLL：$src" Red; exit 1 }
-$srcInfo = Get-Item $src
-Say ("待安装: {0}  ({1:N0} B, {2:HH:mm:ss})" -f $srcInfo.Name, $srcInfo.Length, $srcInfo.LastWriteTime) Cyan
+if (-not (Test-Path $src)) {
+    Say "找不到编译产物：$src" Red
+    Remove-Item $lockFile -Force -ErrorAction SilentlyContinue
+    exit 1
+}
 
-# ---- 1+2. 等退出 + 拷贝，合成一个循环 ---------------------------------------
-#
-# 为什么不写成「等一次退出 → 拷一次」：
-#   播放器会**快速重启** —— foobar2000 自己的「立即重启」（改 UI 设置时会弹）
-#   只停机约 1 秒。我们探测到退出、正要拷贝时，新进程可能已经把 DLL 重新锁上了。
-#   一次性逻辑此时只有两条烂路：
-#     * 轮询太粗 -> 整个空档被跳过，守候进程一直傻等，新版**没装上还不报错**；
-#     * 拷贝重试 20 次全失败 -> 直接 exit 3，同样没装上。
-#     这两条都让「没装上」这件事不够显眼。
-#
-# 循环版：拷贝不成就回到循环顶，接着等**下一次**退出，直到整体超时。
-#   成功的判据是**哈希一致**，不是「Copy-Item 没抛异常」——
-#   文件被占用时 Copy-Item 会抛，但半途失败之类的情况要靠哈希才认得出。
-#
-# 轮询间隔 150ms 是拿事故换来的：原本 700ms，加上 Get-Process 自身的开销，
-# 实际周期接近 900ms，1 秒的空档就这么被跳过去了。
+Say "守候中：$src" Cyan
+Say ("  轮询 {0} ms；目标 {1}" -f $IntervalMs, $dest) DarkGray
+if ($Relaunch) { Say '  装完会自动重启播放器（会打断播放）' Yellow }
 
-New-Item -ItemType Directory -Force -Path $destD | Out-Null
-
-$deadline  = (Get-Date).AddSeconds($WaitSeconds)
-$installed = $false
-$saidWaiting = $false
-
-while ((Get-Date) -lt $deadline) {
-
-    # a) 进程还在 -> 接着等。轮询必须密（见上面的说明）。
-    if (Get-Process -Name $ProcessName -ErrorAction SilentlyContinue) {
-        if (-not $saidWaiting) {
-            Say "$ProcessName 正在运行，等待它退出（最多 $WaitSeconds 秒）..."
-            $saidWaiting = $true
+function Get-HashOrNull($p) {
+    try {
+        if (Test-Path -LiteralPath $p) {
+            return (Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash
         }
-        Start-Sleep -Milliseconds 150
+    } catch { }
+    return $null
+}
+
+# 「已装版本」的判据取**目标文件**的哈希，而不是我们自己记的状态 ——
+# 这样即使中途有别人（或手动）装过，也不会重复劳动。
+$lastInstalled = Get-HashOrNull $dest
+$installs = 0
+
+# 上一次采样到的 (大小, 修改时间)，用来判断编译写完没有
+$prevSig = $null
+
+while ($true) {
+    Start-Sleep -Milliseconds $IntervalMs
+
+    if (-not (Test-Path -LiteralPath $src)) { continue }
+
+    $fi = $null
+    try { $fi = Get-Item -LiteralPath $src -ErrorAction Stop } catch { continue }
+    $sig = "{0}:{1}" -f $fi.Length, $fi.LastWriteTimeUtc.Ticks
+
+    if ($sig -ne $prevSig) {
+        # 还在变 —— 编译没写完，下一轮再看
+        $prevSig = $sig
         continue
     }
 
-    # b) 进程不在了 -> 试拷贝。刚退出时句柄可能还没释放，给几次机会。
-    for ($i = 1; $i -le 12; $i++) {
-        try {
-            Copy-Item -LiteralPath $src -Destination $dest -Force -ErrorAction Stop
-            $installed = $true
-            break
-        } catch {
-            Start-Sleep -Milliseconds 250
+    # 连续两次采样一致 = 编译已经停笔，可以安全读取
+    $srcHash = Get-HashOrNull $src
+    if ($null -eq $srcHash) { continue }
+    if ($srcHash -eq $lastInstalled) { continue }   # 没有新版本
+
+    Say ("发现新构建 {0:N0} B  {1}" -f $fi.Length, $srcHash.Substring(0, 16)) Cyan
+
+    & pwsh -NoProfile -File $hot -Platform $Platform 2>&1 |
+        Where-Object { $_ -match '已安装|已把在用|哈希|失败|错误|不存在|回滚|播放器' } |
+        ForEach-Object { Write-Host "    $_"; Add-Content -LiteralPath $log -Value ("    " + $_) -Encoding UTF8 -ErrorAction SilentlyContinue }
+
+    $after = Get-HashOrNull $dest
+    if ($after -eq $srcHash) {
+        ++$installs
+        $lastInstalled = $after
+        Say "第 $installs 次安装完成。重启播放器后生效。" Green
+
+        if ($Relaunch -and (Test-Path $ExePath)) {
+            Get-Process -Name $ProcessName -ErrorAction SilentlyContinue |
+                Stop-Process -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Milliseconds 800
+            Start-Process -FilePath $ExePath
+            Say '已重启播放器（新版已生效）' Green
         }
-        # 重试期间播放器又起来了就别耗着，回循环顶等下一次退出
-        if (Get-Process -Name $ProcessName -ErrorAction SilentlyContinue) { break }
-    }
-
-    if ($installed) {
-        Say "$ProcessName 已退出" Green
-        break
-    }
-}
-
-if (-not $installed) {
-    Say "等待超时（$WaitSeconds 秒内没拿到可写的窗口），放弃。" Red
-    Remove-Item $lockFile -Force -ErrorAction SilentlyContinue
-    exit 2
-}
-
-# 复核：哈希不一致就等于没装上，不能只看 Copy-Item 有没有抛
-$h1 = (Get-FileHash -LiteralPath $src  -Algorithm SHA256).Hash
-$h2 = (Get-FileHash -LiteralPath $dest -Algorithm SHA256).Hash
-if ($h1 -ne $h2) {
-    Say "拷贝后哈希不一致，安装视为失败。" Red
-    Remove-Item $lockFile -Force -ErrorAction SilentlyContinue
-    exit 3
-}
-
-Say ("已安装: {0}" -f $dest) Green
-Say ("  大小 {0:N0} B   哈希一致 {1}" -f (Get-Item $dest).Length, ($h1 -eq $h2)) Green
-
-# ---- 2.5 顺带部署 SVG 图标 --------------------------------------------------
-# 运行期从 DLL 同级的 resources\ 目录加载，所以必须一起拷过去。
-$resSrc = Join-Path $root 'resources'
-if (Test-Path $resSrc) {
-    $resDst = Join-Path $destD 'resources'
-    New-Item -ItemType Directory -Force -Path $resDst | Out-Null
-    Copy-Item (Join-Path $resSrc '*.svg') $resDst -Force -ErrorAction SilentlyContinue
-    $n = (Get-ChildItem $resDst -Filter *.svg -ErrorAction SilentlyContinue | Measure-Object).Count
-    Say ("  已部署 {0} 个 SVG 图标" -f $n) Green
-}
-
-# ---- 3. 可选重新启动 --------------------------------------------------------
-if ($Relaunch) {
-    if (Test-Path $ExePath) {
-        Start-Process -FilePath $ExePath
-        Say "已重新启动 foobar2000" Green
     } else {
-        Say "找不到 $ExePath，请手动启动" Yellow
+        Say '安装后哈希不一致 —— 没装上，下一轮重试。' Red
     }
+
+    if ($Once) { break }
 }
 
-# 释放单实例锁
 Remove-Item $lockFile -Force -ErrorAction SilentlyContinue

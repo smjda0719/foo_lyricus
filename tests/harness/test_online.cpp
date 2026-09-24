@@ -352,6 +352,20 @@ void TestNetEaseCreditStrip() {
     Check(stripped.find("作词 : 方文山") == std::string::npos,
           "剥掉了「作词 : X」（全角冒号 + 冒号旁有空格）");
 
+    // ★ 开头补了一行分隔线，时间戳用**第一个被剥掉的那个**
+    //
+    // 治的是这个病：剥完名单后歌词从 [00:29.260] 才开始，而 LineIndexAt 在
+    // "第一行之前"返回第 0 行 —— 于是前 29 秒里第一句真歌词一直被当成
+    // "当前行"高亮着，明明还没唱到。
+    Check(stripped.rfind("[00:00.000]", 0) == 0,
+          "★ 分隔线补在开头，且用第一个被剥掉的时间戳");
+    // 分隔线必须是**有文字的**一行 —— 空行会被 lyric.cpp 的解析器丢弃，
+    // 写成空行等于没改（这正是当初放弃"空歌词行"方案的原因）
+    Check(stripped.find("[00:00.000]———") == 0,
+          "★ 分隔线带文字（空行会被解析器丢弃）");
+    Check(stripped.find("———") < stripped.find("故事的小黄花"),
+          "★ 分隔线在真歌词之前");
+
     // ★ 最重要的一条：真歌词一行都不能少
     Check(stripped.find("[00:29.260]故事的小黄花") != std::string::npos,
           "★ 第一句真歌词保留");
@@ -378,11 +392,25 @@ void TestNetEaseCreditStrip() {
           "★ 停手之后即使像名单也不再剥（宁可漏剥，不能吃歌词）");
 
     // ---- 整篇都是名单 -> 视为没有歌词（纯音乐条目）----
+    //
+    // ★ 这一条卡的是"分隔线"方案的边界：分隔线必须在**判空之后**才补。
+    //   顺序反了的话，纯音乐条目剥完是空的、本该返回空让面板显示「（无歌词）」，
+    //   却因为多了一条分隔线而被当成"有歌词"，整首歌显示一条横线 ——
+    //   比一片空白更让人困惑。（这个 bug 是这条断言抓出来的。）
     const std::string allCredits =
         "[00:00.000]作曲：某人\n"
         "[00:02.000]编曲：另一人\n";
     Check(lyricus::StripNetEaseCredits(allCredits).empty(),
-          "整篇都是名单 -> 返回空（当作没歌词）");
+          "整篇都是名单 -> 返回空（当作没歌词，不能只剩一条分隔线）");
+
+    // ---- 没剥过任何东西 -> 不该多出一行 ----
+    const std::string noCredits =
+        "[00:00.000]第一句就是歌词\n"
+        "[00:05.000]第二句\n";
+    const std::string untouched = lyricus::StripNetEaseCredits(noCredits);
+    Check(untouched.find("———") == std::string::npos,
+          "★ 没有名单可剥时，不补分隔线");
+    Check(untouched.rfind("[00:00.000]第一句就是歌词", 0) == 0, "原样返回");
 
     // ---- 单行判定 ----
     Check(lyricus::IsNetEaseCreditLine("[00:01.000]Producer: Someone"),
