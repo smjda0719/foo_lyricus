@@ -21,6 +21,7 @@
 #include <windows.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -299,6 +300,107 @@ void TestRatio() {
     Check(mid.currentY < down.currentY, "ratio 50% 比 75% 靠下");
     Check(down.currentY > mid.currentY && (down.currentY - mid.currentY) > 50,
           "ratio 每 25% 的位移是显著的（不是几个像素的抖动）");
+
+    // ★ 50 = **整个面板**的正中。
+    //
+    // 出处：用户 2026-09-25「内嵌的歌词没有居中」。根因就是这里的基准 ——
+    // 从前是"歌词区"（曲名下方到控制条上沿），而三种宿主的歌词区定义不同，
+    // 同一个百分比在浮动面板和 DUI 里落点不一样。改成整个面板后
+    // 50 必须**正好**是画布中心，跟曲名占多高、有没有控制条都无关。
+    const int centre = kHeight / 2;
+    std::printf("     画布正中 y=%d，ratio=50 落在 y=%d\n", centre, mid.currentY);
+    Check(std::abs(mid.currentY - centre) <= 4,
+          "★ ratio=50 落在**整个画布**正中（不是歌词区正中）");
+}
+
+// ---------------------------------------------------------------------------
+// 面板缩放 + 底部裁剪（浮动面板的形状）
+//
+// 【为什么要单测这两件事】
+//   1. 用户 2026-09-25 特意提「浮动面板的设计要和之后窗口缩放兼容」——
+//      同一个百分比必须在任何面板高度下都落在**同一个相对位置**，
+//      不能因为面板变高就跑到别处去。
+//   2. 浮动面板的 rc 现在传的是**整个面板**（给 currentRatio 当基准），
+//      控制条那一段改用 clipBottom 排除。这两件事必须互不干扰：
+//      裁剪只决定"画到哪儿为止"，不许影响居中基准（D-043）。
+// ---------------------------------------------------------------------------
+namespace {
+
+struct ClipProbe {
+    int currentY   = -1;   // 当前行中心（阈值 250，只有纯白的当前行能达到）
+    int lowestInkY = -1;   // 最靠下的一行墨迹（阈值 70，连小字的光晕也算）
+};
+
+ClipProbe ProbeClip(const lyricus::LyricsViewLayout& layout, const RECT& rc) {
+    ClipProbe p;
+
+    const std::string raw = MakeLrc(21);
+    std::vector<unsigned char> b(raw.begin(), raw.end());
+    lyricus::PlaybackState::Get().SetFake(
+        true, L"Test - Song", lyricus::LyricDocument::Parse(b), 10);
+
+    Canvas cv;
+    if (!cv.Create()) return p;
+
+    lyricus::LyricsViewTheme theme;
+    theme.dpi = 96;
+    lyricus::DrawLyricsView(cv.dc, rc, theme, layout);
+
+    for (int y = 0; y < kHeight; ++y) {
+        for (int x = 0; x < kWidth; ++x) {
+            if (cv.Bright(x, y, 70)) { p.lowestInkY = y; break; }
+        }
+    }
+    const auto cur = cv.Bands(250, 1);
+    if (!cur.empty()) p.currentY = (cur.front().first + cur.front().second) / 2;
+    return p;
+}
+
+} // namespace
+
+void TestResizeAndClip() {
+    std::printf("\n== 面板缩放 + 控制条裁剪 ==\n");
+
+    const RECT full{ 0, 0, kWidth, kHeight };
+
+    // ---- 1. 缩放兼容：面板变矮，同一个百分比仍落在同一个相对位置 ----
+    //
+    // ⚠️ 变量别叫 small —— windows.h 的 rpcndr.h 里 `#define small char`，
+    //    撞上去报的是"意外的类型 char"，离真正的原因很远。
+    const RECT shortPanel{ 0, 0, kWidth, 300 };
+    const auto tallPanel = ProbeClip({100, 2, 50}, full);
+    const auto halfPanel = ProbeClip({100, 2, 50}, shortPanel);
+
+    std::printf("     面板高 %d -> 当前行 y=%d（%.0f%%）\n",
+                kHeight, tallPanel.currentY, 100.0 * tallPanel.currentY / kHeight);
+    std::printf("     面板高 %d -> 当前行 y=%d（%.0f%%）\n",
+                300, halfPanel.currentY, 100.0 * halfPanel.currentY / 300);
+
+    Check(std::abs(tallPanel.currentY - kHeight / 2) <= 4,
+          "面板高 600 时 ratio=50 落在正中");
+    Check(std::abs(halfPanel.currentY - 150) <= 4,
+          "★ 面板缩到一半高，ratio=50 仍然落在正中（缩放兼容）");
+
+    // ---- 2. 裁剪不影响居中基准 ----
+    //
+    // 这一组用 span=0（自适应）让歌词**铺满**整个区域 —— 用 span=2 的话
+    // 最低一行只到 y≈365，根本够不到 450，测试会变成空的
+    //（头一次就是这么写的，被下面那条"否则这条测试是空的"当场抓住）。
+    const auto floodUnclipped = ProbeClip({100, 0, 50}, full);
+    // 450 = 模拟浮动面板底部的控制条上沿（300 px 面板里的 225，按比例放大）
+    const auto clipped        = ProbeClip({100, 0, 50, false, 450}, full);
+    std::printf("     未裁剪 -> 当前行 y=%d，最低墨迹 y=%d\n",
+                floodUnclipped.currentY, floodUnclipped.lowestInkY);
+    std::printf("     裁剪到 y<=450 -> 当前行 y=%d，最低墨迹 y=%d\n",
+                clipped.currentY, clipped.lowestInkY);
+
+    Check(clipped.currentY == floodUnclipped.currentY,
+          "★ 有没有 clipBottom，当前行的位置**一模一样**（裁剪不参与居中基准）");
+    Check(floodUnclipped.lowestInkY > 450,
+          "不裁剪时确实有内容画到 450 以下（否则这条测试是空的）");
+    Check(clipped.lowestInkY >= 0 && clipped.lowestInkY <= 452,
+          "★ 裁剪之后控制条那一段一个字都没有（452 给了抗锯齿光晕 2 px）");
+    Check(clipped.currentY >= 0, "裁剪之后当前行照样画得出来");
 }
 
 void TestFontPct() {
@@ -510,6 +612,7 @@ int wmain() {
 
     TestSpan();
     TestRatio();
+    TestResizeAndClip();
     TestFontPct();
     TestBilingual();
     TestTranslationPrimary();

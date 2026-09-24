@@ -202,7 +202,14 @@ int DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& theme,
     if (maxW < 1) maxW = 1;      // 面板窄到不合理时兜底，避免负宽度
     const int left  = rc.left + padX;
     const int top   = rc.top + S(14);
-    const int limit = rc.bottom;
+
+    // 歌词只画到 limit 为止。浮动面板把控制条那一段排除掉（clipBottom），
+    // DUI/CUI 整个元素都是歌词区（clipBottom = 0 -> 用 rc.bottom）。
+    //
+    // ⚠️ limit 只决定**画在哪儿**，不参与 currentRatio —— 那个基准是 rc
+    //    整个面板。两者分开正是为了让"控制条高度"这种装饰不影响居中（D-043）。
+    int limit = rc.bottom;
+    if (layout.clipBottom > rc.top && layout.clipBottom < limit) limit = layout.clipBottom;
 
     const int pct = (layout.fontPct > 0) ? layout.fontPct : 100;
 
@@ -283,14 +290,24 @@ int DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& theme,
 
             // 当前行的垂直锚点。
             //
-            // ratio = 50 时锚点落在歌词区正中，与旧版行为一致 ——
-            // 旧版把整块居中，而上下预算对称，块中心就是当前行中心。
-            // 所以把这个值默认成 50 是**忠实保留**，不是新调的手感。
-            const int ratio  = ClampInt(layout.currentRatio, 0, 100);
-            const int anchor = y + MulDiv(avail, ratio, 100);
+            // 【基准是整个面板】见 lyrics_view.h 里 currentRatio 的说明和 D-043。
+            // 从前这里用的是 `y + avail * ratio%`（y = 曲名下方的歌词区上沿），
+            // 于是同一个百分比在浮动面板和 DUI 里落点不同 ——
+            // 用户 2026-09-25 报「内嵌的歌词没有居中」就是它。
+            //
+            // 改成整个面板之后 50 恒等于面板正中；面板被拉高拉矮时
+            // 百分比自动跟着走，不需要另加缩放规则（用户特意提过要兼容缩放）。
+            //
+            // fromEdge 只是"锚点相对面板上沿的距离"，夹取仍按歌词区走 ——
+            // 上方给曲名留位置、下方不压控制条，这两件事和居中基准是两回事。
+            const int ratio    = ClampInt(layout.currentRatio, 0, 100);
+            const int panelH   = rc.bottom - rc.top;
+            const int fromEdge = MulDiv(panelH, ratio, 100);
+            const int anchor   = (panelH > 0) ? rc.top + fromEdge : y + MulDiv(avail, ratio, 100);
 
             int curTop = anchor - curBlockH / 2;
-            // 锚点算出的位置可能把当前行顶出歌词区（ratio 取极端值时），夹回来。
+            // 锚点算出的位置可能把当前行顶出歌词区（ratio 取极端值、
+            // 或者面板矮到装不下一行时），夹回来。
             curTop = ClampInt(curTop, y, limit - curBlockH);
             if (curTop < y) curTop = y;   // 歌词区比一行还矮时的最后兜底
 

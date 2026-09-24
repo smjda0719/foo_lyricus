@@ -863,9 +863,16 @@ void ControlWindow::DrawTextContent(HDC dc, const RECT& rc) {
     theme.dimText     = m_appearance.dim;
     theme.warnText    = m_appearance.warn;
 
-    RECT lyricArea = rc;
-    lyricArea.bottom = m_ctrlBarTop;
-    DrawLyricsView(dc, lyricArea, theme, m_layout);
+    // ⚠️ 这里传的是**整个面板** rc，不是"歌词区"。
+    //
+    // currentRatio（当前行的垂直位置）的基准是整个面板 —— 三种宿主统一，
+    // 见 lyrics_view.h 与 D-043。从前这里把 rc.bottom 砍到控制条上沿再传进去，
+    // 结果同一个百分比在浮动面板和 DUI 里落点不同，用户报「内嵌的歌词没有居中」。
+    //
+    // 底部的控制条改用 clipBottom 排除：它只决定"画到哪儿为止"，
+    // 不影响居中基准。这样面板以后支持缩放时，百分比也是跟着面板走的。
+    m_layout.clipBottom = m_ctrlBarTop;
+    DrawLyricsView(dc, rc, theme, m_layout);
 
     // 控制条
     DrawControls(dc, dpi);

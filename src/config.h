@@ -56,6 +56,14 @@ extern cfg_var_modern::cfg_string cfg_manual_lyric_map;
 // 而 `查「哀歌」` 连前 10 都进不去）。
 extern cfg_var_modern::cfg_string cfg_folder_hints;
 
+// 「当前行位置」基准的一次性迁移标记（0 = 还没迁，1 = 已迁到"整个面板"基准）。
+//
+// 【为什么必须有这个标记】见 D-043：currentRatio 的基准从"歌词区"改成了
+// "整个面板"。老用户存的 60 是按歌词区调的，直接按新基准读会让画面往下掉
+// 十几个像素 —— 用户明确说过那个位置"刚好"，不能动。所以要迁一次。
+// 迁完置 1，之后用户自己怎么调都不再碰。
+extern cfg_var_modern::cfg_int cfg_ratio_base_ver;
+
 // ---------------------------------------------------------------------------
 // 设置项：走 foobar2000 的 Advanced 首选项（SDK/advconfig_impl.h）
 //
@@ -101,6 +109,12 @@ struct LyricDisplayConfig {
 };
 
 LyricDisplayConfig GetLyricDisplayConfig();
+
+// 把老配置里的 currentRatio 从"歌词区基准"换算成"整个面板基准"，只做一次。
+//
+// 由 initquit::on_init 调用（面板显示之前），不要在渲染热路径里调。
+// 换算依据是浮动面板的实际几何，理由写在 settings.cpp 的实现里。
+void MigrateCurrentRatioToPanelBase();
 
 // 写入单个显示设置（供菜单里的快捷调整用）。
 // 值会被 advconfig 自己夹到合法区间；写完各宿主下一帧轮询就能读到，

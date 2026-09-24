@@ -15,6 +15,10 @@ namespace {
 class LyricusInitQuit : public initquit {
 public:
     void on_init() override {
+        // 先把老配置换算到新基准，再显示面板 —— 否则第一帧会按老值画，
+        // 250ms 后才自己纠正过来，看起来像闪了一下。
+        lyricus::MigrateCurrentRatioToPanelBase();
+
         if (lyricus::cfg_panel_visible.get()) {
             lyricus::ControlWindow::Get().Show();
         }
