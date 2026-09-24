@@ -847,6 +847,18 @@ bool IsPlaceholderTag(const std::wstring& s) {
 }
 
 // 见 lyric_search.h 的说明。
+//
+// 直接复用匿名的 CollectTrackNumberStripped，**不另写一套切法** ——
+// 两处切得不一样就会出现「搜索按 A 切、核验按 B 切」的自相矛盾。
+// 那个函数自带「数字最多 3 位 + 必须跟分隔符」的保护，
+// 所以 "24K Magic" / "7 Years" 这类以数字开头的曲名不会被切坏。
+std::wstring StripLeadingTrackNumber(const std::wstring& name) {
+    std::vector<std::wstring> stripped;
+    CollectTrackNumberStripped(Trim(name), stripped);
+    return stripped.empty() ? name : stripped.front();
+}
+
+// 见 lyric_search.h 的说明。
 bool ArtistNamesOverlap(const std::wstring& a, const std::wstring& b) {
     const std::wstring na = NormalizeLyricStem(a);
     const std::wstring nb = NormalizeLyricStem(b);

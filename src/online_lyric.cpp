@@ -1299,43 +1299,19 @@ std::string StripNetEaseCredits(const std::string& lrc) {
         OnlineLog("在线歌词：网易云 —— 剥掉了开头 %d 行制作人员名单", removed);
     }
 
-    // 判空**必须在补分隔线之前**。
+    // 判空：整篇都是名单的条目（纯音乐，网易云上很常见）当"没有歌词"处理。
     //
-    // 顺序反了会出一个很隐蔽的 bug：整篇都是名单的条目（纯音乐，网易云上很常见）
-    // 剥完是空的，本该返回空 -> 调用方显示「（无歌词）」；
-    // 但先补了分隔线的话 out 就非空了，于是被当成"有歌词"，
-    // 整首歌显示一条横线 —— 比一片空白更让人困惑。
+    // 【分隔线**不在这里**补】那是**显示层**的修补，放在取词的统一出口
+    // （EnsureLeadInSeparator）—— 放这里只能覆盖"本次新取到的词"，
+    // 缓存里已经存下的 .lrc 根本不会再走这段代码。用户实测就撞上了这个：
+    // 「缓存到本地的歌词还没有第一行的分隔线」。
     bool hasContent = false;
     for (size_t i = 0; i < out.size(); ++i) {
         if (out[i] != '[' && out[i] != ']' && out[i] != ':' && out[i] != '.' &&
             out[i] != '\n' && out[i] != '\r' && out[i] != ' ' && out[i] != '\t' &&
             !(out[i] >= '0' && out[i] <= '9')) { hasContent = true; break; }
     }
-    if (!hasContent) return std::string();
-
-    // ---- 在开头补一行**分隔线** ----
-    //
-    // 【为什么】剥掉名单之后歌词往往从一个很晚的时间戳才开始
-    // （实测《晴天》：名单占到 [00:27.010]，真歌词 [00:29.260] 才出现）。
-    // 而 LyricDocument::LineIndexAt() 里有一句
-    //     if (t < m_lines.front().timeSec) return 0;   // ← 返回**第一行**
-    // 于是前奏那几十秒里，第一句真歌词被当成"当前行"高亮着 —— 还没唱到。
-    //
-    // 补一行之后：前奏期间当前行是这一行（屏幕上是一条分隔线），
-    // 真正要唱的那句作为**下一行**在下面等着。
-    //
-    // 【为什么是分隔线而不是空行】
-    // 解析器**主动丢弃空文本行**（lyric.cpp：夹具里歌词之间夹着空行，
-    // 不能渲染成空行）。想要空行就得改解析器，而解析器是全工程共用的 ——
-    // 实测那么改会一次性打挂 26 条解析断言（行数、时间戳、编码全都对不上）。
-    // 分隔线是**一行有文字的普通 LRC**，现有解析器原样接受，
-    // **一行 parser 都不用动**。
-    //
-    // 只在真的剥掉了东西、且拿到了时间戳时补 —— 没剥过就不该多出一行。
-    if (removed > 0 && !firstStamp.empty()) {
-        out.insert(0, firstStamp + NetEaseIntroSeparator() + "\n");
-    }
-    return out;
+    return hasContent ? out : std::string();
 }
 
 // 取网易云响应体里的业务错误码。
@@ -1983,9 +1959,23 @@ HttpReply HttpGet(const std::wstring& host, const std::wstring& pathAndQuery,
 // 百分号编码复用上面那个 PercentEncode（LRCLIB 那条路也在用）——
 // 别再写第二个：同一件事有两份实现，将来改一处漏一处就是"中文曲名
 // 在 LRCLIB 上好好的、在网易云上 400"这种最难查的 bug。
-std::wstring BuildNetEaseSearchPath(const OnlineLyricRequest& req) {
+// titleOverride 为空 = 用剥掉音轨号之后的曲名（默认，也是绝大多数情况该用的）。
+// 传非空 = 用指定的词再搜一次 —— 见 TryNetEase 里"两个词"那段说明。
+std::wstring BuildNetEaseSearchPath(const OnlineLyricRequest& req,
+                                    const std::wstring& titleOverride = std::wstring()) {
+    // ⚠️ 搜索词里的曲名必须**先剥掉音轨号**。
+    //
+    // 实测（2026-09-24）这个前缀会把搜索整个带偏：
+    //     查「02 遗忘山丘」 -> 青山不改与君携 / 讨好 / 遗憾 …（正确答案连前 6 都进不去）
+    //     查「遗忘山丘」    -> 遗忘山丘 by 阿良良木健（242.8s，本地 242.1s，差 0.7 秒）
+    // 原来只在候选核验里剥、搜索词没剥，于是第一关就搜错了东西 ——
+    // 后面两道闸门再准也救不回来（日志里表现成「过曲名闸 0 条」，
+    // 看起来像"网易云没有这首歌"，其实是"我们搜错词了"）。
+    const std::wstring t = titleOverride.empty()
+                               ? StripLeadingTrackNumber(TrimWs(req.title))
+                               : titleOverride;
+
     std::wstring q = TrimWs(req.artist);
-    const std::wstring t = TrimWs(req.title);
     if (!q.empty() && !t.empty()) q += L" ";
     q += t;
 
@@ -2225,9 +2215,30 @@ bool TryNetEase(const OnlineLyricRequest& req, ULONGLONG retryDeadline,
     constexpr int kNetEaseRateLimitRetries = 3;
     constexpr DWORD kNetEaseBackoffMs[] = { 800, 1600, 2500 };
 
+    // 【为什么要准备两个搜索词】曲名开头的音轨号必须先剥掉（见 BuildNetEaseSearchPath），
+    // 但剥法是「≤3 位数字 + 分隔符」，所以「7 Years」「99 Problems」这类
+    // **曲名本身以数字开头**的会被误剥成「Years」「Problems」。
+    //
+    // 这个误剥在**本地搜索**里无害 —— 那里只是多一个候选，原样的还在；
+    // 但在搜索词里有害，因为它是**替换**。所以剥过的词搜不到时，用原词再试一次。
+    // （我自己写测试时就断言"7 Years 不该被剥"，结果被抓出来 —— 见 D-040。）
+    const std::wstring strippedTitle = StripLeadingTrackNumber(title);
+
+    std::vector<NetEaseSong> songs;
+    NetEaseSong pick;
+    bool picked = false;
+
+    for (int pass = 0; pass < 2 && !picked; ++pass) {
+        const std::wstring& queryTitle = (pass == 0) ? strippedTitle : title;
+        if (pass == 1) {
+            if (queryTitle == strippedTitle) break;   // 压根没剥掉什么，不必重搜
+            OnlineLog("在线歌词：网易云换回原曲名再搜一次（「%s」）",
+                      WideToUtf8(queryTitle).c_str());
+        }
+
     HttpReply search;
     for (int attempt = 0; ; ++attempt) {
-        search = HttpGet(kNetEaseHost, BuildNetEaseSearchPath(req), retryDeadline);
+        search = HttpGet(kNetEaseHost, BuildNetEaseSearchPath(req, queryTitle), retryDeadline);
 
         if (!search.transportOk) {
             requestFailed = true;
@@ -2272,28 +2283,30 @@ bool TryNetEase(const OnlineLyricRequest& req, ULONGLONG retryDeadline,
         return false;
     }
 
-    std::vector<NetEaseSong> songs;
     if (!ParseNetEaseSearchRoot(search.body, songs)) {
         // 走到这里 HTTP 是 200、业务码也是 200，所以「没有 songs 数组」
-        // 是**确定**的"这首歌网易云上没有"，不算请求失败。
+        // 是**确定**的"这个搜索词在网易云上没有结果"。
         //
         // ⚠️ 但这条日志在修好业务码检查之前是会骗人的：那时候
         //    限流的响应（HTTP 200 + {"code":405}）也会走到这里，
         //    日志看起来一模一样，实际却是"没问出来"（见 ParseNetEaseCode）。
         OnlineLog("在线歌词：网易云搜索无结果（业务码 200，响应里没有 songs 数组）");
-        return false;
+        continue;   // 换个词可能就有了
     }
     OnlineLog("在线歌词：网易云搜索返回 %zu 个候选", songs.size());
-    if (songs.empty()) return false;
+    if (songs.empty()) continue;   // 换个词可能就有了
 
     // 「卡在哪一道闸」由 PickNetEaseCandidate 自己写日志（过闸计数），这里不重复。
-    NetEaseSong pick;
-    if (!PickNetEaseCandidate(songs, req, pick)) {
-        // 有候选但一条都没过两道硬闸（曲名 + 时长）。这是**确定**的
-        // "没有合适的"，不是请求失败 —— 和 LRCLIB 那边"搜索返回但不达标"同样处理。
-        OnlineLog("在线歌词：网易云 %zu 个候选都没通过硬闸（曲名/时长）", songs.size());
-        return false;
-    }
+    if (PickNetEaseCandidate(songs, req, pick)) { picked = true; break; }
+
+    // 有候选但一条都没过两道硬闸（曲名 + 时长）。可能是这个搜索词不对，
+    // 也可能是这首歌真没有 —— 让 pass 1 用原词再确认一次。
+    OnlineLog("在线歌词：网易云 %zu 个候选都没通过硬闸（曲名/时长）", songs.size());
+
+    }   // for (pass ...)
+
+    if (!picked) return false;
+
     OnlineLog("在线歌词：网易云选中 id=%.0f 「%s」 by %s（%.1fs）",
               pick.id, pick.name.c_str(), pick.artist.c_str(), pick.durationMs / 1000.0);
 
@@ -2358,6 +2371,91 @@ bool TryNetEase(const OnlineLyricRequest& req, ULONGLONG retryDeadline,
 // 拿到歌词之后的收尾
 // ---------------------------------------------------------------------------
 
+// 严格的 ASCII 小数解析（只认数字和小数点，不接受空白/正负号/科学计数法）。
+//
+// 用在 LRC 时间戳上：那里的输入形状是确定的，多一分宽容就多一分把
+// "看起来像时间戳的东西"当成时间戳的机会。
+bool ToDoubleAscii(const std::string& s, double& out) {
+    if (s.empty()) return false;
+    double v = 0.0;
+    double frac = 0.1;
+    bool inFrac = false;
+    for (char c : s) {
+        if (c == '.') {
+            if (inFrac) return false;   // 两个小数点
+            inFrac = true;
+            continue;
+        }
+        if (c < '0' || c > '9') return false;
+        if (inFrac) {
+            v += static_cast<double>(c - '0') * frac;
+            frac /= 10.0;
+        } else {
+            v = v * 10.0 + static_cast<double>(c - '0');
+        }
+    }
+    out = v;
+    return true;
+}
+
+// 曲名首行之前有前奏时，补一行**分隔线**。
+//
+// ===========================================================================
+//  这是**显示层**的修补，所以在取词的统一出口做，而不是在某一个源里做
+// ===========================================================================
+//
+// 【治什么】LyricDocument::LineIndexAt() 里有一句
+//     if (t < m_lines.front().timeSec) return 0;   // ← 返回**第一行**
+// 也就是"第一条时间戳之前"一律算成第一行是当前行。对一首有前奏的歌，
+// 表现就是真歌词还没开口，那一行已经被高亮成"当前行"，提前几秒到几十秒。
+//
+// 补一行之后：前奏期间当前行是这条线，真正要唱的那句作为**下一行**在下面等着。
+//
+// 【为什么要放在这里，而不是 StripNetEaseCredits 里】
+// 那个位置只覆盖「本次从网易云新取到的词」。而**缓存里的 .lrc 是之前写下的**，
+// 根本不会再走那段代码 —— 用户实测就撞上了：「缓存到本地的歌词还没有第一行的
+// 分隔线」。同一件事在"新取"和"缓存命中"两条路上各写一遍迟早会走岔，
+// 所以收敛到**唯一的出口**（见 D-040）。
+//
+// 【为什么是分隔线而不是空行】
+// 解析器**主动丢弃空文本行**（lyric.cpp：夹具里歌词之间夹着空行，不能渲染成
+// 空行）。想要空行就得改解析器，而它是全工程共用的 —— 实测那么改会一次打挂
+// 26 条解析断言。分隔线是**一行有文字的普通 LRC**，现有解析器原样接受。
+//
+// 【幂等】首行已经是分隔线就原样返回 —— 新取的词和缓存命中的词会经过同一个
+// 函数，不幂等就会叠出好几条线。
+std::string EnsureLeadInSeparator(const std::string& lrcUtf8) {
+    if (lrcUtf8.empty()) return lrcUtf8;
+
+    // 取首行
+    size_t nl = lrcUtf8.find('\n');
+    if (nl == std::string::npos) nl = lrcUtf8.size();
+    const std::string first = lrcUtf8.substr(0, nl);
+
+    // 幂等：已经有线了就别再加
+    if (first.find(NetEaseIntroSeparator()) != std::string::npos) return lrcUtf8;
+
+    // 解析首行的 [mm:ss.xx]
+    if (first.empty() || first[0] != '[') return lrcUtf8;
+    const size_t close = first.find(']');
+    if (close == std::string::npos) return lrcUtf8;
+
+    const std::string tag = first.substr(1, close - 1);
+    const size_t colon = tag.find(':');
+    if (colon == std::string::npos) return lrcUtf8;
+
+    double minutes = 0.0, seconds = 0.0;
+    if (!ToDoubleAscii(tag.substr(0, colon), minutes)) return lrcUtf8;
+    if (!ToDoubleAscii(tag.substr(colon + 1), seconds)) return lrcUtf8;
+
+    const double firstSec = minutes * 60.0 + seconds;
+    // 首行本来就在 0 附近 -> 没有前奏，不用补
+    if (firstSec <= 0.05) return lrcUtf8;
+
+    OnlineLog("在线歌词：首行在 %.2f 秒（有前奏），已在开头补一行分隔线", firstSec);
+    return "[00:00.000]" + NetEaseIntroSeparator() + "\n" + lrcUtf8;
+}
+
 // 把歌词文本解码好、写进缓存、返回结果。
 //
 // 【为什么必须顺手删掉 .miss 标记】
@@ -2376,7 +2474,10 @@ OnlineLyricResult SaveAndReturn(const CachePaths& paths, bool cacheUsable,
     result.fromCache = false;
 
     // 优先 syncedLyrics（带时间轴），没有才退回 plainLyrics。
-    const std::string& text = entry.hasSynced ? entry.synced : entry.plain;
+    //
+    // 分隔线在这里补（统一出口），这样**新取到的词**和**缓存命中的词**
+    // 走的是同一条规则 —— 见 EnsureLeadInSeparator。
+    const std::string text = EnsureLeadInSeparator(entry.hasSynced ? entry.synced : entry.plain);
 
     result.lrcText = Utf8ToWide(text.c_str());
     if (result.lrcText.empty()) {
@@ -2514,7 +2615,16 @@ OnlineLyricResult FetchLyricOnline(const OnlineLyricRequest& req,
                 bytes.erase(0, 3);
             }
 
-            std::wstring text = Utf8ToWide(bytes.c_str());
+            // 分隔线在这里也要补一次 —— **旧缓存里没有**。
+            //
+            // 缓存里的 .lrc 是**上一次写下的**，那段代码当时可能还没有补线的逻辑
+            // （用户实测：「缓存到本地的歌词还没有第一行的分隔线」）。
+            // 新写的缓存已经带了（SaveAndReturn 走的是同一个 text），
+            // EnsureLeadInSeparator 幂等，所以这里对两种情况都安全。
+            const std::string withLeadIn = EnsureLeadInSeparator(
+                std::string(bytes.begin(), bytes.end()));
+
+            std::wstring text = Utf8ToWide(withLeadIn.c_str());
             if (!text.empty()) {
                 result.ok = true;
                 result.fromCache = true;

@@ -352,19 +352,11 @@ void TestNetEaseCreditStrip() {
     Check(stripped.find("作词 : 方文山") == std::string::npos,
           "剥掉了「作词 : X」（全角冒号 + 冒号旁有空格）");
 
-    // ★ 开头补了一行分隔线，时间戳用**第一个被剥掉的那个**
-    //
-    // 治的是这个病：剥完名单后歌词从 [00:29.260] 才开始，而 LineIndexAt 在
-    // "第一行之前"返回第 0 行 —— 于是前 29 秒里第一句真歌词一直被当成
-    // "当前行"高亮着，明明还没唱到。
-    Check(stripped.rfind("[00:00.000]", 0) == 0,
-          "★ 分隔线补在开头，且用第一个被剥掉的时间戳");
-    // 分隔线必须是**有文字的**一行 —— 空行会被 lyric.cpp 的解析器丢弃，
-    // 写成空行等于没改（这正是当初放弃"空歌词行"方案的原因）
-    Check(stripped.find("[00:00.000]———") == 0,
-          "★ 分隔线带文字（空行会被解析器丢弃）");
-    Check(stripped.find("———") < stripped.find("故事的小黄花"),
-          "★ 分隔线在真歌词之前");
+    // ★ 分隔线**不在这里**补 —— 挪到取词的统一出口 EnsureLeadInSeparator 了。
+    //   放这里只能覆盖"本次新取到的词"，缓存里已存下的 .lrc 根本不会再走这段代码
+    //   （用户实测：「缓存到本地的歌词还没有第一行的分隔线」）。
+    Check(stripped.find("———") == std::string::npos,
+          "★ 剥名单这一步不再补分隔线（交给 EnsureLeadInSeparator）");
 
     // ★ 最重要的一条：真歌词一行都不能少
     Check(stripped.find("[00:29.260]故事的小黄花") != std::string::npos,
@@ -730,6 +722,100 @@ void TestNetEaseBizCode() {
     Check(!lyricus::IsNetEaseRetryableCode(200), "200 不是错误");
 }
 
+// 搜索词必须干净 —— 光在闸门里剥音轨号是不够的。
+//
+// 实测对比（2026-09-24）：
+//     查「02 遗忘山丘」 -> 青山不改与君携 / 讨好 / 遗憾 …（正确答案连前 6 都进不去）
+//     查「遗忘山丘」    -> 遗忘山丘 by 阿良良木健（242.8s，本地 242.1s，差 0.7 秒）
+// 原来只在候选核验里剥、搜索词没剥，于是**第一关就搜错了东西**，
+// 后面两道闸门再准也救不回来 —— 日志里表现成「过曲名闸 0 条」，
+// 看起来像"网易云没有这首歌"，其实是"我们搜错词了"。
+void TestNetEaseSearchQuery() {
+    std::printf("\n== 网易云搜索词（音轨号必须剥掉）==\n");
+
+    // 先单测切法本身
+    Check(lyricus::StripLeadingTrackNumber(L"02 遗忘山丘") == L"遗忘山丘", "剥掉「02 」");
+    Check(lyricus::StripLeadingTrackNumber(L"11 心加心") == L"心加心", "剥掉「11 」");
+    Check(lyricus::StripLeadingTrackNumber(L"07.哀歌") == L"哀歌", "点号分隔也认");
+    Check(lyricus::StripLeadingTrackNumber(L"003 某曲") == L"某曲", "三位数也认");
+    Check(lyricus::StripLeadingTrackNumber(L"无音轨号") == L"无音轨号", "没有就原样返回");
+
+    // ★ 以数字开头的真曲名 —— 会被误剥，所以线上必须留后路
+    //
+    // 剥法的判据是「≤3 位数字 + 分隔符」，挡不住这两个：
+    // 「7 Years」会被剥成「Years」，「99 Problems」会被剥成「Problems」。
+    // 这在**本地搜索**里无害（那里只是多一个候选，原样的还在），
+    // 但在**搜索词**里有害 —— 那是替换。
+    // 所以 TryNetEase 会拿剥过的词搜一次，不行再用原词搜一次。
+    //
+    // ⚠️ 我一开始把「7 Years 不切」写成了断言，结果被单测打回来 ——
+    //    这条记录的是**能力的边界**，不是缺陷。
+    Check(lyricus::StripLeadingTrackNumber(L"7 Years") == L"Years",
+          "★ 「7 Years」会被误剥（线上靠「原词重搜」兜底）");
+    Check(lyricus::StripLeadingTrackNumber(L"99 Problems") == L"Problems",
+          "★ 「99 Problems」同样会被误剥");
+    Check(lyricus::StripLeadingTrackNumber(L"1234 太多位了") == L"1234 太多位了",
+          "★ 4 位数不切（超过 3 位上限）");
+
+    // 端到端：搜索词里带的曲名必须是剥过的
+    {
+        lyricus::OnlineLyricRequest req;
+        req.artist = L"?";                 // 占位符，会被上游当空
+        req.title  = L"02 遗忘山丘";
+
+        const std::wstring path = lyricus::BuildNetEaseSearchPath(req);
+        Check(path.find(L"%E9%81%97%E5%BF%98%E5%B1%B1%E4%B8%98") != std::wstring::npos,
+              "★ 搜索词里是「遗忘山丘」的 UTF-8 百分号编码");
+        Check(path.find(L"02") == std::wstring::npos,
+              "★ 搜索词里没有音轨号「02」");
+        Check(path.find(L"/api/search/get/web?s=") == 0, "路径形状正确");
+    }
+}
+
+// 前奏补分隔线 —— 放在取词的**统一出口**，所以新取的词和缓存命中的词都覆盖。
+//
+// 出处：用户说「缓存到本地的歌词还没有第一行的分隔线」。
+// 原来这条逻辑写在 StripNetEaseCredits 里，只覆盖"本次从网易云新取到的词"；
+// 而缓存里的 .lrc 是**上一次写下的**，根本不会再走那段代码。
+void TestLeadInSeparator() {
+    std::printf("\n== 前奏分隔线（新取的词 + 缓存里的词，同一个出口）==\n");
+
+    // 首行在 29 秒 -> 有前奏 -> 补
+    const std::string late29 =
+        "[00:29.260]故事的小黄花\n"
+        "[00:33.000]从出生那年就飘着\n";
+    const std::string fixed = lyricus::EnsureLeadInSeparator(late29);
+    Check(fixed.rfind("[00:00.000]———", 0) == 0, "★ 首行在 29 秒 -> 开头补上分隔线");
+    Check(fixed.find("故事的小黄花") != std::string::npos, "真歌词一行没少");
+    Check(fixed.find("———") < fixed.find("故事的小黄花"), "分隔线在真歌词之前");
+
+    // ★ 幂等：新写的缓存已经带了线，缓存命中时再走一遍不能叠出第二条
+    const std::string twice = lyricus::EnsureLeadInSeparator(fixed);
+    Check(twice == fixed, "★ 幂等：已经有线就不会再加一条");
+
+    // 首行本来就在 0 附近 -> 没有前奏 -> 不动
+    const std::string atZero =
+        "[00:00.000]第一句就是歌词\n"
+        "[00:05.000]第二句\n";
+    Check(lyricus::EnsureLeadInSeparator(atZero) == atZero,
+          "首行在 0 秒 -> 原样返回（不补）");
+
+    // 首行在 1 秒多 -> 那个前奏短到没必要补？不 —— 只要 > 0.05 就补。
+    // 补了也无害：那一秒里当前行是空的线，第一句显示成"下一行"。
+    const std::string at1 = "[00:01.200]开口就唱\n";
+    Check(lyricus::EnsureLeadInSeparator(at1).rfind("[00:00.000]———", 0) == 0,
+          "首行在 1.2 秒也补");
+
+    // 边界与畸形输入不能崩
+    Check(lyricus::EnsureLeadInSeparator("").empty(), "空串不崩");
+    Check(lyricus::EnsureLeadInSeparator("没有时间戳的纯文本") == "没有时间戳的纯文本",
+          "没有时间戳 -> 原样返回");
+    Check(lyricus::EnsureLeadInSeparator("[坏的时间戳]词") == "[坏的时间戳]词",
+          "时间戳畸形 -> 原样返回（不猜）");
+    Check(lyricus::EnsureLeadInSeparator("[00:0.5]词") == "[00:00.000]———\n[00:0.5]词",
+          "一位小数的秒数也能解析");
+}
+
 } // namespace
 
 int wmain() {
@@ -749,6 +835,8 @@ int wmain() {
     TestEditionMarker();
     TestUntaggedTracks();
     TestNetEaseBizCode();
+    TestNetEaseSearchQuery();
+    TestLeadInSeparator();
 
     std::printf("\n----------------------------------------\n");
     std::printf("通过 %d，失败 %d\n", g_pass, g_fail);
