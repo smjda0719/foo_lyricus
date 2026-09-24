@@ -715,7 +715,17 @@ LRESULT ControlWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
             auto& st = PlaybackState::Get();
             const TickChange change = st.RefreshPosition();
-            const bool lineChanged  = (change != TickChange::None);
+
+            // ⚠️ 这里**只能**判 Line，不能写 `change != TickChange::None`。
+            //
+            // 写宽了的话 `lineChanged` 对"位置在走"那一拍也成立，
+            // 而播放时位置**每拍都在变** —— 于是下面那个 positionDue 节流
+            // 永远轮不到它生效，每 250ms 都全量重绘一次，
+            // D-031 那一整套节流等于白写。
+            //
+            // 这不是推理出来的：加心跳之后日志直接写着「本段重绘=40」（40 拍里
+            // 重绘 40 次），实测确认。修好之后应该降到 ~10（每秒一次）。
+            const bool lineChanged  = (change == TickChange::Line);
             const bool stateChanged = (st.Revision() != m_lastRevision);
 
             // 用户改了「高级首选项」里的字号 / 行数 / 当前位置 —— 那套配置

@@ -416,7 +416,7 @@ LRESULT LyricusDui::OnTimer(UINT, WPARAM wParam, LPARAM, BOOL& bHandled) {
     // 位置刷新会顺带重算「当前歌词行」——play_callback 里不能查播放位置，
     // 位置查询统一放在这里（见 playback_state.h 开头的线程约定）。
     const TickChange change = state.RefreshPosition();
-    const bool lineChanged = (change != TickChange::None);
+    const bool lineChanged = (change == TickChange::Line);
 
     // 换曲 / 加载或清除歌词只体现在代次上：那种场景下「当前行」可能
     // npos == npos 而被判成「没变化」，只看 lineChanged 会一直停在上一首的歌词上。
