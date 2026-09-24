@@ -3,6 +3,7 @@
 #include "playback_state.h"
 #include "config.h"
 #include "lyric_search.h"
+#include "folder_hint.h"
 #include "online_lyric.h"
 #include "debug_log.h"
 
@@ -475,18 +476,28 @@ void PlaybackState::StartOnlineLookup() {
     // 所以这里当空处理，让搜索词只剩曲名。
     req.artist = IsPlaceholderTag(m_tagArtist) ? std::wstring() : m_tagArtist;
 
-    // 搜索线索（可选的兜底词）。
+    // ---- 用户按文件夹指定的线索 ----
     //
-    // 【为什么是**兜底**而不是拼进主查询】它是**猜**的 —— 用户那批无标签专辑的
-    // 文件夹名不一定就是专辑名。实测两种结果都出现过：
-    //     `奇爱人生 爸爸` -> 命中「爸爸……（Interlude）」          ✓ 有用
-    //     `奇爱人生·终焉版 哀歌` -> 寻爱一生 / 众人划桨开大船 …    ✗ 反而是垃圾
-    // 拼进主查询的话，猜错会把正确答案挤出前 10（那就连兜底的机会都没了）。
-    // 所以只在主查询确认失败之后才拿它多试一次 —— 见 TryNetEase 的三趟结构。
+    // 【为什么需要】无标签的曲目只剩曲名一个搜索词，而实测这会被彻底带偏：
+    //     查「哀歌」 -> 和田薫 / 平井堅 …（真答案 id=1333394828 连前 10 都没有）
+    //     查「阿良良木健 哀歌」 -> 第 1 条就是它            ← 歌手是那把钥匙
     //
-    // 有专辑标签就以标签为准：那是作者自己写的，比文件夹名可信得多，
-    // 也顺便避免"标签对、文件夹乱起名"时反而被带偏。
-    if (m_tagAlbum.empty() || IsPlaceholderTag(m_tagAlbum)) {
+    // 【歌手进主查询，专辑只进兜底】两者可信度不一样：
+    //   歌手是用户明确告诉我们"这首歌是谁的"，直接拼进主查询词，
+    //   顺带也让**演唱者闸门**第一次能对无标签曲目起作用（它原来永远是死的）。
+    //   专辑经常是猜的（文件夹名），猜错会把正确答案挤出前 10 —— 所以
+    //   只作为主查询失败后的第三趟兜底（见 TryNetEase 的三趟结构）。
+    const std::wstring folderKey = FolderKeyOf(m_trackPath);
+    const FolderHint hint = GetFolderHint(folderKey);
+
+    if (!hint.artist.empty() && req.artist.empty()) {
+        // 只在标签**没有**歌手时才用线索覆盖 —— 标签是作者自己写的，优先级更高
+        req.artist = hint.artist;
+    }
+    if (!hint.album.empty()) {
+        req.searchHint = hint.album;
+    } else if (m_tagAlbum.empty() || IsPlaceholderTag(m_tagAlbum)) {
+        // 线索里没写专辑 -> 退回按文件夹名猜（猜得不一定准，但只影响兜底那一趟）
         req.searchHint = GuessAlbumHintFromPath(m_trackPath);
     }
 

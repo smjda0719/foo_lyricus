@@ -48,6 +48,14 @@ extern cfg_var_modern::cfg_int  cfg_backdrop_mode;
 // 就把绑定整个丢弃 —— 结果是「给 A 指定的歌词，换到 B 再换回 A 就忘了」。
 extern cfg_var_modern::cfg_string cfg_manual_lyric_map;
 
+// 按文件夹指定的歌词线索（歌手 / 专辑）。见 folder_hint.h 的说明。
+//
+// 格式：每条一行，`文件夹键 \t 歌手 \t 专辑`。
+// 用户那批专辑一个标签都没打，只能靠人工给一句线索 ——
+// 实测"歌手"是决定性的那一个词（`查「阿良良木健 哀歌」` 第 1 条就是答案，
+// 而 `查「哀歌」` 连前 10 都进不去）。
+extern cfg_var_modern::cfg_string cfg_folder_hints;
+
 // ---------------------------------------------------------------------------
 // 设置项：走 foobar2000 的 Advanced 首选项（SDK/advconfig_impl.h）
 //

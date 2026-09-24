@@ -48,3 +48,36 @@ BEGIN
 
     PUSHBUTTON      "恢复默认", IDC_BTN_RESET, 7, 191, 62, 14
 END
+
+// ---------------------------------------------------------------------------
+// 「为这个文件夹指定歌词线索」
+//
+// 注意和上面那个的区别：这个是**独立弹窗**，样式里没有也不能有 WS_CHILD。
+// （首选项页那个必须有 WS_CHILD，因为 preferences_page_instance_impl 会断言 ——
+//   见 helpers/atl-misc.h:277。两者不能照抄。）
+//
+// 为什么这段值得存在：用户那批专辑一个标签都没打，%artist% 是占位符「?」，
+// 只剩曲名一个搜索词 —— 实测「哀歌」的真答案（id=1333394828）连前 10 都进不去，
+// 而「阿良良木健 哀歌」第 1 条就是它。所以必须让人工能补上这一个词。
+// ---------------------------------------------------------------------------
+
+IDD_LYRICUS_HINT DIALOGEX 0, 0, 250, 118
+STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "指定歌词搜索线索"
+FONT 9, "MS Shell Dlg", 400, 0, 0x86
+BEGIN
+    LTEXT           "文件夹：", -1, 7, 8, 34, 10
+    LTEXT           "", IDC_LBL_FOLDER, 42, 8, 200, 10
+
+    LTEXT           "歌手", -1, 7, 26, 30, 10
+    EDITTEXT        IDC_EDIT_ARTIST, 42, 24, 200, 14, ES_AUTOHSCROLL
+
+    LTEXT           "专辑", -1, 7, 44, 30, 10
+    EDITTEXT        IDC_EDIT_ALBUM, 42, 42, 200, 14, ES_AUTOHSCROLL
+
+    LTEXT           "歌手会直接进搜索词，并且参与结果核对；专辑只作为搜索的兜底词。\n留空表示不指定。两项都清空即删除这条线索。",
+                    IDC_LBL_TITLE_HINT, 7, 62, 235, 30
+
+    DEFPUSHBUTTON   "确定", IDOK, 132, 96, 55, 16
+    PUSHBUTTON      "取消", IDCANCEL, 192, 96, 55, 16
+END

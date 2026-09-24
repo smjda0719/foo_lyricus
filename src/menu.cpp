@@ -2,6 +2,7 @@
 
 #include "control_window.h"
 #include "config.h"
+#include "folder_hint.h"
 #include "playback_state.h"
 #include "debug_log.h"
 
@@ -37,6 +38,8 @@ const GUID guid_cmd_auto_lyric   = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1
 const GUID guid_cmd_font  = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x12}};
 const GUID guid_cmd_span  = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x13}};
 const GUID guid_cmd_shift = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x14}};
+// 0x15：为文件夹指定歌词线索（无标签曲目用）
+const GUID guid_cmd_hint = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x15}};
 
 // 显示设置用「点一下换下一档」而不是弹子菜单：
 // 和已有的「切换背景材质」一个路子，代码少一截，而且改完立刻能在面板上看到效果 ——
@@ -97,6 +100,7 @@ public:
         cmd_font,
         cmd_span,
         cmd_shift,
+        cmd_hint,
         cmd_total
     };
 
@@ -115,6 +119,7 @@ public:
         case cmd_font:         return guid_cmd_font;
         case cmd_span:         return guid_cmd_span;
         case cmd_shift:        return guid_cmd_shift;
+        case cmd_hint:         return guid_cmd_hint;
         default: uBugCheck();
         }
     }
@@ -155,6 +160,9 @@ public:
             out = s.c_str();
             break;
         }
+        case cmd_hint:
+            out = "指定歌词搜索线索...";
+            break;
         default: uBugCheck();
         }
     }
@@ -193,6 +201,11 @@ public:
         case cmd_shift:
             out = "在 30 / 40 / 50 / 60 / 70 % 之间循环，指当前行落在歌词区的什么高度。"
                   "50% 是正中；嫌歌词偏下就往小调。";
+            return true;
+        case cmd_hint:
+            out = "给当前曲目**所在的文件夹**补一句搜索线索（歌手 / 专辑），专治没打标签的曲目。"
+                  "实测「哀歌」不带歌手时正确答案连前 10 都进不去，"
+                  "带上「阿良良木健」后第 1 条就是它。对整个文件夹生效，填一次管十几首。";
             return true;
         default:
             return false;
@@ -289,6 +302,26 @@ public:
             const int next = NextInCycle(kShiftSteps, cur);
             lyricus::SetLyricCurrentRatio(next);
             lyricus::DebugLog("菜单：当前行位置 %d%% -> %d%%", cur, next);
+            break;
+        }
+
+        case cmd_hint: {
+            auto& st = lyricus::PlaybackState::Get();
+            if (!st.HasTrack()) {
+                lyricus::DebugLog("菜单：没在播放，无法指定线索");
+                break;
+            }
+
+            if (lyricus::PromptFolderHint(st.TrackPath(), GetActiveWindow())) {
+                // 线索变了 —— 之前用旧查询算出来的结果（包括"没有歌词"那个
+                // 负结果缓存）都不算数了，立刻重查一遍。
+                //
+                // **不用**再单独调 StartOnlineLookup：ReloadLyrics 自己会把在线
+                // 查询排上队（playback_state.cpp:318 设 m_onlineWanted），
+                // 而那个方法是私有的，本来也不该从菜单伸手进去。
+                lyricus::DebugLog("菜单：歌词线索已更新，重新查询");
+                st.ReloadLyrics();
+            }
             break;
         }
 

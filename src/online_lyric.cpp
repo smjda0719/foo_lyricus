@@ -2600,6 +2600,35 @@ std::wstring DefaultOnlineCacheDir() {
     return dir + L"cache";
 }
 
+size_t InvalidateMissMarkers() {
+    const std::wstring dir = DefaultOnlineCacheDir();
+
+    // 本文件里没有 JoinPath（那是 lyric_search.cpp 的），这里就拼一次
+    auto join = [](const std::wstring& d, const wchar_t* name) {
+        std::wstring p = d;
+        if (!p.empty() && p.back() != L'\\' && p.back() != L'/') p += L'\\';
+        return p + name;
+    };
+
+    WIN32_FIND_DATAW fd{};
+    const std::wstring pattern = join(dir, L"*.miss");
+    HANDLE h = FindFirstFileW(pattern.c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return 0;   // 目录不存在 / 一个标记都没有
+
+    size_t removed = 0;
+    do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        if (DeleteFileIfExists(join(dir, fd.cFileName))) ++removed;
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+
+    if (removed > 0) {
+        OnlineLog("在线歌词：搜索线索变了，已作废 %zu 个「没有歌词」结论（.lrc 保留）",
+                  removed);
+    }
+    return removed;
+}
+
 OnlineLyricResult FetchLyricOnline(const OnlineLyricRequest& req,
                                    const std::wstring& cacheDir) {
     OnlineLyricResult result;
