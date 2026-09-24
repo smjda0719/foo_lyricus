@@ -144,6 +144,20 @@ std::string MakeLrc(int n) {
     return s;
 }
 
+// 双语版本：每一行后面紧跟一条**同时间戳**的翻译行。
+// 形状和网易云 tlyric 合并出来的完全一致（见在线模块的 MergeTranslationLines）。
+std::string MakeLrcBilingual(int n) {
+    std::string s;
+    char buf[80];
+    for (int i = 0; i < n; ++i) {
+        sprintf_s(buf, sizeof(buf), "[%02d:%02d.00]Line%d\n", i / 60, i % 60, i);
+        s += buf;
+        sprintf_s(buf, sizeof(buf), "[%02d:%02d.00]yi%d\n", i / 60, i % 60, i);
+        s += buf;
+    }
+    return s;
+}
+
 lyricus::LyricDocument MakeDoc(int n) {
     const std::string s = MakeLrc(n);
     std::vector<unsigned char> b(s.begin(), s.end());
@@ -153,17 +167,23 @@ lyricus::LyricDocument MakeDoc(int n) {
 // 渲染一次，返回：总行数、当前行中心 y、歌词区高度
 struct RenderResult {
     int totalLines   = 0;
+    int totalLinesLow = 0;   // 低阈值版本，用来数**小字**（见下面 Render 里的说明）
     int currentY     = -1;
     int firstTop     = -1;
     int lastBottom   = -1;
 };
 
 RenderResult Render(const lyricus::LyricsViewLayout& layout, int lineCount = 21, int current = 10,
-                    bool dump = false) {
+                    bool dump = false, bool bilingual = false) {
     RenderResult r;
 
-    lyricus::PlaybackState::Get().SetFake(true, L"Test - Song", MakeDoc(lineCount),
-                                          static_cast<size_t>(current));
+    {
+        const std::string raw = bilingual ? MakeLrcBilingual(lineCount) : MakeLrc(lineCount);
+        std::vector<unsigned char> b(raw.begin(), raw.end());
+        lyricus::PlaybackState::Get().SetFake(
+            true, L"Test - Song", lyricus::LyricDocument::Parse(b),
+            static_cast<size_t>(current));
+    }
 
     Canvas cv;
     if (!cv.Create()) return r;
@@ -179,6 +199,19 @@ RenderResult Render(const lyricus::LyricsViewLayout& layout, int lineCount = 21,
     // 阈值 140：连暗一点的普通行也算进来
     const auto all = cv.Bands(140);
     r.totalLines = static_cast<int>(all.size());
+
+    // 阈值 70：**专门用来数小字**。
+    //
+    // 【为什么需要这一档】Bands 要求一行里 ≥3 个像素四通道都过阈值，
+    // 而 9pt 的字在 ANTIALIASED 下笔画只有一像素宽、几乎全是过渡色 ——
+    // 满强度像素少到数不出来，参照行会被整条漏掉。
+    //（这不是产品问题，是**检测手段对太小的字不灵**：
+    // 最初的 dump 里当前行是 307..321、下一行 359..369，
+    //  中间 322..358 空着，看着像没画，其实是没被数出来。）
+    // 普通行的抗锯齿光晕只会把已有带撑宽一两像素，不会凭空多出一条，
+    // 所以这一档的数**做差**仍然可靠。
+    r.totalLinesLow = static_cast<int>(cv.Bands(70).size());
+
     if (!all.empty()) {
         r.firstTop   = all.front().first;
         r.lastBottom = all.back().second;
@@ -313,6 +346,42 @@ void TestNoTrack() {
     Check(r == rc.top, "dc = nullptr -> 直接返回，不崩");
 }
 
+// 双语参照行 —— 以及把用户认可的**那个位置**钉住。
+//
+// 用户 2026-09-24 反馈：「歌词的位置应该居中，之前稍微有点偏下了，这个刚好」。
+// 那个"刚好"是**顺带**来的：双语改动把居中从「只按原文高度」改成了
+// 「按整块（原文 + 参照行）高度」，块变高 -> curTop 抬起半个参照行的高度。
+// 顺带对的东西会顺带坏掉 —— 所以这里用断言把它钉死。
+void TestBilingual() {
+    std::printf("\n== 双语参照行 ==\n");
+
+    // 同一份歌词，带参照行 / 不带，比当前行的 y
+    const auto plain   = Render({100, 2, 50}, 21, 10);
+    const auto withSub = Render({100, 2, 50}, 21, 10, /*dump=*/true, /*bilingual=*/true);
+
+    std::printf("     不带参照行 -> 画出 %d 行（低阈值 %d 行），当前行 y=%d\n",
+                plain.totalLines, plain.totalLinesLow, plain.currentY);
+    std::printf("     带参照行   -> 画出 %d 行（低阈值 %d 行），当前行 y=%d\n",
+                withSub.totalLines, withSub.totalLinesLow, withSub.currentY);
+
+    // 小字用**低阈值**那一档数 —— 高阈值会把它整条漏掉（见 Render 里的说明）
+    Check(withSub.totalLinesLow > plain.totalLinesLow,
+          "★ 当前行下面真的多画了一行翻译（低阈值才数得出小字）");
+    Check(withSub.currentY > 0 && plain.currentY > 0, "两种都能定位到当前行");
+
+    // ★ 这一条就是用户说的"刚好"：整块居中 -> 当前行**上移**半个参照行
+    Check(withSub.currentY < plain.currentY,
+          "★ 有参照行时当前行上移（按整块居中）—— 这正是用户认可的位置，别改回去");
+
+    // 参照行不该把"行数上限"吃满：span=2 时依然只有上下各 2 行普通歌词
+    //（参照行是附在当前行上的，不占 span 名额）
+    Check(withSub.totalLinesLow == plain.totalLinesLow + 1,
+          "★ span=2 时只多出 1 条带（参照行不占 span 名额）");
+
+    // 当前行本身仍然是**原文**（LineIndexAt 退到同时间戳组的第一行）
+    Check(withSub.currentY > 0, "当前行仍能单独挑出来（纯白阈值）");
+}
+
 } // namespace
 
 int wmain() {
@@ -322,6 +391,7 @@ int wmain() {
     TestSpan();
     TestRatio();
     TestFontPct();
+    TestBilingual();
     TestNoTrack();
 
     std::printf("\n----------------------------------------\n");
