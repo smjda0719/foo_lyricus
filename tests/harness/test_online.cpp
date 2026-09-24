@@ -836,6 +836,73 @@ void TestLeadInSeparator() {
           "一位小数的秒数也能解析");
 }
 
+// 双语参照行：把翻译按时间戳并进原文。
+//
+// 数据来源实测（2026-09-24）：网易云《夜に駆ける》原文 64 行、tlyric 60 行 ——
+// **行数不一样**，所以只能按时间戳对齐，不能按行号。
+void TestTranslationMerge() {
+    std::printf("\n== 双语：翻译按时间戳合并 ==\n");
+
+    const std::string lrc =
+        "[00:46.116]初めて会った日から\n"
+        "[00:48.797]僕の心の全てを奪った\n"
+        "[00:56.848]寂しい目をしてたんだ\n";
+
+    // 故意**少一行**（模拟实测的 64 vs 60），而且顺序也打乱
+    const std::string tl =
+        "[00:56.848]眼神却显得如此寂寞\n"
+        "[00:48.797]夺走了我心中的一切\n";
+
+    const std::string merged = lyricus::MergeTranslationLines(lrc, tl);
+
+    Check(merged.find("[00:48.797]僕の心の全てを奪った\n[00:48.797]夺走了我心中的一切\n")
+              != std::string::npos,
+          "★ 翻译紧跟在同时间戳的原文之后，且时间戳文本一致");
+    Check(merged.find("[00:56.848]寂しい目をしてたんだ\n[00:56.848]眼神却显得如此寂寞\n")
+              != std::string::npos,
+          "★ 第二条也对上了");
+    // 没有翻译的那行保持单行
+    const size_t p = merged.find("初めて会った日から");
+    Check(p != std::string::npos, "原文没丢");
+    Check(merged.find("从第一次") == std::string::npos, "没翻译的行不会凭空多出一行");
+
+    // 时间戳对不上的翻译**必须丢掉** —— 宁可少一行，也不能配错原文
+    const std::string stray = lyricus::MergeTranslationLines(lrc, "[01:23.456]对不上的翻译\n");
+    Check(stray == lrc, "★ 时间戳对不上的翻译被丢弃（不猜、不错配）");
+
+    Check(lyricus::MergeTranslationLines(lrc, "") == lrc, "没有翻译时原样返回");
+    Check(lyricus::MergeTranslationLines("", tl).empty(), "没有原文时返回空");
+    Check(lyricus::MergeTranslationLines("没有时间戳的文本", tl) == "没有时间戳的文本",
+          "原文没有时间戳 -> 原样返回");
+
+    // ---- 合并之后，当前行必须落在**原文**上，不是翻译 ----
+    //
+    // LyricDocument::LineIndexAt 会往回退到同时间戳组的第一行。
+    // 不退的话面板会把小字翻译当成主行来高亮，原文反倒成了"上一句"。
+    {
+        std::vector<unsigned char> bytes(merged.begin(), merged.end());
+        lyricus::LyricDocument doc = lyricus::LyricDocument::Parse(bytes);
+
+        const size_t i = doc.LineIndexAt(50.0);   // 落在 [00:48.797] 这一组
+        Check(i != lyricus::LyricDocument::npos, "能找到当前行");
+        if (i != lyricus::LyricDocument::npos) {
+            Check(doc.At(i).text == L"僕の心の全てを奪った",
+                  "★ 当前行是**原文**，不是翻译");
+            Check(i + 1 < doc.Count() && doc.At(i + 1).text == L"夺走了我心中的一切",
+                  "★ 翻译就在它后面一行");
+        }
+    }
+
+    // 普通 LRC 不受影响（没有重复时间戳时，LineIndexAt 行为完全不变）
+    {
+        const std::string plain = "[00:10.000]甲\n[00:20.000]乙\n[00:30.000]丙\n";
+        std::vector<unsigned char> bytes(plain.begin(), plain.end());
+        lyricus::LyricDocument doc = lyricus::LyricDocument::Parse(bytes);
+        Check(doc.At(doc.LineIndexAt(20.0)).text == L"乙", "普通 LRC：行为不变");
+        Check(doc.At(doc.LineIndexAt(25.0)).text == L"乙", "普通 LRC：区间内取前一行");
+    }
+}
+
 } // namespace
 
 int wmain() {
@@ -857,6 +924,7 @@ int wmain() {
     TestNetEaseBizCode();
     TestNetEaseSearchQuery();
     TestLeadInSeparator();
+    TestTranslationMerge();
 
     std::printf("\n----------------------------------------\n");
     std::printf("通过 %d，失败 %d\n", g_pass, g_fail);

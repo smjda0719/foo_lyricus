@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
+#include <cmath>      // fabs —— 合并翻译时比时间戳
 #include <cstring>
 #include <cwctype>   // towlower —— 剥版本标记时大小写无关地比对
 #include <cwchar>
@@ -1126,8 +1127,13 @@ bool ParseNetEaseSearchRoot(const std::string& body, std::vector<NetEaseSong>& o
     }
 }
 
-// 歌词响应体：取 lrc.lyric。
-bool ParseNetEaseLyricRoot(const std::string& body, std::string& out) {
+// 歌词响应体：取 lrc.lyric（原文）。outTranslation 非空时顺便取 tlyric.lyric（翻译）。
+//
+// 【为什么翻译要单独取】tlyric 的**行数和原文不一定一样**（实测《夜に駆ける》：
+// 原文 64 行、翻译 60 行），所以它不能按行号对齐，只能按**时间戳**合并。
+// 合并成什么样见 MergeTranslationLines。
+bool ParseNetEaseLyricRoot(const std::string& body, std::string& out,
+                           std::string* outTranslation = nullptr) {
     static const char kLrcKey[] = "\"lrc\"";
     const size_t k = body.find(kLrcKey);
     if (k == std::string::npos) return false;
@@ -1137,7 +1143,134 @@ bool ParseNetEaseLyricRoot(const std::string& body, std::string& out) {
     ++i;
 
     size_t end = i;
-    return ParseJsonStringFieldInObject(body, i, "lyric", out, end);
+    if (!ParseJsonStringFieldInObject(body, i, "lyric", out, end)) return false;
+
+    if (outTranslation != nullptr) {
+        outTranslation->clear();
+        static const char kTlKey[] = "\"tlyric\"";
+        const size_t t = body.find(kTlKey);
+        if (t != std::string::npos) {
+            size_t j = SkipWs(body, t + sizeof(kTlKey) - 1);
+            if (j < body.size() && body[j] == ':') {
+                ++j;
+                size_t e2 = j;
+                // 取不到（没有翻译、或者是裸 null）就留空，不算失败
+                ParseJsonStringFieldInObject(body, j, "lyric", *outTranslation, e2);
+            }
+        }
+    }
+    return true;
+}
+
+// 前置声明：定义在文件更靠后的「前奏分隔线」那一节。
+// 那里是为了解析 LRC 时间戳写的 —— 这里合并翻译要用**同一个**，不另写一套
+//（两套解析迟早会在某个畸形时间戳上给出不同答案）。
+bool ToDoubleAscii(const std::string& s, double& out);
+
+// 从一行 LRC 里取出起始时间戳（秒）。取不到返回 -1。
+double LineTimestampSec(const std::string& line) {
+    size_t i = 0;
+    while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) ++i;
+    if (i >= line.size() || line[i] != '[') return -1.0;
+
+    const size_t close = line.find(']', i);
+    if (close == std::string::npos) return -1.0;
+
+    const std::string tag = line.substr(i + 1, close - i - 1);
+    const size_t colon = tag.find(':');
+    if (colon == std::string::npos) return -1.0;
+
+    double mm = 0.0, ss = 0.0;
+    if (!ToDoubleAscii(tag.substr(0, colon), mm)) return -1.0;
+    if (!ToDoubleAscii(tag.substr(colon + 1), ss)) return -1.0;
+    return mm * 60.0 + ss;
+}
+
+// 把翻译**按时间戳**合并进原文：翻译行紧跟在同时间戳的原文行之后。
+//
+// 合并后的形状就是通行的双语 LRC 写法 —— 同一条时间戳出现两行，原文在前：
+//     [00:56.848]寂しい目をしてたんだ
+//     [00:56.848]眼神却显得如此寂寞
+//
+// 【为什么是"追加同时间戳的行"而不是给 LyricLine 加字段】
+// 解析器（lyric.cpp）**一行都不用动** —— 两行都是普通的 LRC 行，它照单全收。
+// 想给它加字段就得改解析器，而那是全工程共用的（D-038 那次一改就打挂 26 条断言）。
+// "这两行是一对"这件事由**用的人**判断：LyricDocument::LineIndexAt 返回
+// 同时间戳组的**第一行**，渲染层则把同组的多行画成"原文 + 小字参照行"。
+//
+// ⚠️ 时间戳对不上的翻译行**直接丢掉** —— 宁可少一行翻译，
+//    也不要让它对到错的原文上去（差几百毫秒还能忍，差几句就是错词）。
+std::string MergeTranslationLines(const std::string& lrc, const std::string& translation) {
+    if (lrc.empty() || translation.empty()) return lrc;
+
+    // 原文里有那些时间戳
+    std::vector<double> stamps;
+    {
+        size_t pos = 0;
+        while (pos <= lrc.size()) {
+            size_t nl = lrc.find('\n', pos);
+            if (nl == std::string::npos) nl = lrc.size();
+            const double t = LineTimestampSec(lrc.substr(pos, nl - pos));
+            if (t >= 0.0) stamps.push_back(t);
+            if (nl >= lrc.size()) break;
+            pos = nl + 1;
+        }
+    }
+    if (stamps.empty()) return lrc;
+
+    std::string out;
+    out.reserve(lrc.size() + translation.size());
+    size_t pos = 0;
+    size_t merged = 0;
+
+    // ⚠️ 循环条件是 `<` 而不是 `<=`，而且只在**原本有换行**时才补换行。
+    //    用 `<=` 的话，输入结尾的 \n 之后还会再走一轮空行，
+    //    输出就比输入多一个 \n —— 对解析无害（空行本来就丢），
+    //    但"没合并任何东西时就该逐字节原样返回"是应该守住的，
+    //    否则任何一个"译文对不上"的输入都会悄悄改变原文。
+    //    （这条是被单测「时间戳对不上的翻译被丢弃」抓出来的。）
+    while (pos < lrc.size()) {
+        size_t nl = lrc.find('\n', pos);
+        const bool hasNl = (nl != std::string::npos);
+        if (!hasNl) nl = lrc.size();
+        const std::string line = lrc.substr(pos, nl - pos);
+        out += line;
+        if (hasNl) out += '\n';
+
+        // 这一行的翻译跟在它后面
+        const double t = LineTimestampSec(line);
+        if (t >= 0.0) {
+            size_t tp = 0;
+            while (tp < translation.size()) {
+                size_t tnl = translation.find('\n', tp);
+                if (tnl == std::string::npos) tnl = translation.size();
+                const std::string tl = translation.substr(tp, tnl - tp);
+
+                const double tt = LineTimestampSec(tl);
+                if (tt >= 0.0 && std::fabs(tt - t) < 0.01) {
+                    // 用原文那行的时间戳文本，保证两行完全同戳
+                    const size_t close = line.find(']');
+                    const size_t tlClose = tl.find(']');
+                    if (close != std::string::npos && tlClose != std::string::npos) {
+                        out += line.substr(0, close + 1);
+                        out += tl.substr(tlClose + 1);
+                        out += '\n';
+                        ++merged;
+                    }
+                }
+                if (tnl >= translation.size()) break;
+                tp = tnl + 1;
+            }
+        }
+
+        if (!hasNl) break;
+        pos = nl + 1;
+    }
+
+    if (merged > 0) {
+        OnlineLog("在线歌词：网易云 —— 合并了 %zu 行翻译（同时间戳）", merged);
+    }
+    return out;
 }
 
 // 剥掉网易云 LRC **开头**那段带时间戳的制作人员名单。
@@ -2413,7 +2546,8 @@ bool TryNetEase(const OnlineLyricRequest& req, ULONGLONG retryDeadline,
     }
 
     std::string lrc;
-    if (!ParseNetEaseLyricRoot(lyric.body, lrc) || lrc.empty()) {
+    std::string tlyric;
+    if (!ParseNetEaseLyricRoot(lyric.body, lrc, &tlyric) || lrc.empty()) {
         // 纯音乐条目会返回空的 lrc.lyric —— 这是确定的"这首歌没有词"。
         OnlineLog("在线歌词：网易云 id=%.0f 的 lrc.lyric 为空（多半是纯音乐）", pick.id);
         return false;
@@ -2424,6 +2558,15 @@ bool TryNetEase(const OnlineLyricRequest& req, ULONGLONG retryDeadline,
     if (lrc.empty()) {
         OnlineLog("在线歌词：网易云 id=%.0f 剥掉名单后没有正文（纯音乐）", pick.id);
         return false;
+    }
+
+    // ---- 3.5 有翻译就按时间戳并进去（双语参照行）----
+    //
+    // 放在剥名单**之后**：名单行没有翻译，先剥能让时间戳集合更干净。
+    // 用户 2026-09-24 定的设计 —— 面板只有 460×150，完整双语会把可见行数砍半，
+    // 所以只在**当前行**下面加一行小字，其余行保持单行（渲染层做的）。
+    if (!tlyric.empty()) {
+        lrc = MergeTranslationLines(lrc, tlyric);
     }
 
     entry.hasSynced    = true;

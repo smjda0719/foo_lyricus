@@ -127,6 +127,21 @@ int ClampInt(int v, int lo, int hi) {
     return v;
 }
 
+// 这一行是不是**参照行**（也就是合并进来的翻译）。
+//
+// 判据是"和上一行同一时间戳"—— 双语歌词就是这么写的
+//（见 online_lyric.cpp 的 MergeTranslationLines：原文在前、翻译紧随其后、同戳）。
+// ⚠️ 没给 LyricLine 加字段是有意的：加了就得改解析器，
+//    而那是全工程共用的（D-038 那次一改就打挂 26 条断言）。
+//    这里靠"同戳"这个**格式本身**来判断，解析器一行不用动。
+bool IsSubLine(const LyricDocument& doc, size_t i) {
+    if (i == 0 || i >= doc.Count()) return false;   // 第 0 行不可能是参照行
+    const double a = doc.At(i).timeSec;
+    const double b = doc.At(i - 1).timeSec;
+    const double d = (a > b) ? (a - b) : (b - a);
+    return d < 0.01;
+}
+
 } // namespace
 
 int DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& theme,
@@ -150,6 +165,7 @@ int DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& theme,
     HFONT fHeader  = MakeFont(dpi, ScalePt(11, pct), false);   // 曲名：刻意比歌词小，别抢戏
     HFONT fCurrent = MakeFont(dpi, ScalePt(15, pct), true);    // 当前歌词行
     HFONT fBody    = MakeFont(dpi, ScalePt(11, pct), false);   // 其它歌词行
+    HFONT fSub     = MakeFont(dpi, ScalePt(9,  pct), false);   // 当前行的翻译（参照行）
 
     const auto& st = PlaybackState::Get();
     int y = top;
@@ -197,6 +213,20 @@ int DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& theme,
             const wchar_t* curText = doc.At(cur).text.c_str();
             const int curTextH = MeasureLine(dc, curText, fCurrent, maxW);
 
+            // ---- 当前行的双语参照行 ----
+            //
+            // 双语歌词是"同一条时间戳、原文在前、翻译在后"两行。
+            // 只在**当前行**下面画那行小字翻译，其余行保持单行 ——
+            // 面板只有 460×150、可见 2~3 行，完整双语会把可见行数砍半
+            //（用户 2026-09-24 定的取向，见 plan.md #12）。
+            const bool hasSub = (cur + 1 < total) && IsSubLine(doc, cur + 1);
+            const int  gapSub = S(2);
+            const int  subTextH = hasSub
+                                      ? MeasureLine(dc, doc.At(cur + 1).text.c_str(), fSub, maxW)
+                                      : 0;
+            // 当前行**整块**的高度（原文 + 参照行）—— 居中、夹取、往下铺都要用它
+            const int curBlockH = curTextH + (subTextH > 0 ? gapSub + subTextH : 0);
+
             // 当前行的垂直锚点。
             //
             // ratio = 50 时锚点落在歌词区正中，与旧版行为一致 ——
@@ -205,9 +235,9 @@ int DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& theme,
             const int ratio  = ClampInt(layout.currentRatio, 0, 100);
             const int anchor = y + MulDiv(avail, ratio, 100);
 
-            int curTop = anchor - curTextH / 2;
+            int curTop = anchor - curBlockH / 2;
             // 锚点算出的位置可能把当前行顶出歌词区（ratio 取极端值时），夹回来。
-            curTop = ClampInt(curTop, y, limit - curTextH);
+            curTop = ClampInt(curTop, y, limit - curBlockH);
             if (curTop < y) curTop = y;   // 歌词区比一行还矮时的最后兜底
 
             // span = 0 表示「按可用高度自适应」。这是默认行为，也是三种宿主
@@ -218,9 +248,13 @@ int DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& theme,
 
             // ---- 往上铺 ----
             // above[0] 是紧邻当前行的上一行，依次向远处排。
+            //
+            // ⚠️ 跳过参照行：往前翻的时候，**不要**把前几句的翻译也当成独立一行
+            //    显示出来 —— 那会让"行数上限"被小字占满，而且视觉上很吵。
             std::vector<size_t> above;
             int up = curTop;
             for (size_t i = cur; i-- > 0; ) {
+                if (IsSubLine(doc, i)) continue;
                 if (span > 0 && above.size() >= static_cast<size_t>(span)) break;
                 const int h = MeasureLine(dc, doc.At(i).text.c_str(), fBody, maxW) + gapNormal;
                 if (up - h < y) break;      // 越过歌词区上边界就停
@@ -229,9 +263,12 @@ int DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& theme,
             }
 
             // ---- 往下铺 ----
+            // 起点要跳过当前行的参照行（如果有）—— 否则翻译会被当成
+            // "下一句歌词"再显示一遍。
             std::vector<size_t> below;
-            int down = curTop + curTextH + gapCurrent;
-            for (size_t i = cur + 1; i < total; ++i) {
+            int down = curTop + curBlockH + gapCurrent;
+            for (size_t i = cur + 1 + (hasSub ? 1 : 0); i < total; ++i) {
+                if (IsSubLine(doc, i)) continue;
                 if (span > 0 && below.size() >= static_cast<size_t>(span)) break;
                 const int h = MeasureLine(dc, doc.At(i).text.c_str(), fBody, maxW) + gapNormal;
                 if (down + h > limit) break;
@@ -250,8 +287,17 @@ int DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& theme,
             DrawLine(dc, curText, left, curTop, maxW,
                      fCurrent, theme.currentText, gapCurrent);
 
-            // 下方：正序，光标从当前行下面接着走。
-            int dy = curTop + curTextH + gapCurrent;
+            // 当前行的翻译（参照行）：小字、暗色，紧贴在原文下面。
+            //
+            // 用 dimText 而不是 normalText —— 它是**参照**，不该和正文抢注意力。
+            if (hasSub && subTextH > 0) {
+                DrawLine(dc, doc.At(cur + 1).text.c_str(), left,
+                         curTop + curTextH + gapSub, maxW,
+                         fSub, theme.dimText, 0);
+            }
+
+            // 下方：正序，光标从当前行**整块**下面接着走。
+            int dy = curTop + curBlockH + gapCurrent;
             for (size_t idx : below) {
                 dy += DrawLine(dc, doc.At(idx).text.c_str(), left, dy, maxW,
                                fBody, theme.normalText, gapNormal);

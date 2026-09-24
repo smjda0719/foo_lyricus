@@ -177,7 +177,20 @@ size_t LyricDocument::LineIndexAt(double timeSec) const {
         if (m_lines[mid].timeSec <= timeSec) lo = mid + 1;
         else                                 hi = mid;
     }
-    return (lo == 0) ? 0 : lo - 1;
+    size_t idx = (lo == 0) ? 0 : lo - 1;
+
+    // ★ 往回退到**同一时间戳组的第一行**。
+    //
+    // 【为什么】双语歌词是"同一条时间戳、原文在前、翻译在后"两行
+    //（见 online_lyric.cpp 的 MergeTranslationLines）。
+    // 上面那个二分找的是"最后一条 ≤ t 的行"，也就是**翻译**那一行 ——
+    // 于是面板会把小字翻译当成主行来高亮，原文反倒成了"上一句"。
+    // 退到组首就回到了原文，翻译由渲染层作为参照行画在它下面。
+    //
+    // 【对普通 LRC 是完全的无操作】没有重复时间戳时组里只有一行，
+    // 循环一次都不进 —— 所以这条改动不影响任何既有行为。
+    while (idx > 0 && m_lines[idx - 1].timeSec == m_lines[idx].timeSec) --idx;
+    return idx;
 }
 
 LyricDocument LyricDocument::Parse(const std::vector<unsigned char>& bytes) {
