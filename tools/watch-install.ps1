@@ -123,8 +123,19 @@ $prevSig = $null
 #    否则用户想彻底关掉播放器时，会跟守候进程来回拉锯。
 $pendingNewVersion = $false
 
+# 主循环外面套一层 try/catch。
+#
+# 【为什么】用户 2026-09-24 报守候进程不见了 —— 锁文件还在、PID 已消失，
+# 说明它是被某个**未捕获的错误**带走的（不是正常退出：正常退出会清掉锁文件）。
+# 这个脚本要长时间趴着，任何一次瞬时故障（文件正被占用、Get-FileHash 撞上
+# 半写的文件、某个 cmdlet 抛了 terminating error）都不该让整个守候结束。
+#
+# 吞掉之后**记一条日志**再继续 —— 静默重试会让人以为从没出过错。
+$consecutiveErrors = 0
 while ($true) {
+  try {
     Start-Sleep -Milliseconds $IntervalMs
+    $consecutiveErrors = 0
 
     # ---- a) 播放器退出了、且有新版在等 -> 拉起来 ----
     if ($RelaunchOnExit -and $pendingNewVersion) {
@@ -192,6 +203,19 @@ while ($true) {
     }
 
     if ($Once) { break }
+  }
+  catch {
+    # 瞬时故障不该带走整个守候进程（见循环开头那段说明）。
+    # 连续出错才值得警觉 —— 偶发一条记下来就够，别刷屏。
+    ++$consecutiveErrors
+    if ($consecutiveErrors -le 3) {
+        Say ("本轮出错（第 {0} 次），已忽略并继续：{1}" -f $consecutiveErrors,
+             $_.Exception.Message.Trim()) Yellow
+    } elseif ($consecutiveErrors -eq 4) {
+        Say "错误连续出现，后续同类错误不再逐条记录。" Yellow
+    }
+    Start-Sleep -Milliseconds 2000
+  }
 }
 
 Remove-Item $lockFile -Force -ErrorAction SilentlyContinue
