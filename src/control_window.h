@@ -123,6 +123,18 @@ private:
     unsigned m_diagFrameHr       = 0xFFFFFFFF;
     int      m_diagPaintCount    = 0;
 
+    // ---- 「歌词偶尔停止更新」的诊断计数器 ----
+    //
+    // 只在心跳日志里用，不参与任何逻辑。见 control_window.cpp 的 WM_TIMER。
+    // 用户 2026-09-24 报的现象**只有浮动面板会**（内嵌的 DUI/CUI 正常），
+    // 所以问题只可能在这条路上：定时器死了，或者状态在变但重绘没生效。
+    unsigned m_diagTickCount    = 0;   // 定时器打了多少拍
+    int      m_diagRepaintCount = 0;   // 上一段心跳以来重绘了几次
+
+    // 上一次 UpdateLayeredWindow 成功没有。
+    // 初值 true：这样第一次失败会走"好 -> 坏"的翻转，记下那条关键日志。
+    bool     m_lastUwlOk        = true;
+
     // 上一次**因为播放位置变化**而重绘的时刻（GetTickCount64）。
     // 用来把「位置在走」那种重绘节流到每秒一次 —— 见 control_window.cpp 里
     // kPositionRepaintMs 的说明。初值 0 让第一次位置变化就能通过。

@@ -146,13 +146,16 @@ std::string MakeLrc(int n) {
 
 // 双语版本：每一行后面紧跟一条**同时间戳**的翻译行。
 // 形状和网易云 tlyric 合并出来的完全一致（见在线模块的 MergeTranslationLines）。
+//
+// 译文刻意写得**明显更长**：测试要靠"当前行的像素宽度"判断
+// 两种模式（原文为主 / 翻译为主）到底谁被画成了正文。
 std::string MakeLrcBilingual(int n) {
     std::string s;
-    char buf[80];
+    char buf[120];
     for (int i = 0; i < n; ++i) {
-        sprintf_s(buf, sizeof(buf), "[%02d:%02d.00]Line%d\n", i / 60, i % 60, i);
+        sprintf_s(buf, sizeof(buf), "[%02d:%02d.00]L%d\n", i / 60, i % 60, i);
         s += buf;
-        sprintf_s(buf, sizeof(buf), "[%02d:%02d.00]yi%d\n", i / 60, i % 60, i);
+        sprintf_s(buf, sizeof(buf), "[%02d:%02d.00]translated line number %d\n", i / 60, i % 60, i);
         s += buf;
     }
     return s;
@@ -169,6 +172,7 @@ struct RenderResult {
     int totalLines   = 0;
     int totalLinesLow = 0;   // 低阈值版本，用来数**小字**（见下面 Render 里的说明）
     int currentY     = -1;
+    int currentWidth = 0;    // 当前行的水平像素宽度（用来判断画的是哪一段文字）
     int firstTop     = -1;
     int lastBottom   = -1;
 };
@@ -220,6 +224,21 @@ RenderResult Render(const lyricus::LyricsViewLayout& layout, int lineCount = 21,
     // 阈值 250：只有当前行（纯白）能达到
     const auto cur = cv.Bands(250, 1);
     if (!cur.empty()) r.currentY = (cur.front().first + cur.front().second) / 2;
+
+    // 当前行的水平范围 —— 用来看"画出来的到底是原文还是译文"
+    //（夹具里译文明显更长，宽度一比就知道）
+    {
+        int l = kWidth, rr = -1;
+        for (int y = 0; y < kHeight; ++y) {
+            for (int x = 0; x < kWidth; ++x) {
+                if (cv.Bright(x, y, 250)) {
+                    if (x < l)  l = x;
+                    if (x > rr) rr = x;
+                }
+            }
+        }
+        r.currentWidth = (rr >= l) ? (rr - l + 1) : 0;
+    }
 
     if (dump) {
         std::printf("       [dump] 返回值 y=%d\n", ret);
@@ -382,6 +401,70 @@ void TestBilingual() {
     Check(withSub.currentY > 0, "当前行仍能单独挑出来（纯白阈值）");
 }
 
+// 「翻译为主」模式 —— 用户 2026-09-24 提：
+// 「有一些用户可能喜欢把翻译当成主要的歌词，可以加一个模式」。
+void TestTranslationPrimary() {
+    std::printf("\n== 翻译为主模式 ==\n");
+
+    // 夹具里原文短（"L10"）、译文长（"translated line number 10"），
+    // 所以"当前行的像素宽度"直接说明画的是哪一段。
+    const auto normal  = Render({100, 2, 50, false}, 21, 10, false, true);
+    const auto swapped = Render({100, 2, 50, true }, 21, 10, false, true);
+
+    std::printf("     原文为主 -> 当前行宽 %d px\n", normal.currentWidth);
+    std::printf("     翻译为主 -> 当前行宽 %d px\n", swapped.currentWidth);
+
+    Check(normal.currentWidth > 0 && swapped.currentWidth > 0, "两种模式都画出了当前行");
+    Check(swapped.currentWidth > normal.currentWidth,
+          "★ 翻译为主时，当前行画的是**译文**（明显更宽）");
+    Check(swapped.totalLinesLow == normal.totalLinesLow,
+          "两种模式的**行数**一样（只是谁当正文换了）");
+}
+
+// 特别长的歌词行 —— 用户 2026-09-24 提「我们还没遇到那种特别长的歌词」。
+//
+// 这条不是"功能测试"，是**记录现在的行为**：DrawLine 用的是 DT_SINGLELINE，
+// 所以超宽的行会被**截断**（既不会换行，也不会省略号）。
+// 先把它量出来写进断言，将来真遇到超长行时才有据可依。
+void TestVeryLongLine() {
+    std::printf("\n== 特别长的歌词行（记录现状）==\n");
+
+    const std::string raw =
+        "[00:00.00]short\n"
+        "[00:05.00]this is an extremely long lyric line that goes far beyond the "
+        "width of any panel we would ever render it in, just to see what happens\n"
+        "[00:10.00]short again\n";
+
+    std::vector<unsigned char> b(raw.begin(), raw.end());
+    auto doc = lyricus::LyricDocument::Parse(b);
+
+    lyricus::PlaybackState::Get().SetFake(true, L"Test - Song", doc, 1);
+
+    Canvas cv;
+    if (!cv.Create()) return;
+    lyricus::LyricsViewTheme theme;
+    theme.dpi = 96;
+    RECT rc{ 0, 0, kWidth, kHeight };
+    lyricus::DrawLyricsView(cv.dc, rc, theme, lyricus::LyricsViewLayout{100, 0, 50});
+
+    // 找出所有横带，看那行长歌词是不是被截断了
+    const auto bands = cv.Bands(140);
+    int widest = 0;
+    for (const auto& bd : bands) {
+        int l = kWidth, rr = -1;
+        for (int y = bd.first; y <= bd.second; ++y)
+            for (int x = 0; x < kWidth; ++x)
+                if (cv.Bright(x, y, 140)) { if (x < l) l = x; if (x > rr) rr = x; }
+        if (rr >= l && rr - l + 1 > widest) widest = rr - l + 1;
+    }
+
+    // 绘制区 600 宽、左右各留 padX=20 -> 可用宽度约 560
+    std::printf("     最宽的一条带 %d px（可用宽度约 %d px）\n", widest, kWidth - 40);
+    Check(widest <= kWidth, "画出来的内容没有超出画布");
+    Check(widest > kWidth - 60,
+          "★ 现状：超长行被**截断**在可用宽度上（DT_SINGLELINE，不换行也不省略号）");
+}
+
 } // namespace
 
 int wmain() {
@@ -392,6 +475,8 @@ int wmain() {
     TestRatio();
     TestFontPct();
     TestBilingual();
+    TestTranslationPrimary();
+    TestVeryLongLine();
     TestNoTrack();
 
     std::printf("\n----------------------------------------\n");

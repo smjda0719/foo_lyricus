@@ -44,6 +44,8 @@ const GUID kExtraDirGuid     = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x
 const GUID kFuzzyGuid        = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x25}};
 const GUID kUseTagsGuid      = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x26}};
 const GUID kOnlineGuid       = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x27}};
+// 0x28 起是新段：0x20-0x27 已经用满（原来是照"最多 8 项"排的）
+const GUID kTlPrimaryGuid    = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x28}};
 
 // 挂在高级首选项树的根下。Lyricus 只有一个分支，优先级取 0 就行。
 advconfig_branch_factory g_branch("Lyricus", kBranchGuid, advconfig_branch::guid_root, 0);
@@ -85,6 +87,15 @@ advconfig_checkbox_factory g_online(
     "本地找不到时联网查询歌词（LRCLIB）", "lyricus.onlineLookup",
     kOnlineGuid, kBranchGuid, 6, true);
 
+// 有翻译时哪个当正文。
+//
+// 【为什么要给这一档】听日语/同人曲的人很多只看得懂译文，原文对他们反而是参照。
+// 用户 2026-09-24 提：「有一些用户可能喜欢把翻译当成主要的歌词」。
+// 这不是"高级选项"，是两种正当的读法。
+advconfig_checkbox_factory g_tlPrimary(
+    "歌词有翻译时，把**翻译**当正文显示（原文降为小字参照行）", "lyricus.translationPrimary",
+    kTlPrimaryGuid, kBranchGuid, 7, false);
+
 } // namespace
 
 LyricDisplayConfig GetLyricDisplayConfig() {
@@ -97,6 +108,7 @@ LyricDisplayConfig GetLyricDisplayConfig() {
     c.fontPct      = static_cast<int>(g_fontPct.get());
     c.span         = static_cast<int>(g_span.get());
     c.currentRatio = static_cast<int>(g_currentRatio.get());
+    c.tlPrimary    = g_tlPrimary.get();
 
     // 兜底夹取。advconfig 自己会 clip，但配置文件是文本的，
     // 手工编辑或跨版本残留都可能塞进超范围的值。
@@ -132,6 +144,8 @@ std::string DescribeDisplayConfig(const LyricDisplayConfig& c) {
     s += "  当前行位置=";
     s += std::to_string(c.currentRatio);
     s += "%";
+    // 只在**开着**时才写出来：默认值不刷日志，免得每次换曲都多出一截
+    if (c.tlPrimary) s += "  正文=翻译";
     return s;
 }
 

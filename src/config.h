@@ -83,8 +83,19 @@ struct LyricDisplayConfig {
     int span         = 0;     // 当前行上下各显示几行；0 = 自适应
     int currentRatio = 50;    // 当前行在歌词区里的垂直位置（%），50 = 正中
 
+    // 有翻译时，**哪个当正文**。
+    //
+    // false（默认）= 原文当正文，翻译作小字参照行。
+    // true         = 翻译当正文，原文作小字参照行。
+    //
+    // 【为什么要有 true 这一档】用户 2026-09-24 提：「有一些用户可能喜欢把翻译
+    // 当成主要的歌词」。听日语/同人曲的人很多只看得懂译文，原文对他们反而是参照。
+    // 所以这不是"高级选项"，是两种正当的读法。
+    bool tlPrimary = false;
+
     bool operator!=(const LyricDisplayConfig& o) const {
-        return fontPct != o.fontPct || span != o.span || currentRatio != o.currentRatio;
+        return fontPct != o.fontPct || span != o.span ||
+               currentRatio != o.currentRatio || tlPrimary != o.tlPrimary;
     }
     bool operator==(const LyricDisplayConfig& o) const { return !(*this != o); }
 };

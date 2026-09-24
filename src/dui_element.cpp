@@ -428,7 +428,7 @@ LRESULT LyricusDui::OnTimer(UINT, WPARAM wParam, LPARAM, BOOL& bHandled) {
     const bool cfgChanged = (cfg != m_displayCfg);
     if (cfgChanged) {
         m_displayCfg = cfg;
-        m_layout = { cfg.fontPct, cfg.span, cfg.currentRatio };
+        m_layout = { cfg.fontPct, cfg.span, cfg.currentRatio, cfg.tlPrimary };
         DebugLog("DUI 显示设置变更 -> %s", DescribeDisplayConfig(cfg).c_str());
     }
 

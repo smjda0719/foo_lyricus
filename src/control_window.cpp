@@ -724,7 +724,7 @@ LRESULT ControlWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             const bool cfgChanged = (cfg != m_displayCfg);
             if (cfgChanged) {
                 m_displayCfg = cfg;
-                m_layout = { cfg.fontPct, cfg.span, cfg.currentRatio };
+                m_layout = { cfg.fontPct, cfg.span, cfg.currentRatio, cfg.tlPrimary };
                 DebugLog("显示设置变更 -> %s", DescribeDisplayConfig(cfg).c_str());
             }
 
@@ -752,12 +752,35 @@ LRESULT ControlWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (lineChanged || stateChanged || cfgChanged || apChanged || positionDue) {
                 m_lastPositionRepaint = now;
                 m_lastRevision = st.Revision();
+                ++m_diagRepaintCount;
                 if (static_cast<BackdropMode>(cfg_backdrop_mode.get()) == BackdropMode::Translucent) {
                     RenderLayered();
                 } else {
                     InvalidateRect(hwnd, nullptr, TRUE);
                 }
             }
+            // 心跳：每 40 拍（10 秒）记一行。
+            //
+            // 【为什么要它】用户 2026-09-24 报「偶尔歌词会停止更新，点击暂停重新播放
+            // 或者调节音量才会继续更新」，**而且只有浮动面板会**（内嵌的 DUI/CUI 正常）。
+            //
+            // "内嵌的正常"这一条直接排掉了两种可能：位置在走、当前行在换 ——
+            // 那些是三个宿主共用的。所以只剩两种，而它们光看现象分不出来：
+            //   1. 定时器死了        -> 「拍」不再增长
+            //   2. 状态在变但重绘没生效 -> 「拍」在涨、「本段重绘」也在涨，画面却不动
+            //     （对应 RenderLayered 里 UpdateLayeredWindow 失败 —— 那个另有一条日志）
+            ++m_diagTickCount;
+            if (m_diagTickCount % 40 == 0) {
+                DebugLog("面板心跳: 拍=%u  位置=%.1fs  行=%zu/%zu  rev=%u  "
+                         "本段重绘=%d  本拍=%s",
+                         m_diagTickCount, st.PositionSec(),
+                         st.CurrentLine(), st.Lyrics().Count(), st.Revision(),
+                         m_diagRepaintCount,
+                         change == TickChange::None ? "无变化" :
+                         (change == TickChange::Line ? "换行" : "仅位置"));
+                m_diagRepaintCount = 0;
+            }
+
             return 0;
         }
         break;
@@ -976,7 +999,23 @@ void ControlWindow::RenderLayered() {
     POINT src{ 0, 0 };
     SIZE size{ w, h };
     BLENDFUNCTION blend{ AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
-    UpdateLayeredWindow(m_hwnd, screenDC, &dst, &size, memDC, &src, 0, &blend, ULW_ALPHA);
+    const BOOL uwlOk = UpdateLayeredWindow(m_hwnd, screenDC, &dst, &size, memDC, &src, 0, &blend, ULW_ALPHA);
+
+    // 提交失败**必须留痕**，而且只在"好->坏"翻转时记一条。
+    //
+    // 【为什么】这是"状态在变、重绘也发了，但画面就是不动"的唯一解释 ——
+    // 用户 2026-09-24 报的「偶尔歌词停止更新、只有浮动面板会」正好是这个形状：
+    // 内嵌面板走 WM_PAINT，不受这条路径影响，所以它们一直正常。
+    // 不判返回值的话，失败是**完全静默**的：循环照跑、日志照写、画面冻住。
+    if (!uwlOk != !m_lastUwlOk) {
+        m_lastUwlOk = (uwlOk != FALSE);
+        if (uwlOk) {
+            DebugLog("RenderLayered: UpdateLayeredWindow 恢复正常");
+        } else {
+            DebugLog("RenderLayered: UpdateLayeredWindow 失败（GetLastError=%lu）"
+                     "—— 画面从此刻起不会更新", GetLastError());
+        }
+    }
 
     ReleaseDC(nullptr, screenDC);
 }

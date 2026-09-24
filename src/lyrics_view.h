@@ -38,6 +38,12 @@ struct LyricsViewLayout {
     int fontPct      = 100;   // 字号百分比，100 = 默认
     int span         = 0;     // 当前行上下各显示几行；0 = 按可用高度自适应
     int currentRatio = 50;    // 当前行在歌词区里的垂直位置（%），50 = 正中
+
+    // 有翻译时哪个当正文：false = 原文（翻译作小字参照行），true = 反过来。
+    //
+    // 放在最后是为了让既有的 `{fontPct, span, ratio}` 聚合初始化照旧编译 ——
+    // 三个宿主都那么写，加在中间会一次性把它们全打断。
+    bool tlPrimary   = false;
 };
 
 // 画「曲名 + 歌词」。
