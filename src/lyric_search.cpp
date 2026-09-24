@@ -859,6 +859,46 @@ std::wstring StripLeadingTrackNumber(const std::wstring& name) {
 }
 
 // 见 lyric_search.h 的说明。
+std::wstring GuessAlbumHintFromPath(const std::wstring& filePath) {
+    // 这些文件夹名没有信息量 —— 它们是"装东西的盒子"，不是专辑名。
+    // 命中就往上一层。表故意写得很窄：宁可多带一个没用的词，
+    // 也不要把真的专辑名当成盒子跳过去。
+    static const wchar_t* kBoxNames[] = {
+        L"本体", L"数字版", L"实体版", L"初回限定", L"通常盘",
+        L"cd1", L"cd2", L"cd3", L"disc1", L"disc2", L"disc 1", L"disc 2",
+        L"disk1", L"disk2", L"vol1", L"vol2",
+        L"flac", L"wav", L"mp3", L"ape", L"tta", L"无损", L"分轨", L"整轨",
+        L"scans", L"scan", L"artwork", L"bk", L"booklet", L"cover",
+        L"music", L"音乐", L"歌曲",
+    };
+
+    std::wstring dir = DirOf(filePath);
+    for (int level = 0; level < 3; ++level) {   // 最多往上找三层，别爬出专辑目录
+        if (dir.empty()) return std::wstring();
+
+        // 去掉结尾的斜杠，再取最后一段
+        while (!dir.empty() && (dir.back() == L'\\' || dir.back() == L'/')) dir.pop_back();
+        if (dir.empty()) return std::wstring();
+
+        const size_t sep = dir.find_last_of(L"\\/");
+        std::wstring leaf = (sep == std::wstring::npos) ? dir : dir.substr(sep + 1);
+
+        // 盘符根（"E:" 这种）不是专辑名
+        if (leaf.size() == 2 && leaf[1] == L':') return std::wstring();
+
+        bool isBox = false;
+        for (const wchar_t* b : kBoxNames) {
+            if (_wcsicmp(leaf.c_str(), b) == 0) { isBox = true; break; }
+        }
+        if (!isBox) return leaf;
+
+        // 是盒子名 -> 往上走一层再看
+        dir = (sep == std::wstring::npos) ? std::wstring() : dir.substr(0, sep);
+    }
+    return std::wstring();
+}
+
+// 见 lyric_search.h 的说明。
 bool ArtistNamesOverlap(const std::wstring& a, const std::wstring& b) {
     const std::wstring na = NormalizeLyricStem(a);
     const std::wstring nb = NormalizeLyricStem(b);

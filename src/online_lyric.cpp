@@ -1960,9 +1960,11 @@ HttpReply HttpGet(const std::wstring& host, const std::wstring& pathAndQuery,
 // 别再写第二个：同一件事有两份实现，将来改一处漏一处就是"中文曲名
 // 在 LRCLIB 上好好的、在网易云上 400"这种最难查的 bug。
 // titleOverride 为空 = 用剥掉音轨号之后的曲名（默认，也是绝大多数情况该用的）。
-// 传非空 = 用指定的词再搜一次 —— 见 TryNetEase 里"两个词"那段说明。
+// hintOverride  为空 = 用 req.searchHint。传非空 = 用指定的线索。
+// 两者都是为了支持多趟搜索 —— 见 TryNetEase 里那段说明。
 std::wstring BuildNetEaseSearchPath(const OnlineLyricRequest& req,
-                                    const std::wstring& titleOverride = std::wstring()) {
+                                    const std::wstring& titleOverride = std::wstring(),
+                                    const std::wstring& hintOverride  = std::wstring()) {
     // ⚠️ 搜索词里的曲名必须**先剥掉音轨号**。
     //
     // 实测（2026-09-24）这个前缀会把搜索整个带偏：
@@ -1978,6 +1980,17 @@ std::wstring BuildNetEaseSearchPath(const OnlineLyricRequest& req,
     std::wstring q = TrimWs(req.artist);
     if (!q.empty() && !t.empty()) q += L" ";
     q += t;
+
+    // 线索（通常是专辑名）再缀在后面。
+    //
+    // 放在**末尾**是有意的：搜索引擎对靠前的词权重更高，曲名才是最强的判据；
+    // 线索只是用来把"同名不同专辑"的那一堆挤下去。
+    const std::wstring hint = hintOverride.empty() ? TrimWs(req.searchHint)
+                                                   : TrimWs(hintOverride);
+    if (!hint.empty()) {
+        if (!q.empty()) q += L" ";
+        q += hint;
+    }
 
     return L"/api/search/get/web?s=" + PercentEncode(q) + L"&type=1&limit=10";
 }
@@ -2027,6 +2040,16 @@ bool IsContentNeutralEdition(const std::wstring& lower) {
     static const wchar_t* kWords[] = {
         L"remaster",          // remastered / remaster / re-mastered
         L"hi-res", L"hires",  // 高解析度重制
+
+        // 曲目**类型**标记，同样不改变内容与时间轴。
+        //
+        // 实测来源（2026-09-24）：本地 `06 爸爸.wav`（49.0s），
+        // 网易云上是 `爸爸……（Interlude）`（64s，专辑「奇爱人生 LOVE ELEGIA」）。
+        // 不剥这个后缀的话曲名闸直接毙掉 —— 而那确实是同一段东西。
+        //
+        // ⚠️ 只收"类型"标记，**不收** Live / Instrumental / Cover / Ver. ——
+        //    那些版本的内容真的不一样。
+        L"interlude",
     };
     for (const wchar_t* w : kWords) {
         if (lower.find(w) != std::wstring::npos) return true;
@@ -2215,30 +2238,50 @@ bool TryNetEase(const OnlineLyricRequest& req, ULONGLONG retryDeadline,
     constexpr int kNetEaseRateLimitRetries = 3;
     constexpr DWORD kNetEaseBackoffMs[] = { 800, 1600, 2500 };
 
-    // 【为什么要准备两个搜索词】曲名开头的音轨号必须先剥掉（见 BuildNetEaseSearchPath），
-    // 但剥法是「≤3 位数字 + 分隔符」，所以「7 Years」「99 Problems」这类
-    // **曲名本身以数字开头**的会被误剥成「Years」「Problems」。
+    // 【为什么要准备最多三个搜索词】曲名开头的音轨号必须先剥掉
+    // （见 BuildNetEaseSearchPath），但剥法是「≤3 位数字 + 分隔符」，所以
+    // 「7 Years」「99 Problems」这类**曲名本身以数字开头**的会被误剥成
+    // 「Years」「Problems」。
     //
     // 这个误剥在**本地搜索**里无害 —— 那里只是多一个候选，原样的还在；
-    // 但在搜索词里有害，因为它是**替换**。所以剥过的词搜不到时，用原词再试一次。
-    // （我自己写测试时就断言"7 Years 不该被剥"，结果被抓出来 —— 见 D-040。）
+    // 但在搜索词里有害，因为它是**替换**。所以剥过的词搜不到时用原词再试一次。
+    // （我自己写测试时就断言"7 Years 不该被剥"，结果被抓出来 —— 见 D-041。）
+    //
+    // 第三趟是**线索兜底**（通常是文件夹名猜出来的专辑）。它放在最后是刻意的：
+    // 那是猜的，猜错会把正确答案挤出前 10，所以只能"加一次机会"，
+    // 不能"挤掉原有的机会"。实测两种结果都出现过 ——
+    //     `奇爱人生 爸爸`      -> 命中「爸爸……（Interlude）」     ✓
+    //     `奇爱人生·终焉版 哀歌` -> 寻爱一生 / 众人划桨开大船 …    ✗
     const std::wstring strippedTitle = StripLeadingTrackNumber(title);
+    const std::wstring hint          = TrimWs(req.searchHint);
+
+    // 每一趟就是一对 (曲名, 线索)。
+    struct SearchPass { std::wstring title; std::wstring hint; };
+    std::vector<SearchPass> passes;
+    passes.push_back({ strippedTitle, std::wstring() });                  // 1) 剥过音轨号
+    if (title != strippedTitle) {
+        passes.push_back({ title, std::wstring() });                      // 2) 原曲名
+    }
+    if (!hint.empty()) {
+        passes.push_back({ title, hint });                                // 3) 线索兜底
+    }
 
     std::vector<NetEaseSong> songs;
     NetEaseSong pick;
     bool picked = false;
 
-    for (int pass = 0; pass < 2 && !picked; ++pass) {
-        const std::wstring& queryTitle = (pass == 0) ? strippedTitle : title;
-        if (pass == 1) {
-            if (queryTitle == strippedTitle) break;   // 压根没剥掉什么，不必重搜
-            OnlineLog("在线歌词：网易云换回原曲名再搜一次（「%s」）",
-                      WideToUtf8(queryTitle).c_str());
+    for (size_t pass = 0; pass < passes.size() && !picked; ++pass) {
+        if (pass > 0) {
+            OnlineLog("在线歌词：网易云第 %zu 趟搜索（曲名「%s」%s）",
+                      pass + 1, WideToUtf8(passes[pass].title).c_str(),
+                      passes[pass].hint.empty() ? "" : "，带线索");
         }
 
     HttpReply search;
     for (int attempt = 0; ; ++attempt) {
-        search = HttpGet(kNetEaseHost, BuildNetEaseSearchPath(req, queryTitle), retryDeadline);
+        search = HttpGet(kNetEaseHost,
+                         BuildNetEaseSearchPath(req, passes[pass].title, passes[pass].hint),
+                         retryDeadline);
 
         if (!search.transportOk) {
             requestFailed = true;

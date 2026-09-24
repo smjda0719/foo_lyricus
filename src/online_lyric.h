@@ -34,6 +34,21 @@ namespace lyricus {
 struct OnlineLyricRequest {
     std::wstring artist, title, album;
     double durationSec = 0.0;   // <= 0 表示未知
+
+    // 搜索线索（可选）。**只影响搜索词，不参与曲目身份的判定。**
+    //
+    // 【为什么需要它】无标签的曲目里 artist 是占位符「?」、album 是空的，
+    // 于是我们只剩曲名一个词去搜 —— 实测会被带偏：
+    //     查「02 遗忘山丘」 -> 青山不改与君携 / 讨好 / 遗憾 …（正确答案连前 6 都进不去）
+    //     查「奇爱人生 遗忘山丘」 -> 命中
+    // 线索通常是**曲目所在文件夹的名字**（用户那些专辑一个标签都没打，
+    // 但文件夹名往往就是专辑名），也可能是用户在菜单里手动指定的。
+    //
+    // ⚠️ 刻意**不放进缓存键**（MakeCacheKey 只看 artist/title/album/duration）：
+    //    它是"怎么找"的辅助，不是"是哪首歌"的一部分。
+    //    代价是用户改了线索之后，之前写下的未命中标记还在 ——
+    //    所以改动线索时要顺手清掉 .miss（见 SetFolderHint 那条路径）。
+    std::wstring searchHint;
 };
 
 // 一次查询的输出。
