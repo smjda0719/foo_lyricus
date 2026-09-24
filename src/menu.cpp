@@ -7,6 +7,9 @@
 #include "debug_log.h"
 
 #include <commdlg.h>
+#include <SDK/playlist.h>       // playlist_manager（退路：播放列表里选中的那首）
+#include <SDK/popup_message.h>   // 失败要弹出来，不能只写日志
+#include "lyric.h"            // Utf8ToWide
 #include <string>
 
 // ---------------------------------------------------------------------------
@@ -307,18 +310,43 @@ public:
 
         case cmd_hint: {
             auto& st = lyricus::PlaybackState::Get();
-            if (!st.HasTrack()) {
-                lyricus::DebugLog("菜单：没在播放，无法指定线索");
+
+            // 先看正在播放的曲目；没有就退到播放列表里**焦点所在**的那一项。
+            //
+            // 【为什么必须有这条退路】用户 2026-09-24 报「输入窗口现在不显示了」，
+            // 日志里是「菜单：没在播放，无法指定线索」，点了两次都是这样。
+            // 根因：**播放器重启之后是停止状态**（而守候进程现在会自动重启它），
+            // 于是这条命令每次都被 `HasTrack()` 挡在门外。
+            // 用户显然是想给列表里选中的那首设线索，而不是"必须先播放点什么"。
+            std::wstring path = st.TrackPath();
+            if (path.empty()) {
+                metadb_handle_ptr item;
+                auto pm = playlist_manager::get();
+                if (pm.is_valid() && pm->activeplaylist_get_focus_item_handle(item) &&
+                    !item.is_empty()) {
+                    // metadb 给的是 file:// URL，要转成文件系统路径才解析得了文件夹
+                    pfc::string8 native;
+                    if (filesystem::g_get_native_path(item->get_path(), native)) {
+                        path = lyricus::Utf8ToWide(native.get_ptr());
+                    }
+                }
+            }
+
+            if (path.empty()) {
+                // ★ 上一次的教训：**不要静默失败**。
+                // 上一版这里只写一行日志就退出，用户看到的是"点了没反应"。
+                popup_message::g_show(
+                    "请先在播放列表里选中一首曲目，或先播放一首。",
+                    "Lyricus —— 指定歌词搜索线索");
                 break;
             }
 
-            if (lyricus::PromptFolderHint(st.TrackPath(), GetActiveWindow())) {
+            if (lyricus::PromptFolderHint(path, core_api::get_main_window())) {
                 // 线索变了 —— 之前用旧查询算出来的结果（包括"没有歌词"那个
                 // 负结果缓存）都不算数了，立刻重查一遍。
                 //
                 // **不用**再单独调 StartOnlineLookup：ReloadLyrics 自己会把在线
-                // 查询排上队（playback_state.cpp:318 设 m_onlineWanted），
-                // 而那个方法是私有的，本来也不该从菜单伸手进去。
+                // 查询排上队，而那个方法是私有的，本来也不该从菜单伸手进去。
                 lyricus::DebugLog("菜单：歌词线索已更新，重新查询");
                 st.ReloadLyrics();
             }
