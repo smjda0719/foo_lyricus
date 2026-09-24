@@ -25,3 +25,6 @@ desktop.ini
 
 # ---- 回滚用的已知良好 DLL（构建产物，不进库；rollback.ps1 保留）----
 backup/*.dll
+
+# ---- 守候进程的运行日志（一直在写，不该进库）----
+build/watch-install.log
