@@ -274,6 +274,22 @@ void PlaybackState::ReloadLyrics() {
     m_currentLine = LyricDocument::npos;
     m_lyricPath.clear();
 
+    // ★ 重新加载 = "把之前知道的忘掉，重新问一遍"。
+    //
+    // 【不清这两样会出什么】`StartOnlineLookup()` 开头有一句
+    //     if (m_onlinePendingUrl == m_trackUrl) return;   // 这首已经在查了
+    // 那是用来防**重复并发查询**的。但"重新加载"是**故意**要再查一次的 ——
+    // 不清标记的话，在**同一首曲目**上重新加载根本发不出查询，要切歌才生效。
+    //
+    // 实测踩到的现象（用户 2026-09-24 报）：给无标签曲目填线索时，
+    // 先填一个歌手 -> 切了首歌 -> 好了；再加一个歌手 -> 没切歌 -> **毫无反应**。
+    // 用户以为是"填多了搜不到"，其实是"这一首压根没重查"。
+    //
+    // 代次也要 ++：同名同曲目再查时 url 是不变的，只比 url 分不出新旧，
+    // 旧查询的在途结果会被当成新的收下 —— 而那是用**旧线索**搜出来的东西。
+    ++m_onlineGeneration;
+    m_onlinePendingUrl.clear();
+
     if (m_trackPath.empty()) return;
 
     // 标签只在拿得到 metadb 时才有；拿不到就留空，
