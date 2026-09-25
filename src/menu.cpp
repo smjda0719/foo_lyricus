@@ -31,69 +31,37 @@ using namespace lyricus;
 
 const GUID guid_menu_group   = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x07}};
 const GUID guid_cmd_toggle   = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x08}};
-const GUID guid_cmd_backdrop = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x09}};
 const GUID guid_cmd_reset    = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x0a}};
 const GUID guid_cmd_reload_lyric = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x0b}};
 const GUID guid_cmd_pick_lyric   = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x0c}};
 const GUID guid_cmd_auto_lyric   = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x0f}};
-// 0x12-0x14：三个「显示设置」快捷调整命令。
+
 // ⚠️ 分配新 GUID 前先 grep 全工程的 `0x4d,0x` ——
 //    撞了既不会报错也不会警告，编译链接一路绿灯（已经踩过一次）。
-const GUID guid_cmd_font  = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x12}};
-const GUID guid_cmd_span  = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x13}};
-const GUID guid_cmd_shift = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x14}};
+//
+// 0x09 / 0x12-0x14 **已废弃**（背景通透度 + 三个显示设置快捷档）：
+// 它们都被「调节面板」取代了，见下面那段说明。废弃的号不再分配 ——
+// 万一有用户把旧命令拖到了工具栏上，至少不会指到别的功能去。
+
 // 0x15：为文件夹指定歌词线索（无标签曲目用）
 const GUID guid_cmd_hint = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x15}};
 
-// 「调节面板」（0x16）。见 adjust_dialog.h 与 D-048/D-049。
+// 「调节面板」（0x16）。见 adjust_dialog.h。
 //
-// 第一版把这几个量做成了循环档（字号、行位置）和「点一次提前 0.5 秒」，
+// 第一版把这几个量做成了循环档（字号、行位置、通透度）和「点一次提前 0.5 秒」，
 // 用户 2026-09-25 连着否掉两次：「这么点太麻烦了」
 // 「也把字号，行数，行位置，透明度也这么改」。现在是一条命令开一个
-// 五条滑动条的面板，拖动实时生效。
-// 0x17 / 0x18 留空（那两条命令的 GUID 已废弃，不再分配）。
+// 五条滑动条的面板，拖动实时生效 —— 那四条旧命令随之删掉。
 const GUID guid_cmd_adjust = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x16}};
 
-// 显示设置用「点一下换下一档」而不是弹子菜单：
-// 和已有的「切换背景材质」一个路子，代码少一截，而且改完立刻能在面板上看到效果 ——
-// 比在子菜单里先找到当前项再点，反馈直接得多。
-// 需要精确值时去 首选项 -> 高级 -> Lyricus 里填，两边读写的是同一份存储。
-const int kFontSteps[]  = {80, 100, 125, 150, 200};
-const int kSpanSteps[]  = {0, 2, 3, 5, 7, 9};      // 0 = 自适应
-const int kShiftSteps[] = {30, 40, 50, 60, 70};    // 当前行的垂直位置 %
-
-// 背景通透度档位（alpha 0-255，255 = 完全不透明）。
+// 【这里原本有四组"点一下换下一档"的档位表】—— 字号 / 行数 / 行位置 / 背景通透度。
 //
-// 菜单里只给几档确定的值 —— 它本来就只能"点"，让人盲点着找手感不如给档位。
-// 想要精确值就去 首选项 → 显示 → Lyricus 拖滑块（那里也有实时预览）。
-const int kAlphaSteps[] = {255, 242, 217, 179};    // 100% / 95% / 85% / 70%
-
-int AlphaPercent(int alpha) {
-    // 四舍五入到整数百分比
-    return (alpha * 100 + 127) / 255;
-}
-
-// 找最接近的档位下标。当前值不在表里（用户在首选项里拖过滑块）时，
-// 找最近的一档 —— 这样"点一下"的落点是可预期的，而不是跳回第一档。
-size_t NearestAlphaStep(int alpha) {
-    size_t best = 0;
-    int bestDiff = 1 << 30;
-    for (size_t i = 0; i < _countof(kAlphaSteps); ++i) {
-        const int d = (kAlphaSteps[i] > alpha) ? (kAlphaSteps[i] - alpha) : (alpha - kAlphaSteps[i]);
-        if (d < bestDiff) { bestDiff = d; best = i; }
-    }
-    return best;
-}
-
-template <size_t N>
-int NextInCycle(const int (&steps)[N], int current) {
-    for (size_t i = 0; i < N; ++i) {
-        if (steps[i] == current) return steps[(i + 1) % N];
-    }
-    // 当前值不在表里 —— 用户在高级首选项里手填过一个表外的值。
-    // 这时点一下回到第一档，比"什么都不做"更像是响应了。
-    return steps[0];
-}
+// 2026-09-25 全部删掉，因为「调节面板」把它们都收进去了：
+// 那四个量的共同点是**要一边看面板一边调**，而"点一下换一档"要来回点十几次
+// 才找到手感（用户原话：「这么点太麻烦了」）。滑动条一次到位，还能实时预览。
+//
+// ⚠️ 别再往这里加"循环档"式的显示设置。要加就先问自己：
+//    这个量用户是不是要盯着面板调？是的话就该进调节面板。
 
 mainmenu_group_popup_factory g_menu_group(
     guid_menu_group,
@@ -105,14 +73,10 @@ class LyricusMenu : public mainmenu_commands {
 public:
     enum {
         cmd_toggle = 0,
-        cmd_backdrop,
         cmd_reset,
         cmd_reload_lyric,
         cmd_pick_lyric,
         cmd_auto_lyric,
-        cmd_font,
-        cmd_span,
-        cmd_shift,
         cmd_hint,
         cmd_adjust,
         cmd_total
@@ -125,14 +89,10 @@ public:
     GUID get_command(t_uint32 index) override {
         switch (index) {
         case cmd_toggle:       return guid_cmd_toggle;
-        case cmd_backdrop:     return guid_cmd_backdrop;
         case cmd_reset:        return guid_cmd_reset;
         case cmd_reload_lyric: return guid_cmd_reload_lyric;
         case cmd_pick_lyric:   return guid_cmd_pick_lyric;
         case cmd_auto_lyric:   return guid_cmd_auto_lyric;
-        case cmd_font:         return guid_cmd_font;
-        case cmd_span:         return guid_cmd_span;
-        case cmd_shift:        return guid_cmd_shift;
         case cmd_hint:         return guid_cmd_hint;
         case cmd_adjust:       return guid_cmd_adjust;
         default: uBugCheck();
@@ -142,39 +102,10 @@ public:
     void get_name(t_uint32 index, pfc::string_base& out) override {
         switch (index) {
         case cmd_toggle:       out = "显示 / 隐藏操作面板"; break;
-        case cmd_backdrop: {
-            // 名字里带上当前通透度，和字号那几条一致 —— 一眼就知道现在是什么状态
-            const std::string s = "切换背景通透度（当前 " +
-                std::to_string(AlphaPercent(GetPanelAppearance().alpha)) + "%）";
-            out = s.c_str();
-            break;
-        }
         case cmd_reset:        out = "重置面板位置与材质"; break;
         case cmd_reload_lyric: out = "重新加载歌词"; break;
         case cmd_pick_lyric:   out = "选择歌词文件..."; break;
         case cmd_auto_lyric:   out = "恢复自动匹配歌词"; break;
-
-        // 下面三条的名字里带当前值：菜单每次展开都会重新调 get_name，
-        // 所以不用自己维护"勾选状态"，用户扫一眼就知道现在是什么档。
-        case cmd_font: {
-            const std::string s = "调整歌词字号（当前 " +
-                std::to_string(lyricus::GetLyricDisplayConfig().fontPct) + "%）";
-            out = s.c_str();
-            break;
-        }
-        case cmd_span: {
-            const int sp = lyricus::GetLyricDisplayConfig().span;
-            const std::string s = "调整歌词显示行数（当前 " +
-                (sp > 0 ? std::to_string(sp) + " 行）" : std::string("自适应）"));
-            out = s.c_str();
-            break;
-        }
-        case cmd_shift: {
-            const std::string s = "调整当前行位置（当前 " +
-                std::to_string(lyricus::GetLyricDisplayConfig().currentRatio) + "%）";
-            out = s.c_str();
-            break;
-        }
         case cmd_hint:
             out = "指定歌词搜索线索...";
             break;
@@ -199,11 +130,6 @@ public:
         case cmd_toggle:
             out = "显示或隐藏 Lyricus 独立操作面板（放在副屏用，置顶显示）。";
             return true;
-        case cmd_backdrop:
-            out = "在 100% / 95% / 85% / 70% 四档之间循环，控制面板背后的透出程度。"
-                  "想要精确值：首选项 → 显示 → Lyricus，那里还能改配色。"
-                  "Mica / Acrylic 不可用 —— 它们与 GDI 绘制不兼容（见 D-009）。";
-            return true;
         case cmd_reset:
             out = "把面板位置、尺寸、背景材质恢复成默认值。";
             return true;
@@ -217,18 +143,6 @@ public:
             out = "解除手动指定的歌词，回到自动匹配。";
             return true;
 
-        case cmd_font:
-            out = "在 80 / 100 / 125 / 150 / 200 % 之间循环。"
-                  "这一项对独立面板、DUI 元素、CUI 面板同时生效。";
-            return true;
-        case cmd_span:
-            out = "在 自适应 / 2 / 3 / 5 / 7 / 9 之间循环，指当前行上下各显示几行。"
-                  "自适应是按面板可用高度算的 —— 独立面板矮就少几行，DUI 里高就多几行。";
-            return true;
-        case cmd_shift:
-            out = "在 30 / 40 / 50 / 60 / 70 % 之间循环，指当前行落在歌词区的什么高度。"
-                  "50% 是正中；嫌歌词偏下就往小调。";
-            return true;
         case cmd_hint:
             out = "给当前曲目**所在的文件夹**补一句搜索线索（歌手 / 专辑），专治没打标签的曲目。"
                   "实测「哀歌」不带歌手时正确答案连前 10 都进不去，"
@@ -256,27 +170,6 @@ public:
         case cmd_toggle:
             lyricus::ControlWindow::Get().Toggle();
             break;
-
-        case cmd_backdrop: {
-            // 通透度循环。顺带把背景模式拉回「半透明（自绘）」——
-            // 只有分层窗口那条路才吃 alpha，留在「无（不透明）」上会显得"点了没反应"。
-            //
-            // Mica / Acrylic / Mica Alt 不在这条命令里：D-009 查明 DWM 系统背景材质
-            // 与 GDI 绘制不兼容 —— 那些 API 全返回 S_OK，但客户区内容根本不被呈现
-            //（表现为面板一片空白）。菜单里不该出现明知不可用的选项。
-            PanelAppearance ap = GetPanelAppearance();
-
-            const size_t cur = NearestAlphaStep(ap.alpha);
-            const int next = kAlphaSteps[(cur + 1) % _countof(kAlphaSteps)];
-
-            ap.alpha = next;
-            SetPanelAppearance(ap);
-            cfg_backdrop_mode = static_cast<int>(BackdropMode::Translucent);
-            ControlWindow::Get().ApplyBackdrop();
-
-            DebugLog("菜单：背景通透度 -> %d%% (alpha=%d)", AlphaPercent(next), next);
-            break;
-        }
 
         case cmd_reset: {
             // 尺寸按系统 DPI 缩放后再写入，否则 200% 缩放下窗口会小得装不下内容
@@ -314,31 +207,10 @@ public:
             break;
         }
 
-        // 显示设置这三条**不需要**通知任何窗口：
-        // 三种宿主都在自己的 250ms 定时器里轮询设置，下一帧自然就变了。
-        case cmd_font: {
-            const int cur  = lyricus::GetLyricDisplayConfig().fontPct;
-            const int next = NextInCycle(kFontSteps, cur);
-            lyricus::SetLyricFontPct(next);
-            lyricus::DebugLog("菜单：歌词字号 %d%% -> %d%%", cur, next);
-            break;
-        }
-
-        case cmd_span: {
-            const int cur  = lyricus::GetLyricDisplayConfig().span;
-            const int next = NextInCycle(kSpanSteps, cur);
-            lyricus::SetLyricSpan(next);
-            lyricus::DebugLog("菜单：显示行数 %d -> %d（0 = 自适应）", cur, next);
-            break;
-        }
-
-        case cmd_shift: {
-            const int cur  = lyricus::GetLyricDisplayConfig().currentRatio;
-            const int next = NextInCycle(kShiftSteps, cur);
-            lyricus::SetLyricCurrentRatio(next);
-            lyricus::DebugLog("菜单：当前行位置 %d%% -> %d%%", cur, next);
-            break;
-        }
+        // 【这里原本还有三条"点一下换下一档"的显示设置命令】
+        //（歌词字号 / 显示行数 / 当前行位置）—— 2026-09-25 删掉，
+        // 连同背景通透度那条一起收进了「调节面板」。
+        // 理由见文件上方那段说明：这几个量要盯着面板调，循环档点十几次才找得到手感。
 
         case cmd_hint: {
             auto& st = lyricus::PlaybackState::Get();
