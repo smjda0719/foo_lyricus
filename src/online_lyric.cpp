@@ -2763,6 +2763,56 @@ bool ParseKugouDownloadRoot(const std::string& body, std::string& lrcOut) {
     return !lrcOut.empty();
 }
 
+// 有些源的"没有歌词"**不是空串，而是一份占位文件**。
+//
+// 实测（2026-09-26，酷狗）：对没有歌词的曲目返回同一份 79 字节的文件 ——
+//     [sign:] / [qq:] / [total:320317] / [offset:0] / [00:01.58]纯音乐，请欣赏
+// 五首**完全不同**的曲子拿到的内容**字节完全相同**，而且 `[total:320317]`
+// 跟那几首的真实长度都对不上（标签还是 QQ 那边的 —— 酷狗在转发上游的占位文件）。
+//
+// 【为什么必须拦】不拦的话它会被当成"命中"收下，后果比"没找到"糟得多：
+//   * 面板上显示"纯音乐，请欣赏"而不是歌词；
+//   * 更要命的是它**写进缓存**，之后每次都读这份假的，一直错下去。
+//
+// 判据故意写得**窄**：必须"带时间戳的行 ≤ 2" **并且** 文本里有明确的占位措辞。
+// 不能只看措辞 —— 万一哪首正经歌的歌词里恰好有"纯音乐"三个字（旁白类、
+// 乐评类都可能），只看措辞就会把真歌词丢掉。
+bool IsPlaceholderLyric(const std::string& lrc) {
+    static const char* kMarkers[] = {
+        "纯音乐，请欣赏", "纯音乐请欣赏", "纯音乐,请欣赏",
+        "暂无歌词", "没有填词", "此歌曲为纯音乐", "该歌曲为纯音乐",
+    };
+
+    bool hasMarker = false;
+    for (const char* m : kMarkers) {
+        if (lrc.find(m) != std::string::npos) { hasMarker = true; break; }
+    }
+    if (!hasMarker) return false;
+
+    // 数"带时间戳的行"。占位文件只有一行（`[00:01.58]纯音乐，请欣赏`）。
+    // 只看方括号里"两位数字紧跟冒号"的形状，不要求完整的 [mm:ss.xx] ——
+    // 各源的写法不统一（实测酷狗这一份就是两位小数）。
+    int stamped = 0;
+    size_t pos = 0;
+    while (pos < lrc.size()) {
+        size_t nl = lrc.find('\n', pos);
+        if (nl == std::string::npos) nl = lrc.size();
+
+        const size_t open = lrc.find('[', pos);
+        if (open != std::string::npos && open < nl) {
+            const size_t colon = lrc.find(':', open);
+            if (colon == open + 3 &&
+                isdigit(static_cast<unsigned char>(lrc[open + 1])) &&
+                isdigit(static_cast<unsigned char>(lrc[open + 2]))) {
+                ++stamped;
+            }
+        }
+        if (nl >= lrc.size()) break;
+        pos = nl + 1;
+    }
+    return stamped <= 2;
+}
+
 // 剥掉开头的 LRC 元数据标签行（[id:] [ar:] [ti:] [al:] [by:] [hash:] …）。
 //
 // 【为什么要专门剥】我们的 LRC 解析器本来就会忽略这些标签，所以**功能上不必剥**；
@@ -2947,6 +2997,17 @@ bool TryKugou(const OnlineLyricRequest& req, ULONGLONG retryDeadline,
     lrc = StripNetEaseCredits(StripLeadingLrcTags(lrc));
     if (lrc.empty()) {
         OnlineLog("在线歌词：酷狗 hash=%s 剥掉头部后没有正文", hit.hash.c_str());
+        return false;
+    }
+
+    // ---- 占位文件不是歌词 ----
+    //
+    // 酷狗对没有歌词的曲目返回一份**所有曲子通用**的占位文件
+    //（`[00:01.58]纯音乐，请欣赏`，79 字节，五首不同的歌字节完全相同）。
+    // 把它当命中收下的后果比"没找到"糟得多，而且会被写进缓存 —— 见函数说明。
+    if (IsPlaceholderLyric(lrc)) {
+        OnlineLog("在线歌词：酷狗 hash=%s 返回的是占位文件（「纯音乐，请欣赏」之类），"
+                  "当作这个源没有歌词", hit.hash.c_str());
         return false;
     }
 
@@ -3195,6 +3256,17 @@ bool TryNetEase(const OnlineLyricRequest& req, ULONGLONG retryDeadline,
     lrc = StripNetEaseCredits(lrc);
     if (lrc.empty()) {
         OnlineLog("在线歌词：网易云 id=%.0f 剥掉名单后没有正文（纯音乐）", pick.id);
+        return false;
+    }
+
+    // ---- 3.2 占位文件不是歌词 ----
+    //
+    // 「纯音乐，请欣赏」这句本来**就是网易云**的措辞（酷狗那份占位文件里
+    // 也带着同样的句子）。原来靠"lrc.lyric 为空"挡住了纯音乐条目，
+    // 但源站改回传占位文本时就漏了 —— 所以两个源都要过这一关。
+    if (IsPlaceholderLyric(lrc)) {
+        OnlineLog("在线歌词：网易云 id=%.0f 返回的是占位文本（「纯音乐，请欣赏」之类），"
+                  "当作这个源没有歌词", pick.id);
         return false;
     }
 

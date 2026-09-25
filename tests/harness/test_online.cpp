@@ -1097,6 +1097,51 @@ void TestKugouParsers() {
     }
 }
 
+// 占位歌词识别 —— 直接用**真实缓存下来的那份内容**当夹具。
+//
+// 出处：2026-09-26 用户在酷狗源上试了五首，日志里每首都写着
+// `用 syncedLyrics，79 字节，歌词 65 字` —— 五首不同的歌**字节完全相同**，
+// 那就是一份占位文件。它被当命中收下，**还写进了缓存**。
+void TestPlaceholderLyric() {
+    std::printf("\n== 占位歌词识别 ==\n");
+
+    // 真实内容（从用户缓存里逐字节抄下来的）
+    const std::string kugouPlaceholder =
+        "[sign:]\r\n[qq:]\r\n[total:320317]\r\n[offset:0]\r\n"
+        "[00:01.58]纯音乐，请欣赏\r\n\r\n\r\n";
+    Check(lyricus::IsPlaceholderLyric(kugouPlaceholder),
+          "★ 酷狗那份 79 字节的占位文件被认出来（「纯音乐，请欣赏」）");
+
+    const std::string neteaseStyle = "[00:00.000]纯音乐，请欣赏\n";
+    Check(lyricus::IsPlaceholderLyric(neteaseStyle),
+          "★ 网易云风格的占位文本也认得");
+
+    Check(lyricus::IsPlaceholderLyric("[00:00.00]暂无歌词\n"), "「暂无歌词」认得");
+    Check(lyricus::IsPlaceholderLyric("[00:00.00]此歌曲为没有填词的纯音乐\n"),
+          "「此歌曲为没有填词的纯音乐」认得");
+
+    // ---- ★ 不许误伤真歌词 ----
+    //
+    // 判据是"带时间戳的行 ≤ 2 **且** 有占位措辞"，两个条件同时满足才算。
+    // 这条钉住的就是那个"且" —— 只看措辞的话，一首歌词里恰好提到"纯音乐"
+    // 的正经歌（旁白、乐评、同名曲）就会被整首丢掉。
+    const std::string realSong =
+        "[00:01.00]这是一首纯音乐的旁白\n"
+        "[00:05.00]第二句歌词在这里\n"
+        "[00:09.00]第三句歌词在这里\n";
+    Check(!lyricus::IsPlaceholderLyric(realSong),
+          "★★ 真歌词里出现「纯音乐」三个字**不能**被误判（行数多）");
+
+    const std::string normal =
+        "[00:01.00]第一句\n[00:05.00]第二句\n[00:09.00]第三句\n";
+    Check(!lyricus::IsPlaceholderLyric(normal), "普通歌词不是占位");
+
+    Check(!lyricus::IsPlaceholderLyric(""), "空串不是占位（另有专门的空检查）");
+    // 元数据标签不算"带时间戳的行"，所以只有标签的文件仍算占位
+    Check(!lyricus::IsPlaceholderLyric("[ar:某某]\n[ti:某某]\n"),
+          "只有元数据、没有占位措辞 -> 不是占位（交给别的检查）");
+}
+
 void TestLeadInSeparator() {
     std::printf("\n== 前奏分隔线（新取的词 + 缓存里的词，同一个出口）==\n");
 
@@ -1227,6 +1272,7 @@ int wmain() {
     TestMissMarker();
     TestOnlineCancel();
     TestKugouParsers();
+    TestPlaceholderLyric();
     TestLeadInSeparator();
     TestTranslationMerge();
 
