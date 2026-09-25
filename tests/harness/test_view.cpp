@@ -329,6 +329,7 @@ namespace {
 struct ClipProbe {
     int currentY   = -1;   // 当前行中心（阈值 250，只有纯白的当前行能达到）
     int lowestInkY = -1;   // 最靠下的一行墨迹（阈值 70，连小字的光晕也算）
+    int firstTop   = -1;   // 最靠上的一行墨迹 —— 曲名在遮罩外面，它不该被裁剪动到
 };
 
 ClipProbe ProbeClip(const lyricus::LyricsViewLayout& layout, const RECT& rc) {
@@ -346,9 +347,15 @@ ClipProbe ProbeClip(const lyricus::LyricsViewLayout& layout, const RECT& rc) {
     theme.dpi = 96;
     lyricus::DrawLyricsView(cv.dc, rc, theme, layout);
 
+    bool sawTop = false;
     for (int y = 0; y < kHeight; ++y) {
+        bool any = false;
         for (int x = 0; x < kWidth; ++x) {
-            if (cv.Bright(x, y, 70)) { p.lowestInkY = y; break; }
+            if (cv.Bright(x, y, 70)) { any = true; break; }
+        }
+        if (any) {
+            p.lowestInkY = y;
+            if (!sawTop) { p.firstTop = y; sawTop = true; }
         }
     }
     const auto cur = cv.Bands(250, 1);
@@ -523,17 +530,22 @@ void TestTranslationPrimary() {
           "两种模式的**行数**一样（只是谁当正文换了）");
 }
 
-// 超长歌词行必须**折行**，不能截断。
+// 超长歌词行：**单行 + 省略号**，不折行。
 //
 // 出处：用户 2026-09-24「这张截图也反映了歌词截断的问题」——
 // captures/lyricus-20260925-004755.png 里那行
-// 「池光化新茶 掺着新雪 煨了炉火曾入」贴到右边就没了。
-// 根因是 DrawLine 用了 DT_SINGLELINE：既不换行，也不给省略号。
+// 「池光化新茶 掺着新雪 煨了炉火曾入」贴到右边就没了（DT_SINGLELINE，
+// 既不换行也不给省略号）。中间试过一版折行（4d1c2e8），
+// 用户 2026-09-25 反馈「不太美观」—— 折行的真正代价是行高不再一致，
+// 上下文的排版被顶得参差不齐。定稿是省略号，长行横滚放在后面单独做。
 //
-// 【为什么要做"对照渲染"】只量宽度分不出折行和截断：两种做法下
-// 那一行都会顶满可用宽度。真正的区别是**占几条横带** ——
-// 同一段文字折行后必然多占横带，截断则和短行一模一样。
-// 所以这里把"长行 / 短行"两版各渲染一次，只比较横带数。
+// 【为什么要做"对照渲染"】只量宽度分不出「省略号截断」和「折行」：
+// 两种做法下那一行都会顶满可用宽度。判据是**横带条数** ——
+// 折行必然多占横带，省略号则和短行一样只占一条。
+//
+// ⚠️ 这条断言和上一版**方向相反**（上一版断言"横带变多"）。
+//    不是测试写错了，是产品取向变了：从"不丢字"改成了"版面整齐"，
+//    长行改由横滚（design-lyric-motion.md 第 3 步）负责。
 namespace {
 
 struct Rendered {
@@ -542,7 +554,9 @@ struct Rendered {
     long ink   = 0;   // 过阈值像素总数 —— 内容有没有被丢掉，看这个
 };
 
-Rendered RenderWithMiddleLine(const char* middle) {
+// current 用来切换"那行长的当不当当前行"：
+// 当前行和上下文行走的是同一条 DrawLine，但字号不同，两边都要看。
+Rendered RenderWithMiddleLine(const char* middle, size_t current = 1) {
     Rendered r;
 
     std::string raw = std::string("[00:00.00]short\n[00:05.00]") + middle +
@@ -550,7 +564,7 @@ Rendered RenderWithMiddleLine(const char* middle) {
     std::vector<unsigned char> b(raw.begin(), raw.end());
     auto doc = lyricus::LyricDocument::Parse(b);
 
-    lyricus::PlaybackState::Get().SetFake(true, L"Test - Song", doc, 1);
+    lyricus::PlaybackState::Get().SetFake(true, L"Test - Song", doc, current);
 
     Canvas cv;
     if (!cv.Create()) return r;
@@ -577,31 +591,91 @@ Rendered RenderWithMiddleLine(const char* middle) {
 
 } // namespace
 
-void TestVeryLongLine() {
-    std::printf("\n== 特别长的歌词行 ==\n");
+void TestLongLineEllipsis() {
+    std::printf("\n== 超长歌词行（省略号，不折行）==\n");
 
     const char* kLong =
         "this is an extremely long lyric line that goes far beyond the width of "
         "any panel we would ever render it in, just to see what happens";
 
-    const Rendered lo = RenderWithMiddleLine(kLong);
-    const Rendered sh = RenderWithMiddleLine("short middle");
+    const Rendered loCur  = RenderWithMiddleLine(kLong, 1);          // 长行 = 当前行
+    const Rendered loCtx  = RenderWithMiddleLine(kLong, 0);          // 长行 = 上下文行
+    const Rendered sh     = RenderWithMiddleLine("short middle", 1); // 对照组
 
-    // 绘制区 600 宽、左右各留 padX=20 -> 可用宽度约 560
-    std::printf("     长行 -> %d 条横带，最宽 %d px，墨迹 %ld 像素\n",
-                lo.bands, lo.widest, lo.ink);
-    std::printf("     短行 -> %d 条横带，最宽 %d px，墨迹 %ld 像素\n",
+    // 绘制区 600 宽、左右各留 padX=20 -> 可用宽度 560
+    std::printf("     长行当当前行 -> %d 条横带，最宽 %d px，墨迹 %ld 像素\n",
+                loCur.bands, loCur.widest, loCur.ink);
+    std::printf("     长行当上下文 -> %d 条横带，最宽 %d px，墨迹 %ld 像素\n",
+                loCtx.bands, loCtx.widest, loCtx.ink);
+    std::printf("     短行对照     -> %d 条横带，最宽 %d px，墨迹 %ld 像素\n",
                 sh.bands, sh.widest, sh.ink);
-    std::printf("     （可用宽度约 %d px）\n", kWidth - 40);
+    std::printf("     （可用宽度 %d px）\n", kWidth - 40);
 
-    Check(lo.widest <= kWidth, "画出来的内容没有超出画布");
-    Check(lo.widest >= kWidth - 60, "折出来的行仍然用满了可用宽度");
+    Check(loCur.widest <= kWidth, "内容没有超出画布");
 
-    // ★ 这条是整个用例的判据：折行 -> 横带变多；截断 -> 和短行一样多。
-    Check(lo.bands > sh.bands,
-          "★ 长行比短行**多占横带** —— 说明是折行，不是 DT_SINGLELINE 截断");
-    Check(lo.ink > sh.ink * 3,
-          "★ 长行的墨迹远多于短行 —— 文字没被丢掉，是换行画出来的");
+    // ★ 核心判据：长行不多占横带 = 没折行
+    Check(loCur.bands == sh.bands,
+          "★ 长行当当前行时**横带数和短行一样** —— 是单行，没折行");
+    Check(loCtx.bands == sh.bands,
+          "★ 长行当上下文行时也是单行");
+
+    // 真的用满了可用宽度（不是"没画出来"才不超宽）
+    Check(loCur.widest >= (kWidth - 40) - 12,
+          "长行顶满可用宽度（省略号生效，不是没画）");
+    Check(loCur.ink > sh.ink * 2,
+          "长行的墨迹远多于短行 —— 字确实画出来了");
+
+    // 省略号本身：末尾应该有一小簇独立的墨迹。不精确断言它的形状，
+    // 只要求"倒数 20 px 内有墨迹" —— 顶到边正是被截断的标志。
+    Check(loCur.widest <= (kWidth - 40) + 2,
+          "★ 长行**没有溢出**可用宽度（省略号把它收在框里了）");
+}
+
+// 遮罩（IntersectClipRect）—— 歌词一个字都不许跑到裁剪线以下。
+//
+// 【为什么现在就要测】遮罩是下一步「长歌词横滚 / 换行上滑」的前置条件：
+// 横滚要「文字在动、裁剪框不动」，上滑要挡住越过控制条的中间帧。
+// 但**现在这一步画面上看不出它在起作用** —— 省略号模式下没有任何东西越界，
+// 很容易写成一条永远为真的空测试。
+//
+// 所以这里专门构造一个"内容非要越界不可"的场景：
+// 把裁剪线压到当前行**中间**，布局层的夹取就无能为力了
+//（`ClampInt(curTop, y, limit - curBlockH)` 的上下界会反过来，
+//  最后落到兜底分支 `curTop = y`，整行从 y 往下画，直接穿过 limit）。
+// 遮罩不在的话，这些字会原样画在裁剪线以下。
+void TestMask() {
+    std::printf("\n== 遮罩（歌词不许越过裁剪线）==\n");
+
+    ClipProbe full = ProbeClip({100, 2, 50}, RECT{ 0, 0, kWidth, kHeight });
+    const int lineY = full.currentY;   // 当前行中心
+    std::printf("     不裁剪时当前行中心 y=%d，最低墨迹 y=%d\n",
+                full.currentY, full.lowestInkY);
+
+    Check(lineY > 0 && full.lowestInkY > lineY,
+          "不裁剪时当前行有正常的下半部分（否则下面的对照是空的）");
+
+    // 两条裁剪线，都切在**当前行内部**
+    const int clipA = lineY;
+    const int clipB = lineY + (full.lowestInkY - lineY) / 2;
+
+    const ClipProbe a = ProbeClip({100, 2, 50, false, clipA}, RECT{ 0, 0, kWidth, kHeight });
+    const ClipProbe b = ProbeClip({100, 2, 50, false, clipB}, RECT{ 0, 0, kWidth, kHeight });
+
+    std::printf("     裁剪线 y=%d -> 最低墨迹 y=%d\n", clipA, a.lowestInkY);
+    std::printf("     裁剪线 y=%d -> 最低墨迹 y=%d\n", clipB, b.lowestInkY);
+
+    Check(a.lowestInkY < clipA, "★ 裁剪线以上的字还在（不是整行都没画）");
+    Check(a.lowestInkY < clipB, "★ 裁剪线以下一个字都没有");
+    Check(b.lowestInkY < clipB, "★ 换一条更低的裁剪线，同样一刀切齐");
+
+    // 对照：裁剪线放低，露出来的内容必须**更多** ——
+    // 没有遮罩的话两条线的画面会一模一样（都是整行），这条就挂了。
+    Check(b.lowestInkY > a.lowestInkY,
+          "★ 裁剪线放低露出的内容更多 —— 说明画面确实是被**裁剪**出来的");
+
+    // 曲名在遮罩外面，任何裁剪线下都不该受影响。
+    Check(a.firstTop >= 0 && b.firstTop == a.firstTop && full.firstTop == a.firstTop,
+          "★ 曲名的位置不受裁剪线影响（遮罩只管歌词）");
 }
 
 } // namespace
@@ -616,7 +690,8 @@ int wmain() {
     TestFontPct();
     TestBilingual();
     TestTranslationPrimary();
-    TestVeryLongLine();
+    TestLongLineEllipsis();
+    TestMask();
     TestNoTrack();
 
     std::printf("\n----------------------------------------\n");

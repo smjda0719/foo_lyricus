@@ -5,6 +5,7 @@
 #include <map>
 #include <string>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 namespace lyricus {
@@ -42,25 +43,31 @@ HFONT MakeFont(int dpi, int pt, bool bold) {
     return f;
 }
 
-// 文本行的绘制/测量标志。**这两个地方必须一模一样**。
+// 文本行的测量标志：**永远按单行量**。
 //
-// DT_WORDBREAK 而不是 DT_SINGLELINE —— 用户 2026-09-24 报：
-// 「这张截图也反映了歌词截断的问题」。
-//
-// 实测（captures/lyricus-20260925-004755.png）：面板上那行
-//     「池光化新茶 掺着新雪 煨了炉火曾入」
-// 右边**顶到边就没了** —— DT_SINGLELINE 既不换行也不给省略号，
-// 超出的部分直接截断，一个字都看不到。对歌词来说这是丢内容，
-// 而面板本来就有富余的垂直空间（可见 2~3 行、字号 125% 时还空着）。
-//
-// 换成 DT_WORDBREAK 之后：短行还是一行（高度不变，排版完全不动），
-// 超长行折成两行以上 —— 下面的走位逻辑本来就是按**量出来的高度**排的，
-// 所以不用改布局代码，它自然就适应了。
+// 高度的语义是"这一行占多高"，和它有多宽无关 —— 单行测量的结果只由字体决定，
+// 于是高度缓存可以拿 (字体, 文本) 当键（见下面 HeightCache 的注释）。
 //
 // ⚠️ DT_NOPREFIX 不能省：歌词里出现 `&` 时，没有它会被当成助记符前缀吃掉。
-//    这两处（MeasureLineRaw 和 DrawLine）用同一个常量，避免哪天只改一处 ——
-//    那会导致"量出来的高度"和"画出来的行数"不一致，排版直接错位。
-constexpr UINT kLineDrawFlags = DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX;
+//    测量和绘制**必须都带上它**，否则量出来的和画出来的对不上。
+constexpr UINT kMeasureFlags = DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX;
+
+// 绘制标志：放不下用省略号收尾。
+//
+// 【为什么不是折行】2026-09-25 用户看过一版折行之后反馈「不太美观」。
+// 折行的真正代价是**行高不再一致**：一句长词折成三行，上下文的排版被顶得
+// 参差不齐，而面板本来就只显示 2~3 行。省略号只占一行，让版面的垂直节奏
+// 重新变得可预测 —— 这也是下一步「长歌词横滚」能成立的前提。
+// （折行那一版是 4d1c2e8，方向没错但代价太大，这里撤掉。）
+//
+// 【为什么不是光秃秃的 DT_SINGLELINE】那正是 2026-09-25 之前的行为：
+// 用户截图里「池光化新茶 掺着新雪 煨了炉火曾入」右边顶到边就没了，
+// 连"后面还有字"都看不出来。DT_END_ELLIPSIS 至少给一个 `…`。
+//
+// **下一步**会把当前行换成横滚（单行、不带省略号、靠裁剪区限宽），
+// 那时这一档只留给上下文行、参照行和曲名。
+constexpr UINT kDrawEllipsisFlags =
+    DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX;
 
 // 文本行的高度缓存。
 //
@@ -69,31 +76,34 @@ constexpr UINT kLineDrawFlags = DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX;
 // 可见的 20 行就是四五十次；面板每 250ms 重绘一次，同一批字每秒被量近 200 次，
 // 而它们中间绝大多数根本没变。
 //
-// ⚠️ 自从改成 DT_WORDBREAK，**高度就与 maxWidth 有关了** —— 所以键必须带上它。
-//    （原来是 DT_SINGLELINE，高度只由字体决定，那时候不带宽度是对的。）
-//    键里漏了宽度的话，面板一改宽度就会命中旧高度，折行数对不上、排版错位。
+// 键只带 (字体, 文本)：测量走 kMeasureFlags，是**单行**的，高度只由字体决定。
+// ⚠️ 哪天恢复折行，必须把 maxWidth 加回键里 —— 折行之后高度和可用宽度有关，
+//    漏了它会"面板一改宽度就命中旧高度"，折行数对不上、排版直接错位。
 //
 // 容量超了直接清空重来 —— 一首歌的可见行数就那么几十条，
 // 真清空也是极低频事件，不值得为它维护 LRU。
-std::map<std::tuple<HFONT, std::wstring, int>, int>& HeightCache() {
-    static std::map<std::tuple<HFONT, std::wstring, int>, int> cache;
+std::map<std::pair<HFONT, std::wstring>, int>& HeightCache() {
+    static std::map<std::pair<HFONT, std::wstring>, int> cache;
     return cache;
 }
 
-int MeasureLineRaw(HDC dc, const wchar_t* text, HFONT font, int maxWidth) {
+// ⚠️ 字体由**调用方**选进 DC（MeasureLine / DrawLine 都先 SelectObject）。
+//    所以这里不接 font 参数 —— 从前接了一个却从不使用（C4100），
+//    而缓存键里又拿它当依据，等于给"忘了选字体"留了个后门。
+int MeasureLineRaw(HDC dc, const wchar_t* text, int maxWidth) {
     RECT r{ 0, 0, maxWidth, 0 };
-    DrawTextW(dc, text, -1, &r, kLineDrawFlags | DT_CALCRECT);
+    DrawTextW(dc, text, -1, &r, kMeasureFlags | DT_CALCRECT);
     return r.bottom - r.top;
 }
 
 int CachedLineHeight(HDC dc, const wchar_t* text, HFONT font, int maxWidth) {
     auto& cache = HeightCache();
 
-    const auto key = std::make_tuple(font, std::wstring(text), maxWidth);
+    const auto key = std::make_pair(font, std::wstring(text));
     const auto it = cache.find(key);
     if (it != cache.end()) return it->second;
 
-    const int h = MeasureLineRaw(dc, text, font, maxWidth);
+    const int h = MeasureLineRaw(dc, text, maxWidth);
 
     if (cache.size() >= 1024) cache.clear();
     cache.emplace(key, h);
@@ -110,18 +120,20 @@ int MeasureLine(HDC dc, const wchar_t* text, HFONT font, int maxWidth) {
 
 // 画一行，返回「实际高度 + 行距」供调用方推进光标。
 // 用 DT_CALCRECT 量真实高度而不是写死像素 —— 这是 DPI 无关的关键。
+//
+// flags 默认省略号；下一步「长歌词横滚」会给当前行传不带省略号的那一档
+//（那时宽度由 DC 裁剪区负责，见 DrawLyricsView 里的遮罩）。
 int DrawLine(HDC dc, const wchar_t* text, int x, int y, int maxWidth,
-             HFONT font, COLORREF color, int gapAfter) {
+             HFONT font, COLORREF color, int gapAfter,
+             UINT flags = kDrawEllipsisFlags) {
     const HGDIOBJ oldFont = SelectObject(dc, font);
     SetTextColor(dc, color);
 
     // 高度直接取缓存，不再为了「量一下」多画一次 DrawTextW。
-    // 量出来的值和原来 DT_CALCRECT 的结果完全一致（单行高度只由字体决定），
-    // 所以排版不变，只是省掉一次文本整形。
     const int height = CachedLineHeight(dc, text, font, maxWidth);
 
     RECT draw{ x, y, x + maxWidth, y + height };
-    DrawTextW(dc, text, -1, &draw, kLineDrawFlags);
+    DrawTextW(dc, text, -1, &draw, flags);
 
     SelectObject(dc, oldFont);
     return height + gapAfter;
@@ -222,12 +234,33 @@ int DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& theme,
     int y = top;
 
     // ---- 曲名 ----
+    // 曲名也在遮罩**外面**画：它是这一屏唯一允许出现在歌词区上方的文字，
+    // 所以先把遮罩的范围定在它下方，再开遮罩。
     if (st.HasTrack()) {
         y += DrawLine(dc, st.DisplayName().c_str(), left, y, maxW,
                       fHeader, theme.headerText, S(8));
     } else {
         y += S(8);
     }
+
+    // -------------------------------------------------------------------
+    // 遮罩：歌词只许出现在 [left, y] .. [left + maxW, limit] 里
+    //
+    // 【为什么必须有】`DrawTextW` 只能裁到**它拿到的那个矩形**。而横滚要的是
+    // 「文字位置在动、裁剪框不动」—— 传进去的矩形一动，裁剪框跟着动，等于没裁。
+    // 只有给 DC 设一个独立的裁剪区才能做到。上滑过渡同理：中间帧的内容会越过
+    // limit 压到控制条上（见 docs/design-lyric-motion.md）。
+    //
+    // 现在这一步（第 1 步）画面上还看不出它的作用 —— 省略号模式下没有任何东西
+    // 会越界。但它是**下一步的前置条件**，而且现在就有测试能钉住它：
+    // 歌词区被压到比一行还矮时，下面的兜底分支会把整块画在 y 上、直接越过
+    // limit，那段越界正是遮罩挡掉的（tests/harness/test_view.cpp 的 TestMask）。
+    //
+    // 用 SaveDC/RestoreDC 而不是 SelectClipRgn(dc, nullptr) 复位：
+    // 宿主可能自己带着裁剪区进来（局部失效重绘），后者会把它一并抹掉。
+    // -------------------------------------------------------------------
+    const int savedDc = SaveDC(dc);
+    IntersectClipRect(dc, left, y, left + maxW, limit);
 
     // ---- 歌词 ----
     const LyricDocument& doc = st.Lyrics();
@@ -383,6 +416,8 @@ int DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& theme,
             // 用户要的是「只显示 N 行」，不是「把 N 行撑满整个区域」。
         }
     }
+
+    RestoreDC(dc, savedDc);
 
     // 字体由 MakeFont 缓存持有，进程内复用 —— **这里绝不能删**，
     // 删了缓存里就是野句柄，下一帧 SelectObject 会拿到已释放的 GDI 对象。
