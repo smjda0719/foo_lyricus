@@ -844,6 +844,36 @@ void TestNetEaseSearchQuery() {
     }
 }
 
+// 取词路径的参数 —— 这条断言拦的是"一整类歌明明有词却说没有"。
+//
+// 【出处】2026-09-25 用户报「还是有几首不行，在网易云上都有」。
+// 候选核验已经选中正确条目、时长分毫不差，却卡在 `lrc.lyric 为空`。
+// 直接打接口逐项隔离（实测数据）：
+//     lv=1&kv=1&tv=-1          -> lrc 长度 0     ← 原写法
+//     lv=-1&kv=-1&tv=-1        -> lrc 长度 638
+//     os=pc&lv=1&kv=1&tv=-1    -> lrc 长度 0     ← 所以 os=pc 不是关键
+//     os=pc&lv=-1&kv=-1&tv=-1  -> 老歌 1232 字符，没被弄坏
+//
+// `lv=1` 是"只要第 1 版歌词"，新歌的词只存在于更高版本 -> 服务端返回空。
+// 后果被放大是因为空结果会被当成"各源都没有"，写进 **7 天有效**的负缓存。
+//
+// 这条断言本身很笨（就是查子串），但它拦的是一个**改回去也不会报错**的回归：
+// `lv=1` 看起来完全合理，编辑器里没有任何东西会提醒你它错了。
+void TestNetEaseLyricPath() {
+    std::printf("\n== 网易云取词路径 ==\n");
+
+    const std::wstring path = lyricus::BuildNetEaseLyricPath(2725479909.0);
+
+    Check(path.find(L"lv=-1") != std::wstring::npos,
+          "★ lv=-1（要最新版歌词）—— 改成 lv=1 会让新歌全部返回空");
+    Check(path.find(L"lv=1&") == std::wstring::npos,
+          "★ 不能退回 lv=1（那个写法看起来完全合理，所以必须钉住）");
+    Check(path.find(L"kv=-1") != std::wstring::npos, "kv=-1（要最新版翻译）");
+    Check(path.find(L"tv=-1") != std::wstring::npos, "tv=-1（要最新版翻译，沿用原写法）");
+    Check(path.find(L"id=2725479909") != std::wstring::npos, "id 按整数拼进去（不带小数点）");
+    Check(path.find(L"/api/song/lyric?") == 0, "路径形状正确");
+}
+
 // 前奏补分隔线 —— 放在取词的**统一出口**，所以新取的词和缓存命中的词都覆盖。
 //
 // 出处：用户说「缓存到本地的歌词还没有第一行的分隔线」。
@@ -1045,6 +1075,7 @@ int wmain() {
     TestUntaggedTracks();
     TestNetEaseBizCode();
     TestNetEaseSearchQuery();
+    TestNetEaseLyricPath();
     TestMissMarker();
     TestLeadInSeparator();
     TestTranslationMerge();

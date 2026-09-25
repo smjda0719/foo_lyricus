@@ -465,7 +465,11 @@ struct MissMarker {
 //         长度差一倍就是另一版录音，谁对上都不算。
 //         边界由实测数据卡出（心加心 1.12 收、扁桃体 1.92 拒），见
 //         kSameRecordingRatioCeiling 的说明。
-constexpr int kMissLogicVersion = 10;
+// ── v11（2026-09-25 深夜）：取词路径从 lv=1 改成 lv=-1 ──
+//         lv=1 = "只要第 1 版歌词"，新歌的词只存在于更高版本 -> 服务端返回空，
+//         而空被当成"各源都没有"写进 7 天负缓存。实测隔离见 BuildNetEaseLyricPath。
+//         这一版必须作废旧标记，否则用户要干等一周才看到修复。
+constexpr int kMissLogicVersion = 11;
 
 // 时长倍数上限：两边长度相差超过这个倍数，就当成**另一版录音**，直接拒。
 //
@@ -2210,9 +2214,30 @@ std::wstring BuildNetEaseSearchPath(const OnlineLyricRequest& req,
     return L"/api/search/get/web?s=" + PercentEncode(q) + L"&type=1&limit=10";
 }
 
+// 取歌词的路径。
+//
+// ⚠️⚠️ `lv=-1` **不是笔误，改成 1 会让一整类歌"明明有词却说没有"**。
+//
+// 【2026-09-25 实测发现】用户报「还是有几首不行，在网易云上都有」。
+// 候选核验已经选中了正确的条目、时长分毫不差，却卡在这一步：
+//     `网易云 id=2725479909 的 lrc.lyric 为空（多半是纯音乐）`
+// 而那条**不是纯音乐** —— 直接打接口逐项隔离：
+//
+//     /api/song/lyric?id=X&lv=1&kv=1&tv=-1          -> lrc 长度 0      （原写法）
+//     /api/song/lyric?id=X&lv=-1&kv=-1&tv=-1        -> lrc 长度 638  ✔
+//     /api/song/lyric?os=pc&id=X&lv=1&kv=1&tv=-1    -> lrc 长度 0
+//     /api/song/lyric?os=pc&id=X&lv=-1&kv=-1&tv=-1  -> 老歌 1232 字符 ✔ 没被弄坏
+//
+// 结论：**`lv` 才是决定性的那个参数，`os=pc` 加不加都一样。**
+//   `lv=1` = "只要第 1 版歌词"；新歌的词只存在于更高版本 -> 服务端返回空。
+//   `lv=-1` = "给最新版"，新旧通吃。
+// 代价特别大，因为空结果会被当成"各源都没有"，写进 **7 天有效**的负缓存 ——
+// 用户要干等一周，而且日志里写着「多半是纯音乐」，把人往错的方向引。
+//
+// 这个"纯音乐"的说法现在也不准确了，见调用点的日志。
 std::wstring BuildNetEaseLyricPath(double id) {
     wchar_t buf[64];
-    swprintf_s(buf, L"/api/song/lyric?id=%.0f&lv=1&kv=1&tv=-1", id);
+    swprintf_s(buf, L"/api/song/lyric?id=%.0f&lv=-1&kv=-1&tv=-1", id);
     return buf;
 }
 
@@ -2669,8 +2694,13 @@ bool TryNetEase(const OnlineLyricRequest& req, ULONGLONG retryDeadline,
     std::string lrc;
     std::string tlyric;
     if (!ParseNetEaseLyricRoot(lyric.body, lrc, &tlyric) || lrc.empty()) {
-        // 纯音乐条目会返回空的 lrc.lyric —— 这是确定的"这首歌没有词"。
-        OnlineLog("在线歌词：网易云 id=%.0f 的 lrc.lyric 为空（多半是纯音乐）", pick.id);
+        // 空的 lrc.lyric 有两种可能，**日志里必须把两种都写上** ——
+        // 原先只说"多半是纯音乐"，而 2026-09-25 那批恰恰全都不是纯音乐
+        // （是 `lv=1` 取不到新版歌词，见 BuildNetEaseLyricPath），
+        // 那句话把人往错的方向引了整整一轮排查。
+        OnlineLog("在线歌词：网易云 id=%.0f 的 lrc.lyric 为空 —— "
+                  "要么这条真是纯音乐/没上传词，要么取词参数不对（见 BuildNetEaseLyricPath）",
+                  pick.id);
         return false;
     }
 
