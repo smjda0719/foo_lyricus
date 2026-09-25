@@ -8,6 +8,7 @@
 #include <winhttp.h>
 
 #include <atomic>      // 网易云限流的进程级冷却
+#include <algorithm>   // std::sort —— 没匹配到的曲目名单要排序
 #include <cstdarg>
 #include <cstdio>
 #include <cstdint>
