@@ -25,7 +25,8 @@
 //
 // 【消息处理签名】和 adjust_dialog.cpp 同一套（在 atlcrack.h 里核过）：
 //   MSG_WM_INITDIALOG     -> func((HWND)wParam, lParam)
-//   MSG_WM_COMMAND        -> func((UINT)wNotifyCode, (int)wID, (HWND)hwndCtl)
+//   COMMAND_HANDLER_EX(id, code, func) -> func((UINT)wNotifyCode, (int)wID, (HWND)hwndCtl)
+//                          （**不要用 MSG_WM_COMMAND**，见消息映射里那段）
 //   第三参一律是**裸 HWND**，写成 CWindow 会报"函数不接受 N 个参数"。
 // ---------------------------------------------------------------------------
 
@@ -39,7 +40,22 @@ public:
 
     BEGIN_MSG_MAP(CSourceOrderDialog)
         MSG_WM_INITDIALOG(OnInitDialog)
-        MSG_WM_COMMAND(OnCommand)
+
+        // ⚠️⚠️ **不要在这里用 MSG_WM_COMMAND**（我第一版就是那么写的，翻过车）。
+        //
+        // MSG_WM_COMMAND 是 WM_COMMAND 的**裸处理器**，WTL 把它展开成
+        //     if (uMsg == WM_COMMAND) { func(...); bHandled = TRUE; }
+        // —— 无条件 `bHandled = TRUE`。而消息映射是**按顺序**匹配的，
+        // 它排在下面那些 COMMAND_ID_HANDLER_EX 前面，于是把**所有**命令
+        // （每个按钮、确定、取消）统统吃掉。
+        //
+        // 症状极具误导性：对话框能正常显示、列表也填好了，但**点什么都没反应、
+        // 连取消都关不掉** —— 看起来像"窗口卡死"，其实是消息根本没分发下去。
+        // 用户 2026-09-26 报的就是这个：「无法改变顺序，也无法退出」。
+        //
+        // 只想接"双击列表项"的话，用下面这种带 id + 通知码的精确处理器。
+        COMMAND_HANDLER_EX(IDC_LIST_SOURCES, LBN_DBLCLK, OnListDblClk)
+
         COMMAND_ID_HANDLER_EX(IDC_BTN_SRC_UP, OnUp)
         COMMAND_ID_HANDLER_EX(IDC_BTN_SRC_DOWN, OnDown)
         COMMAND_ID_HANDLER_EX(IDC_BTN_SRC_TOGGLE, OnToggle)
@@ -110,9 +126,11 @@ private:
         SetDlgItemText(IDC_LBL_SRC_HINT, s.c_str());
     }
 
-    // 列表里双击 = 切换启用状态（顺手，不用去够按钮）
-    void OnCommand(UINT notify, int id, HWND /*hwndCtl*/) {
-        if (id == IDC_LIST_SOURCES && notify == LBN_DBLCLK) OnToggle(0, 0, nullptr);
+    // 列表里双击 = 切换启用状态（顺手，不用去够按钮）。
+    // 用 COMMAND_HANDLER_EX 精确匹配 id + 通知码 —— 不要退回 MSG_WM_COMMAND，
+    // 原因见消息映射里那段警告。
+    void OnListDblClk(UINT /*notify*/, int /*id*/, HWND /*hwndCtl*/) {
+        OnToggle(0, 0, nullptr);
     }
 
     void OnUp(UINT, int, HWND) {
