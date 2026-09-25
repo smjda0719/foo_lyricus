@@ -2,6 +2,8 @@
 
 #include <windows.h>
 
+#include "scroll_anim.h"   // LyricAnimFrame
+
 // ---------------------------------------------------------------------------
 // 歌词面板的公共渲染层。
 //
@@ -65,10 +67,37 @@ struct LyricsViewLayout {
     int clipBottom   = 0;
 };
 
+// 画「曲名 + 歌词」的返回值。
+//
+// 【为什么不再是裸 int】宿主需要知道两件只有渲染层才知道的事，
+// 才能驱动下一步的动画（见 scroll_anim.h）：
+//   * 当前行**宽出去多少** —— 才能判断要不要滚、滚多远
+//   * 上滑的**步距** —— 换行时整块歌词该从低多少像素处升上来
+// 这两件事都依赖 padX / 字体 / 行距，宿主自己算就会**和渲染层跑偏**。
+struct LyricsViewResult {
+    int bottom = 0;   // 内容实际占用的下边界（y），从前的返回值
+
+    // 当前行正文比可用宽度宽出多少像素。0 = 放得下，不用滚。
+    //
+    // ⚠️ 是"宽出多少"，不是"文本有多宽" —— 可用宽度是渲染层内部
+    //    （左右各 padX）算出来的，交给宿主去减迟早会不一致。
+    int currentOverflow = 0;
+
+    // 换行上滑的起始位移（像素）。
+    //
+    // 取"上一行作为上下文行时的步距" = 它的行高 + 常规行距。
+    // 不是精确的视觉位移量（上一行原本用当前行字体、更大更粗），
+    // 200ms 的过渡里看不出来 —— 精确求解要留着上一帧的整个排版，不值得。
+    int currentStepH = 0;
+};
+
 // 画「曲名 + 歌词」。
-// 返回内容实际占用的下边界（y），方便调用方接着画控制条之类。
-int DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& theme,
-                   const LyricsViewLayout& layout = LyricsViewLayout{});
+//
+// anim 是这一帧的动画状态（横滚偏移 / 上滑位移）。默认值 = 都不动，
+// 所以宿主不接动画时行为和不传一样。
+LyricsViewResult DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& theme,
+                                const LyricsViewLayout& layout = LyricsViewLayout{},
+                                const LyricAnimFrame& anim = LyricAnimFrame{});
 
 // 取一个**进程内缓存的** UI 字体。
 //

@@ -200,7 +200,8 @@ RenderResult Render(const lyricus::LyricsViewLayout& layout, int lineCount = 21,
     // normalText = (172,172,180)。阈值 250 就能把当前行单独挑出来。
 
     RECT rc{ 0, 0, kWidth, kHeight };
-    const int ret = lyricus::DrawLyricsView(cv.dc, rc, theme, layout);
+    const auto res = lyricus::DrawLyricsView(cv.dc, rc, theme, layout);
+    const int  ret = res.bottom;
 
     // 阈值 140：连暗一点的普通行也算进来
     const auto all = cv.Bands(140);
@@ -471,8 +472,8 @@ void TestNoTrack() {
     // DC 为空指针也不能崩（lyrics_view.cpp 开头有判空）
     lyricus::LyricsViewTheme theme; theme.dpi = 96;
     RECT rc{ 0, 0, kWidth, kHeight };
-    const int r = lyricus::DrawLyricsView(nullptr, rc, theme, lyricus::LyricsViewLayout{});
-    Check(r == rc.top, "dc = nullptr -> 直接返回，不崩");
+    const auto r = lyricus::DrawLyricsView(nullptr, rc, theme, lyricus::LyricsViewLayout{});
+    Check(r.bottom == rc.top, "dc = nullptr -> 直接返回，不崩");
 }
 
 // 双语参照行 —— 以及把用户认可的**那个位置**钉住。
@@ -871,6 +872,118 @@ void TestAnimator() {
     }
 }
 
+// 横滚真的作用在绘制上 —— 以及遮罩把它夹在歌词列里。
+//
+// 【判据为什么是"两帧不一样"】滚动改的是**内容**，不是范围：
+// scrollX=0 和被裁到尾部时，墨迹都在 [left, left+maxW] 这一列里填满，
+// 量宽度、量位置都分不出来。真正能分辨的只有"同一行的像素图案变了没有"。
+namespace {
+
+struct Shot {
+    lyricus::LyricsViewResult result;
+    // 纯白像素的**行主序下标**（y*宽度 + x），天然按大小有序 ——
+    // 下面靠这个做线性求交/求差，不用建集合。
+    std::vector<int> ink;
+};
+
+} // namespace
+
+void TestScrollRender() {
+    std::printf("\n== 横滚作用在绘制上 ==\n");
+
+    const char* kLong =
+        "this is an extremely long lyric line that goes far beyond the width of "
+        "any panel we would ever render it in, just to see what happens";
+
+    // 同一行（长行 = 当前行），只改 scrollX
+    auto shoot = [&](int scrollX) {
+        Shot s;
+        std::string raw = std::string("[00:00.00]short\n[00:05.00]") + kLong +
+                          "\n[00:10.00]short again\n";
+        std::vector<unsigned char> b(raw.begin(), raw.end());
+        lyricus::PlaybackState::Get().SetFake(
+            true, L"Test - Song", lyricus::LyricDocument::Parse(b), 1);
+
+        Canvas cv;
+        if (!cv.Create()) return s;
+
+        lyricus::LyricsViewTheme theme;
+        theme.dpi = 96;
+        RECT rc{ 0, 0, kWidth, kHeight };
+        lyricus::LyricAnimFrame anim;
+        anim.scrollX = scrollX;
+        s.result = lyricus::DrawLyricsView(cv.dc, rc, theme,
+                                          lyricus::LyricsViewLayout{100, 0, 50}, anim);
+
+        for (int y = 0; y < kHeight; ++y)
+            for (int x = 0; x < kWidth; ++x)
+                if (cv.Bright(x, y, 250)) s.ink.push_back(y * kWidth + x);
+        return s;
+    };
+
+    const Shot a = shoot(0);
+    const int overflow = a.result.currentOverflow;
+    std::printf("     渲染层报的宽出量 currentOverflow=%d px\n", overflow);
+    Check(overflow > 0, "★ 长行确实报出了宽出量（宿主据此启动横滚）");
+
+    const Shot b = shoot(overflow / 2);
+    const Shot c = shoot(overflow);
+
+    // 交集/差集：算出两帧有多少像素不同
+    auto diffCount = [](const std::vector<int>& p, const std::vector<int>& q) {
+        size_t i = 0, j = 0; int only = 0;
+        while (i < p.size() && j < q.size()) {
+            if      (p[i] < q[j]) { ++only; ++i; }
+            else if (q[j] < p[i]) { ++only; ++j; }
+            else                  { ++i; ++j; }
+        }
+        only += static_cast<int>((p.size() - i) + (q.size() - j));
+        return only;
+    };
+
+    const int dAB = diffCount(a.ink, b.ink);
+    const int dBC = diffCount(b.ink, c.ink);
+    std::printf("     scrollX=0 -> %zu 个纯白像素\n", a.ink.size());
+    std::printf("     scrollX=%d -> %zu 个，与左端差 %d 像素\n", overflow / 2, b.ink.size(), dAB);
+    std::printf("     scrollX=%d -> %zu 个，与一半处差 %d 像素\n", overflow, c.ink.size(), dBC);
+
+    Check(dAB > 200, "★ 滚到一半时画面明显不同（滚动真的作用在绘制上了）");
+
+    // ⚠️ 这里**不能**断言"滚得越多差得越多"。
+    //    第一版就是这么写的，挂了：diffCount 量的是纯白像素集合的对称差，
+    //    它**不随偏移量单调** —— 不同的偏移切掉的是不同的字形，
+    //    白像素个数本来就有涨有落（实测 3166 vs 2867）。
+    //    真正成立、也真正有意义的判据是：**不同偏移画出的画面互不相同**。
+    Check(dBC > 200, "★ 两个不同偏移画出的画面也互不相同（偏移是按量生效的，不是只有两档）");
+
+    // 遮罩：所有偏移下，墨迹都不许跑出歌词列。
+    //
+    // 列的左右边界 = padX(20) 与 宽度-padX，在测试画布 600 宽上就是 [20, 580]。
+    // ⚠️ 别用 std::max / std::min —— windows.h 把 max/min 定义成了宏
+    //（本工程没开 NOMINMAX），`std::max(...)` 会被展开成语法垃圾，
+    // 报的是":: 右边的非法标记"，离真正的原因很远。
+    auto maxX = [](const std::vector<int>& p) {
+        int m = -1;
+        for (int v : p) { const int x = v % kWidth; if (x > m) m = x; }
+        return m;
+    };
+    auto minX = [](const std::vector<int>& p) {
+        int m = kWidth;
+        for (int v : p) { const int x = v % kWidth; if (x < m) m = x; }
+        return m;
+    };
+
+    std::printf("     三帧的横向范围: [%d,%d] [%d,%d] [%d,%d]\n",
+                minX(a.ink), maxX(a.ink), minX(b.ink), maxX(b.ink),
+                minX(c.ink), maxX(c.ink));
+
+    Check(minX(a.ink) >= 20 && maxX(a.ink) <= 580, "★ scrollX=0 时墨迹在歌词列内");
+    Check(minX(b.ink) >= 20 && maxX(b.ink) <= 580, "★ 滚到一半也在列内（没往左溢出）");
+    Check(minX(c.ink) >= 20 && maxX(c.ink) <= 580,
+          "★ 滚到尾部也在列内 —— 文字在动、裁剪框不动（遮罩的全部意义）");
+    Check(maxX(c.ink) >= 570, "滚到尾部时右边缘用满了（尾巴真的露出来了）");
+}
+
 } // namespace
 
 int wmain() {
@@ -885,6 +998,7 @@ int wmain() {
     TestTranslationPrimary();
     TestLongLineEllipsis();
     TestMask();
+    TestScrollRender();
     TestAnimator();
     TestNoTrack();
 

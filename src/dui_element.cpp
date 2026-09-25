@@ -24,6 +24,11 @@ namespace {
 constexpr UINT_PTR kRefreshTimerId  = 2;
 constexpr UINT     kRefreshInterval = 250;
 
+// 动画拍。和逻辑拍分开的理由见 control_window.cpp 的 kAnimTimerId ——
+// 逻辑拍要轮询配置，动画拍只重绘。id 取 3，和独立面板那两个错开。
+constexpr UINT_PTR kAnimTimerId  = 3;
+constexpr UINT     kAnimInterval = 40;   // 25fps
+
 // 元素配置格式。目前只有一个字段：面板至少要能装下几行歌词。
 // 版本号留着是为了以后加字段时能认出旧数据。
 constexpr t_uint32 kConfigVersion       = 1;
@@ -165,6 +170,17 @@ private:
     // 三个 int 的比较，代价可以忽略。详见 settings.cpp 的说明。
     LyricDisplayConfig m_displayCfg;   // 上一次看到的原始设置，用来判断"变了没"
     LyricsViewLayout   m_layout;       // m_displayCfg 的渲染视图，跟着它一起更新
+
+    // ---- 动画（长行横滚 / 换行上滑）----
+    // 时间线在 scroll_anim.cpp（纯逻辑、可离线单测），这里只管驱动和重绘。
+    LyricAnimator     m_animator;
+    LyricAnimFrame    m_animFrame;     // 正在显示的那一帧
+    LyricsViewResult  m_lastResult;    // 上一次绘制量出来的宽出量 / 步距
+    bool              m_animTimerOn = false;
+
+    // 推进时间线；返回 true = 帧变了，调用方要重绘。**必须在重绘之前调**。
+    bool AdvanceAnimation(ULONGLONG now);
+    void TickAnimation(ULONGLONG now);
 };
 
 LyricusDui::LyricusDui(ui_element_config::ptr config, ui_element_instance_callback::ptr callback)
@@ -393,7 +409,10 @@ LRESULT LyricusDui::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
 
     // 绘制交给公共渲染层：独立面板 / DUI / 将来的 CUI 共用同一份实现，
     // 免得三套代码慢慢跑偏（见 lyrics_view.h 开头的说明）。
-    DrawLyricsView(mem, rc, m_theme, m_layout);
+    //
+    // 返回值存下来：横滚要的"宽出多少"和上滑要的"步距"只有渲染层知道，
+    // 下一拍由 TickAnimation 喂给动画时间线。
+    m_lastResult = DrawLyricsView(mem, rc, m_theme, m_layout, m_animFrame);
 
     ::BitBlt(dc.m_hDC, 0, 0, w, h, mem, 0, 0, SRCCOPY);
 
@@ -403,7 +422,45 @@ LRESULT LyricusDui::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
     return 0;
 }
 
+void LyricusDui::TickAnimation(ULONGLONG now) {
+    if (AdvanceAnimation(now)) ::InvalidateRect(m_hWnd, nullptr, FALSE);
+}
+
+// 推进动画时间线。返回 true = 帧变了（调用方要重绘）。必须在重绘之前调。
+bool LyricusDui::AdvanceAnimation(ULONGLONG now) {
+    if (m_hWnd == nullptr) return false;
+
+    const auto& state = PlaybackState::Get();
+
+    // 宽出量和步距来自**上一次绘制**（只有渲染层知道），差一拍无所谓 ——
+    // animator 的重置条件是行号变化，换行那一拍它还在起步前的静止期里。
+    const LyricAnimFrame f = m_animator.Update(
+        now, state.CurrentLine(), m_lastResult.currentOverflow, m_lastResult.currentStepH);
+
+    const bool frameChanged = (f.scrollX != m_animFrame.scrollX) ||
+                              (f.slideY  != m_animFrame.slideY);
+    m_animFrame = f;
+
+    if (f.animating && !m_animTimerOn) {
+        ::SetTimer(m_hWnd, kAnimTimerId, kAnimInterval, nullptr);
+        m_animTimerOn = true;
+    } else if (!f.animating && m_animTimerOn) {
+        ::KillTimer(m_hWnd, kAnimTimerId);
+        m_animTimerOn = false;
+    }
+
+    // ⚠️ 返回的是**帧变了没有**，不是 animating（上滑结束那一帧两个条件相反，
+    //    只看 animating 会把最后那一帧吞掉 —— 见 scroll_anim.h）。
+    return frameChanged;
+}
+
 LRESULT LyricusDui::OnTimer(UINT, WPARAM wParam, LPARAM, BOOL& bHandled) {
+    // 动画拍：推进时间线，变了就重绘。**不查任何东西**（见 control_window.cpp
+    // 里动画定时器的说明 —— 逻辑拍那套轮询搬到 25fps 就是每秒几十次白查表）。
+    if (wParam == kAnimTimerId) {
+        TickAnimation(::GetTickCount64());
+        return 0;
+    }
     if (wParam != kRefreshTimerId) {
         bHandled = FALSE;   // 不是我们的定时器，让 DefWindowProc 去管
         return 0;
@@ -438,7 +495,18 @@ LRESULT LyricusDui::OnTimer(UINT, WPARAM wParam, LPARAM, BOOL& bHandled) {
         (change == TickChange::Position) &&
         (now - m_lastPositionRepaint >= kPositionRepaintMs);
 
-    if (lineChanged || revisionChanged || cfgChanged || positionDue) {
+    // 换曲 / 改显示设置 -> 动画状态清零（否则上一首滚到一半的偏移会带到新歌上）
+    if (revisionChanged || cfgChanged) {
+        m_animator.Reset();
+        m_animFrame = LyricAnimFrame{};
+    }
+
+    // 动画状态**先推进**，再决定要不要重绘 —— 顺序不能反。
+    // 反过来的话换行那一拍会先用上一行的滚动偏移把新行画一遍，
+    // 白多一次整帧渲染，而且那一帧是错的（看着闪一下）。
+    const bool animChanged = AdvanceAnimation(now);
+
+    if (lineChanged || revisionChanged || cfgChanged || positionDue || animChanged) {
         m_lastPositionRepaint = now;
         m_lastRevision = state.Revision();
         // erase=FALSE 是**故意**的，而且必须配合 OnPaint 里的双缓冲：
@@ -462,6 +530,7 @@ LRESULT LyricusDui::OnLButtonDown(UINT, WPARAM, LPARAM, BOOL&) {
 
 LRESULT LyricusDui::OnDestroy(UINT, WPARAM, LPARAM, BOOL& bHandled) {
     ::KillTimer(m_hWnd, kRefreshTimerId);
+    if (m_animTimerOn) { ::KillTimer(m_hWnd, kAnimTimerId); m_animTimerOn = false; }
 
     // 窗口没了，刷子也不会再有人用。在这里释放、不给类加析构函数 ——
     // SDK 保证窗口先于对象销毁（atl-misc.h:229 那句

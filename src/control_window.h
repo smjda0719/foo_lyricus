@@ -140,6 +140,22 @@ private:
     // kPositionRepaintMs 的说明。初值 0 让第一次位置变化就能通过。
     ULONGLONG m_lastPositionRepaint = 0;
 
+    // ---- 动画（长行横滚 / 换行上滑）----
+    //
+    // 时间线本身在 scroll_anim.cpp 里，是纯逻辑（注入时钟、可离线单测）；
+    // 这里只负责"每拍问它要一帧、然后按需重绘"。
+    LyricAnimator     m_animator;
+    LyricAnimFrame    m_animFrame;    // 正在显示的那一帧
+    LyricsViewResult  m_lastResult;   // 上一次绘制量出来的宽出量 / 步距
+    bool              m_animTimerOn = false;
+
+    // 推进动画时间线：更新 m_animFrame、按需开关动画定时器。
+    // 返回 true = 帧变了（调用方要重绘）。**必须在重绘之前调**。
+    bool AdvanceAnimation(ULONGLONG now);
+
+    // 动画拍入口：推进 + 变了就重绘。
+    void TickAnimation(ULONGLONG now);
+
     // ---- 分层渲染的位图缓存 ----
     //
     // 【为什么需要】面板每 250ms 重绘一次（进度条在动），而原来的写法

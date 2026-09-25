@@ -69,6 +69,13 @@ constexpr UINT kMeasureFlags = DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX;
 constexpr UINT kDrawEllipsisFlags =
     DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX;
 
+// 绘制标志：当前行专用 —— 单行、**不省略**。
+//
+// 它的宽度由 DC 裁剪区（遮罩）负责，而不是由 DrawTextW 的矩形负责：
+// 横滚要的是「文字位置在动、裁剪框不动」，只有裁剪区能做到。
+// 所以这里既不能折行、也不能省略号 —— 一省略就等于把要滚的内容先扔了。
+constexpr UINT kDrawScrollFlags = DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX;
+
 // 文本行的高度缓存。
 //
 // 【为什么要缓存】DrawTextW(DT_CALCRECT) 不是免费操作 —— 要走一遍文本整形。
@@ -116,6 +123,22 @@ int MeasureLine(HDC dc, const wchar_t* text, HFONT font, int maxWidth) {
     const int h = CachedLineHeight(dc, text, font, maxWidth);
     SelectObject(dc, oldFont);
     return h;
+}
+
+// 一整行的**像素宽度**（不折、不省略）。
+//
+// 用 GetTextExtentPoint32W 而不是 DrawTextW(DT_CALCRECT)：
+//   * 它不认 DT_NOPREFIX，但也**不特殊对待 `&`** —— 和 kDrawScrollFlags
+//     的画法正好一致（那条路也带 DT_NOPREFIX）。两边对齐，不会差一个字符。
+//   * 便宜：不用走一遍 DrawText 的排版流程。
+//
+// 这个宽度是"要不要滚、滚多远"的唯一依据，所以必须和真正画出来的宽度一致。
+int MeasureLineWidth(HDC dc, const wchar_t* text, HFONT font) {
+    const HGDIOBJ oldFont = SelectObject(dc, font);
+    SIZE sz{ 0, 0 };
+    GetTextExtentPoint32W(dc, text, static_cast<int>(wcslen(text)), &sz);
+    SelectObject(dc, oldFont);
+    return sz.cx;
 }
 
 // 画一行，返回「实际高度 + 行距」供调用方推进光标。
@@ -200,9 +223,11 @@ const std::wstring* SubTextOf(const LyricDocument& doc, size_t i, bool tlPrimary
 
 } // namespace
 
-int DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& theme,
-                   const LyricsViewLayout& layout) {
-    if (dc == nullptr) return rc.top;
+LyricsViewResult DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& theme,
+                                const LyricsViewLayout& layout,
+                                const LyricAnimFrame& anim) {
+    LyricsViewResult result;
+    if (dc == nullptr) { result.bottom = rc.top; return result; }
 
     SetBkMode(dc, TRANSPARENT);
 
@@ -303,6 +328,23 @@ int DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& theme,
             const wchar_t* curText = curMain.c_str();
             const int curTextH = MeasureLine(dc, curText, fCurrent, maxW);
 
+            // 当前行**完整**的像素宽度 —— "要不要滚、滚多远"的唯一依据。
+            // 用当前行字体量（大而粗），量出来的就是它真正画出来占的宽度。
+            const int curTextW = MeasureLineWidth(dc, curText, fCurrent);
+            result.currentOverflow = (curTextW > maxW) ? (curTextW - maxW) : 0;
+
+            // 上滑的步距 = **上一行**作为上下文行时的行高 + 常规行距。
+            //
+            // 用上一行而不是当前行：换行时升上来的那个"低一步"位置，
+            // 就是上一行原本待的地方。参照行（翻译）不算独立一行 ——
+            // 跳过它，否则步距会短一个小字的距离。
+            if (cur > 0) {
+                size_t prev = cur - 1;
+                if (IsSubLine(doc, prev) && prev > 0) --prev;
+                result.currentStepH = MeasureLine(dc, MainTextOf(doc, prev, tlPrimary).c_str(),
+                                                  fBody, maxW) + gapNormal;
+            }
+
             // ---- 当前行的双语参照行 ----
             //
             // 双语歌词是"同一条时间戳、原文在前、翻译在后"两行。
@@ -384,30 +426,61 @@ int DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& theme,
                 down += h;
             }
 
+            // ---- 动画：上滑 ----
+            //
+            // slideY = 整块歌词**下移**多少像素（0 = 最终位置）。换行的过渡里
+            // 它从 currentStepH 降到 0，看上去就是整块往上滑了一行的距离。
+            //
+            // ⚠️ 只作用在**绘制**上，不参与排版：行数、`above`/`below` 的成员、
+            //    夹取全都照原来算。否则过渡途中"能塞下的行数"会变，
+            //    滑到位的一瞬间会**跳一下**（行数突变）。
+            //    代价是 t=0 时最下面一行会越过 limit —— 那是遮罩的活（见上面
+            //    IntersectClipRect 那段），也正是它存在的理由。
+            const int slideY = (anim.slideY > 0) ? anim.slideY : 0;
+
+            // ---- 动画：当前行横滚 ----
+            //
+            // scrollX = 当前行往左移出多少像素。它在绘制时改变 x，**不改宽度**：
+            // 宽度是 maxW，永远不变，所以裁剪框（DC 裁剪区）也永远不动。
+            // 这就是"文字在动、框不动"，横滚的全部秘密。
+            const int scrollX = (anim.scrollX > 0) ? anim.scrollX : 0;
+
             // 上方：above 是「由近及远」，画的时候要从最远的一行开始（倒序）。
             // up 此刻正好停在最上面那一行的 y 上。
             for (size_t k = above.size(); k-- > 0; ) {
-                up += DrawLine(dc, MainTextOf(doc, above[k], tlPrimary).c_str(), left, up, maxW,
+                up += DrawLine(dc, MainTextOf(doc, above[k], tlPrimary).c_str(),
+                               left, up + slideY, maxW,
                                fBody, theme.normalText, gapNormal);
             }
 
-            // 当前行
-            DrawLine(dc, curText, left, curTop, maxW,
-                     fCurrent, theme.currentText, gapCurrent);
+            // 当前行。
+            //
+            // ⚠️ 三个参数和上下文行都不一样，缺一不可：
+            //   * 不省略号（kDrawScrollFlags）—— 一省略就等于把要滚的内容先扔了
+            //   * x 减去 scrollX —— 文字往左挪，裁剪框不动
+            //   * 宽度给 curTextW 而不是 maxW —— 矩形要**刚好装下整行**，
+            //     这样"裁掉多少"完全由 DC 裁剪区决定，DrawTextW 不参与截断。
+            //     给 maxW 的话整行会被 DrawTextW 自己裁在 maxW 处，
+            //     滚动就变成了"窗口在动、文字不动"。
+            DrawLine(dc, curText, left - scrollX, curTop + slideY,
+                     (curTextW > 0 ? curTextW : maxW),
+                     fCurrent, theme.currentText, gapCurrent, kDrawScrollFlags);
 
             // 当前行的参照行：小字、暗色，紧贴在正文下面。
             //
             // 用 dimText 而不是 normalText —— 它是**参照**，不该和正文抢注意力。
+            // 它**不滚**，放不下就省略号：两行各自滚会因为宽度不同而漂移，
+            // 视觉上很乱（见 docs/design-lyric-motion.md 第 2 节）。
             if (curSub != nullptr && subTextH > 0) {
                 DrawLine(dc, curSub->c_str(), left,
-                         curTop + curTextH + gapSub, maxW,
+                         curTop + slideY + curTextH + gapSub, maxW,
                          fSub, theme.dimText, 0);
             }
 
             // 下方：正序，光标从当前行**整块**下面接着走。
             int dy = curTop + curBlockH + gapCurrent;
             for (size_t idx : below) {
-                dy += DrawLine(dc, doc.At(idx).text.c_str(), left, dy, maxW,
+                dy += DrawLine(dc, doc.At(idx).text.c_str(), left, dy + slideY, maxW,
                                fBody, theme.normalText, gapNormal);
             }
             y = dy;
@@ -421,7 +494,8 @@ int DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& theme,
 
     // 字体由 MakeFont 缓存持有，进程内复用 —— **这里绝不能删**，
     // 删了缓存里就是野句柄，下一帧 SelectObject 会拿到已释放的 GDI 对象。
-    return y;
+    result.bottom = y;
+    return result;
 }
 
 HFONT GetCachedUiFont(int dpi, int pt, bool bold) {

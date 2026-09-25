@@ -49,6 +49,13 @@ constexpr DWORD kMinBuildForBackdrop = 22621;
 // 250ms 对行级歌词足够；将来做逐字歌词需要更高频率或高精度计时器插值。
 constexpr UINT_PTR kRefreshTimerId  = 1;
 constexpr UINT     kRefreshInterval = 250;
+
+// 动画拍的定时器。**和逻辑拍分开**是有意的：
+//   * 逻辑拍要轮询配置（每拍 3 次 configStore 查表），不能提到 25fps
+//   * 动画拍除了"把下一帧画出来"什么都不做，而且只在真的在动时才存在
+// id 取 3：1 是逻辑拍，2 留给 DUI/CUI（见 dui_element.cpp 的说明）。
+constexpr UINT_PTR kAnimTimerId  = 3;
+constexpr UINT     kAnimInterval = 40;   // 25fps
 // 位置变化的节流间隔 kPositionRepaintMs 定义在 playback_state.h ——
 // 三个宿主共用同一个值。
 
@@ -752,6 +759,15 @@ LRESULT ControlWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                          ap.alpha);
             }
 
+            // 换曲 / 改显示设置 -> 动画状态清零。
+            //
+            // 不清的话，上一首滚到一半的横向偏移会**带到新歌上**
+            // （新歌第一行一出来就少了一截），上滑也会凭空滑一次。
+            if (stateChanged || cfgChanged) {
+                m_animator.Reset();
+                m_animFrame = LyricAnimFrame{};
+            }
+
             // 只有「位置在走、歌词行没变」时才受节流限制，
             // 而且这一拍还会被下面更"有意思"的变化再次覆盖 —— 见 kPositionRepaintMs。
             const ULONGLONG now = GetTickCount64();
@@ -759,16 +775,20 @@ LRESULT ControlWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 (change == TickChange::Position) &&
                 (now - m_lastPositionRepaint >= kPositionRepaintMs);
 
-            if (lineChanged || stateChanged || cfgChanged || apChanged || positionDue) {
+            // 动画状态**先推进**，再决定要不要重绘 —— 顺序不能反。
+            //
+            // 反过来的话，换行那一拍会先用**上一行的滚动偏移**把新行画一遍，
+            // 下一句才纠正过来：白多一次整帧渲染，而且那一帧是错的（看着闪一下）。
+            const bool animChanged = AdvanceAnimation(now);
+
+            if (lineChanged || stateChanged || cfgChanged || apChanged ||
+                positionDue || animChanged) {
                 m_lastPositionRepaint = now;
                 m_lastRevision = st.Revision();
                 ++m_diagRepaintCount;
-                if (static_cast<BackdropMode>(cfg_backdrop_mode.get()) == BackdropMode::Translucent) {
-                    RenderLayered();
-                } else {
-                    InvalidateRect(hwnd, nullptr, TRUE);
-                }
+                RequestRepaint();
             }
+
             // 心跳：每 40 拍（10 秒）记一行。
             //
             // 【为什么要它】用户 2026-09-24 报「偶尔歌词会停止更新，点击暂停重新播放
@@ -793,6 +813,16 @@ LRESULT ControlWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
             return 0;
         }
+
+        // 动画拍：推进时间线，变了就重绘。
+        //
+        // ⚠️ 绝不能把逻辑拍那套（RefreshPosition / 轮询配置 / 心跳）搬过来。
+        //    逻辑拍每拍要查 3 次 fb2k::configStore，25fps 就是每秒 75 次查表 ——
+        //    纯浪费。这里唯一的职责就是"把动画的下一帧画出来"。
+        if (wp == kAnimTimerId) {
+            TickAnimation(GetTickCount64());
+            return 0;
+        }
         break;
 
     case WM_EXITSIZEMOVE:
@@ -809,6 +839,7 @@ LRESULT ControlWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_DESTROY:
         KillTimer(hwnd, kRefreshTimerId);
+        if (m_animTimerOn) { KillTimer(hwnd, kAnimTimerId); m_animTimerOn = false; }
         ReleaseLayeredCache();
         if (!m_skipSaveOnDestroy) SavePosition();
         m_hwnd = nullptr;
@@ -872,8 +903,8 @@ void ControlWindow::DrawTextContent(HDC dc, const RECT& rc) {
     // 底部的控制条改用 clipBottom 排除：它只决定"画到哪儿为止"，
     // 不影响居中基准。这样面板以后支持缩放时，百分比也是跟着面板走的。
     m_layout.clipBottom = m_ctrlBarTop;
-    DrawLyricsView(dc, rc, theme, m_layout);
-
+    // 返回值存下来：宽出量和上滑步距要靠它，下一拍喂给动画时间线
+    m_lastResult = DrawLyricsView(dc, rc, theme, m_layout, m_animFrame);
     // 控制条
     DrawControls(dc, dpi);
 }
@@ -1040,6 +1071,44 @@ void ControlWindow::RenderLayered() {
 // ---------------------------------------------------------------------------
 // 控制条（M2）
 // ---------------------------------------------------------------------------
+
+void ControlWindow::TickAnimation(ULONGLONG now) {
+    if (AdvanceAnimation(now)) RequestRepaint();
+}
+
+// 推进动画时间线。返回 true = 这一帧和上一帧不一样，调用方要重绘。
+//
+// 【为什么宽出量/步距要晚一拍】它们只有渲染层知道（要量文本宽度，
+// 还要减去渲染层内部算的左右内边距），而渲染发生在重绘里。
+// 差一拍无所谓：animator 的重置条件是**行号变化**，而换行那一拍
+// 它正处在起步前的静止期（900ms），足够下一帧把新值量出来。
+bool ControlWindow::AdvanceAnimation(ULONGLONG now) {
+    if (m_hwnd == nullptr || !IsWindow(m_hwnd)) return false;
+
+    const auto& st = PlaybackState::Get();
+    const LyricAnimFrame f = m_animator.Update(
+        now, st.CurrentLine(), m_lastResult.currentOverflow, m_lastResult.currentStepH);
+
+    const bool frameChanged = (f.scrollX != m_animFrame.scrollX) ||
+                              (f.slideY  != m_animFrame.slideY);
+    m_animFrame = f;
+
+    // 定时器跟着 animating 走：起步前的静止期和滚完之后都不开，
+    // 于是长歌词只在那几秒里烧 25fps，其余时间这个定时器根本不存在。
+    if (f.animating && !m_animTimerOn) {
+        SetTimer(m_hwnd, kAnimTimerId, kAnimInterval, nullptr);
+        m_animTimerOn = true;
+    } else if (!f.animating && m_animTimerOn) {
+        KillTimer(m_hwnd, kAnimTimerId);
+        m_animTimerOn = false;
+    }
+
+    // ⚠️ 返回的是**帧变了没有**，不是 animating。
+    //    上滑结束那一帧 slideY 从 >0 变成 0：内容变了（必须重绘），
+    //    但它同时把 animating 置回了 false。只看 animating 的话
+    //    最后那一帧会被吞掉，画面停在偏移位置上（见 scroll_anim.h）。
+    return frameChanged;
+}
 
 void ControlWindow::RequestRepaint() {
     if (m_hwnd == nullptr || !IsWindow(m_hwnd)) return;

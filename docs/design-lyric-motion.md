@@ -201,9 +201,18 @@ int DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& theme,
 ```
 
 **宿主怎么拿到"当前行文本宽度"**：`DrawLyricsView` 的返回值从 `int`
-改成一个小结构 `{ int bottom; int currentTextW; int currentStepH; }`，
+改成 `LyricsViewResult { int bottom; int currentOverflow; int currentStepH; }`，
 宿主存下来，下一拍喂给 `Update()`。差一拍无所谓 ——
 `Update()` 的重置条件是行号变化，不是宽度变化。
+
+⚠️ **返回的是"宽出多少"而不是"文本多宽"**：可用宽度是渲染层内部
+（左右各 padX）算出来的，交给宿主去减迟早会不一致。
+
+⚠️ **推进动画必须在重绘之前**。第一版把 `TickAnimation` 放在重绘调用**之后**，
+于是换行那一拍会先用**上一行的滚动偏移**把新行画一遍、下一句才纠正过来：
+白多一次整帧渲染，而且那一帧是错的（看着闪一下）。
+现在三个宿主都是 `AdvanceAnimation(now)` 先跑、返回"帧变了没有"，
+再和换行/换曲/改设置等条件一起决定这一拍要不要重绘。
 
 理由：这样 `LyricAnimator` 可以在单测里**把时间轴推着走**，
 `静止 → 左移 → 停在尾部` 整条时间线离线可验证，不需要开窗口。
@@ -266,9 +275,9 @@ int DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& theme,
 |---|---|---|
 | **1 ✅** | **遮罩（`IntersectClipRect`）+ 所有行改单行省略号** | **已完成**。单测 `TestLongLineEllipsis` / `TestMask`；折行撤掉，版面立刻回稳 |
 | **2 ✅** | **`LyricAnimator` + 单测** | **已完成**。时间线离线可验证（`TestAnimator`，21 条断言），渲染层一行代码都还没改 |
-| 3 | 渲染层接 `anim`，当前行横滚（省略号换成裁剪） | 三个宿主同时生效（共用渲染层） |
-| 4 | 宿主加动画定时器 | 真机看到滚起来；日志给出真实耗时 |
-| 5 | 上滑过渡 | 换行不再是硬切 |
+| **3 ✅** | **渲染层接 `anim`，当前行横滚** | **已完成**。`DrawLyricsView` 收 `LyricAnimFrame`、返回 `LyricsViewResult`（宽出量 / 上滑步距）；当前行改用 `kDrawScrollFlags`（单行、不省略）+ `x - scrollX`，宽度交给遮罩裁 |
+| **4 ✅** | **宿主加动画定时器** | **已完成**。三个宿主各一个 40ms 动画拍（id=3），只在 `animating` 时存在；逻辑拍纹丝不动 |
+| **5 ✅** | **上滑过渡** | **已完成**。`slideY` 只作用在**绘制**上，不参与排版（否则过渡途中能塞下的行数会变，滑到位那一瞬跳一下） |
 | 6 | 量性能，必要时上带状重绘 | 主线程占用 |
 
 第 1 步就能单独交付 —— 它自己就让画面比现在好看（长上下文行不再把版面顶乱）。
