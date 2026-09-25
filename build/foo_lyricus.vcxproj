@@ -75,7 +75,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>$(SdkDir)\shared\shared-$(Platform).lib;$(SdkDir)\SDK\$(SdkLibFlavor)\foobar2000_SDK.lib;$(SdkDir)\foobar2000_component_client\$(SdkLibFlavor)\foobar2000_component_client.lib;$(LyricusRoot)\3rdparty\pfc\$(SdkLibFlavor)\pfc.lib;dwmapi.lib;d2d1.lib;dwrite.lib;windowscodecs.lib;shlwapi.lib;comctl32.lib;comdlg32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>$(SdkDir)\shared\shared-$(Platform).lib;$(SdkDir)\SDK\$(SdkLibFlavor)\foobar2000_SDK.lib;$(SdkDir)\foobar2000_component_client\$(SdkLibFlavor)\foobar2000_component_client.lib;$(LyricusRoot)\3rdparty\pfc\$(SdkLibFlavor)\pfc.lib;dwmapi.lib;crypt32.lib;d2d1.lib;dwrite.lib;windowscodecs.lib;shlwapi.lib;comctl32.lib;comdlg32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
 

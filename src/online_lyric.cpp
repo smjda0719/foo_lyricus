@@ -6,6 +6,7 @@
 #include "lyric_search.h"   // NormalizeLyricStem —— 核验网易云候选时复用本地搜索那套归一化
 
 #include <winhttp.h>
+#include <wincrypt.h>   // CryptStringToBinaryA —— 酷狗的歌词是 base64
 
 #include <atomic>      // 网易云限流的进程级冷却
 #include <algorithm>   // std::sort —— 没匹配到的曲目名单要排序
@@ -2361,7 +2362,8 @@ std::wstring StripEditionMarker(const std::wstring& title) {
 //  源头这边要是只比原样，就会出现「这里拒了、那边本来会接受」的白白错过 ——
 //  用户那首无标签的「02 遗忘山丘.wav」正是栽在这一条上。
 bool PickNetEaseCandidate(const std::vector<NetEaseSong>& songs,
-                          const OnlineLyricRequest& req, NetEaseSong& out) {
+                          const OnlineLyricRequest& req, NetEaseSong& out,
+                          const char* sourceLabel = "网易云") {
     // 曲名候选：先剥掉"同内容"的版本标记（[Remastered]），再交给
     // MakeTitleCandidates 切前缀和音轨号。两边都先剥再切，口径一致。
     std::vector<std::wstring> wantTitles;
@@ -2460,8 +2462,8 @@ bool PickNetEaseCandidate(const std::vector<NetEaseSong>& songs,
     if (bestScore < 0) {
         // 把"卡在哪一道闸"写进日志 —— 出问题时能一眼看出问题在哪，
         // 不必再去打接口猜（两次都是靠它定位的）。
-        OnlineLog("在线歌词：网易云候选核验 —— 过曲名闸 %d 条，其中时长对上 %d 条、"
-                  "演唱者对上 %d 条，可用 0 条", passedTitle, passedDur, passedArtist);
+        OnlineLog("在线歌词：%s候选核验 —— 过曲名闸 %d 条，其中时长对上 %d 条、"
+                  "演唱者对上 %d 条，可用 0 条", sourceLabel, passedTitle, passedDur, passedArtist);
 
         if (rejectedByLength > 0) {
             OnlineLog("    其中 %d 条因**时长相差超过 %.1f 倍**被当成另一版录音直接拒"
@@ -2482,24 +2484,481 @@ bool PickNetEaseCandidate(const std::vector<NetEaseSong>& songs,
         return false;
     }
 
-    OnlineLog("在线歌词：网易云候选核验 —— 过曲名闸 %d 条（时长对上 %d、演唱者对上 %d），"
-              "选中得分 %d 的那条", passedTitle, passedDur, passedArtist, bestScore);
+    OnlineLog("在线歌词：%s候选核验 —— 过曲名闸 %d 条（时长对上 %d、演唱者对上 %d），"
+              "选中得分 %d 的那条", sourceLabel, passedTitle, passedDur, passedArtist, bestScore);
     out = songs[bestIdx];
+    return true;
+}
+
+// 取消检查：调用方换曲 / 重查时，后台这一轮就没必要再发请求了。
+//
+// 【放在哪里】每个**联网动作之前**，加上写未命中标记之前。
+// 中间那段（解析、合并翻译）是纯计算，几百微秒，不值得再插检查点 ——
+// 插多了只是把代码弄乱。
+//
+// 【为什么定义在两个源之前】网易云和酷狗都要用它。
+bool IsCancelled(const OnlineCancelFlag& flag) {
+    return flag != nullptr && flag->load(std::memory_order_relaxed);
+}
+
+// ===========================================================================
+//  酷狗（Kugou）—— 第二个在线源
+//
+//  【为什么是酷狗】2026-09-25 用户要求"接两个源"，实测了三个候选：
+//     源       搜索   取词                              结论
+//     酷狗     ✅     ✅ base64 LRC                      **接**
+//     QQ音乐   ✅     ❌ retcode=-1901（要登录态）        不接
+//     酷我     ✅     ❌ TP=ERROR REQUEST / status=301   不接
+//  也就是说**匿名能拿到歌词的只有酷狗一个**。QQ/酷我都能搜到歌，
+//  但取词要 cookie，而访问 y.qq.com 拿不到任何 cookie（0 个）——
+//  两条路都堵死，不是参数没调对。
+//
+//  【这条路要三步，比网易云多一步】
+//     1. songsearch.kugou.com/song_search_v2?keyword=...
+//          -> data.lists[]：FileHash / SongName / SingerName / Duration(秒)
+//     2. krcs.kugou.com/search?...&hash=<FileHash>&duration=<毫秒>
+//          -> candidates[0]：id / accesskey
+//     3. lyrics.kugou.com/download?...&id=&accesskey=
+//          -> content = base64 的 LRC
+//  第 2 步是酷狗特有的：光有 hash 换不到词，得先换一对 id+accesskey。
+//
+//  【候选核验直接复用网易云那套】把酷狗结果填进同一个候选结构再调
+//  PickNetEaseCandidate（传源名）—— 两道软闸、时长倍数上限、汉字骨架、
+//  繁简折叠、以及"卡在哪一道闸"的诊断日志全部白拿。
+//  这是当初把源做成"搜索 → 核验 → 取词"这个形状的回报。
+// ===========================================================================
+
+const wchar_t* kKugouSearchHost = L"songsearch.kugou.com";
+const wchar_t* kKugouKrcsHost   = L"krcs.kugou.com";
+const wchar_t* kKugouLyricHost  = L"lyrics.kugou.com";
+
+// 搜索结果里我们真正用得上的几个字段。
+struct KugouHit {
+    std::string hash;             // FileHash —— 换 id/accesskey 要用
+    std::string name;             // SongName
+    std::string singer;           // SingerName（多人用「、」分隔）
+    double      durationSec = 0.0;
+};
+
+std::wstring BuildKugouSearchPath(const std::wstring& keyword) {
+    return L"/song_search_v2?keyword=" + PercentEncode(keyword) +
+           L"&page=1&pagesize=10&platform=WebFilter&userid=-1&clientver=2000"
+           L"&iscorrection=1&privilege_filter=0";
+}
+
+// 一个候选对象。字段名用的是酷狗自己的大小写。
+bool ParseKugouHitObject(const std::string& s, size_t& i, KugouHit& out) {
+    ++i;   // 跳过 '{'
+    for (;;) {
+        i = SkipWs(s, i);
+        if (i >= s.size()) return false;
+        if (s[i] == '}') { ++i; return true; }
+        if (s[i] == ',') { ++i; continue; }
+        if (s[i] != '"') return false;
+
+        std::string key;
+        if (!ParseJsonStringAt(s, i, key)) return false;
+        i = SkipWs(s, i);
+        if (i >= s.size() || s[i] != ':') return false;
+        ++i;
+        i = SkipWs(s, i);
+        if (i >= s.size()) return false;
+
+        if (key == "FileHash") {
+            if (s[i] == '"') { if (!ParseJsonStringAt(s, i, out.hash)) return false; }
+            else if (!SkipValue(s, i)) return false;
+            continue;
+        }
+        if (key == "SongName") {
+            if (s[i] == '"') { if (!ParseJsonStringAt(s, i, out.name)) return false; }
+            else if (!SkipValue(s, i)) return false;
+            continue;
+        }
+        if (key == "SingerName") {
+            if (s[i] == '"') { if (!ParseJsonStringAt(s, i, out.singer)) return false; }
+            else if (!SkipValue(s, i)) return false;
+            continue;
+        }
+        if (key == "Duration") {
+            // ⚠️ 搜索接口给的是**秒**（实测「积雪」= 220），
+            //    而第 2 步 krcs 那边给的是**毫秒**（126095）。两处别搞混 ——
+            //    搞混了时长闸会全灭，而现象只是"匹配不到"，很难查。
+            double v = 0.0;
+            if (ReadNumberToken(s, i, v)) out.durationSec = v;
+            continue;
+        }
+        if (!SkipValue(s, i)) return false;
+    }
+}
+
+// 搜索响应：{"status":1,"errcode":0,"data":{"total":N,"lists":[{...}]}}
+bool ParseKugouSearchRoot(const std::string& body, std::vector<KugouHit>& out) {
+    out.clear();
+
+    static const char kListsKey[] = "\"lists\"";
+    const size_t k = body.find(kListsKey);
+    if (k == std::string::npos) return false;
+
+    size_t i = SkipWs(body, k + sizeof(kListsKey) - 1);
+    if (i >= body.size() || body[i] != ':') return false;
+    ++i;
+    i = SkipWs(body, i);
+    if (i >= body.size() || body[i] != '[') return false;
+    ++i;
+
+    for (;;) {
+        i = SkipWs(body, i);
+        if (i >= body.size()) return false;
+        if (body[i] == ']') return true;
+        if (body[i] == ',') { ++i; continue; }
+        if (body[i] != '{') return false;
+
+        KugouHit h;
+        if (!ParseKugouHitObject(body, i, h)) return false;
+        if (!h.hash.empty() && !h.name.empty()) out.push_back(std::move(h));
+    }
+}
+
+// 第 2 步：拿 hash 换 id + accesskey。
+std::wstring BuildKugouKrcsPath(const std::wstring& keyword, const std::string& hash,
+                                double durationMs) {
+    wchar_t dbuf[32];
+    swprintf_s(dbuf, L"%.0f", durationMs > 0 ? durationMs : 0.0);
+    return L"/search?ver=1&man=yes&client=mobi&keyword=" + PercentEncode(keyword) +
+           L"&hash=" + Utf8ToWide(hash.c_str()) + L"&duration=" + dbuf;
+}
+
+// 响应：{"status":200,"candidates":[{"id":115268531,"accesskey":"...",...}]}
+//
+// 只取第一条：搜索词 + hash + 时长三样都给了，第一条就是它。
+bool ParseKugouKrcsRoot(const std::string& body, std::string& id, std::string& accesskey) {
+    id.clear();
+    accesskey.clear();
+
+    static const char kCandKey[] = "\"candidates\"";
+    const size_t k = body.find(kCandKey);
+    if (k == std::string::npos) return false;
+
+    size_t i = SkipWs(body, k + sizeof(kCandKey) - 1);
+    if (i >= body.size() || body[i] != ':') return false;
+    ++i;
+    i = SkipWs(body, i);
+    if (i >= body.size() || body[i] != '[') return false;
+    ++i;
+    i = SkipWs(body, i);
+    if (i >= body.size() || body[i] != '{') return false;
+    ++i;
+
+    for (;;) {
+        i = SkipWs(body, i);
+        if (i >= body.size()) return false;
+        if (body[i] == '}') break;
+        if (body[i] == ',') { ++i; continue; }
+        if (body[i] != '"') return false;
+
+        std::string key;
+        if (!ParseJsonStringAt(body, i, key)) return false;
+        i = SkipWs(body, i);
+        if (i >= body.size() || body[i] != ':') return false;
+        ++i;
+        i = SkipWs(body, i);
+        if (i >= body.size()) return false;
+
+        if (key == "id") {
+            // ⚠️ **既可能是字符串也可能是数字，两种都要吃**。
+            //
+            // 2026-09-25：我一开始只按数字解析，注释里还写着"实测是数字" ——
+            // 那是从 PowerShell 的打印结果**看**出来的，而打印分不出类型。
+            // 拿真实响应存成夹具一测，服务端给的其实是字符串：
+            //     "id":"115268531"
+            // 字符串解析失败 -> id 为空 -> 取词请求 400 -> 整条路静默失败。
+            // 这类"看起来对、实际错"的假设，只有真实响应能戳穿。
+            if (body[i] == '"') {
+                if (!ParseJsonStringAt(body, i, id)) return false;
+            } else {
+                double v = 0.0;
+                if (ReadNumberToken(body, i, v)) {
+                    char buf[32];
+                    sprintf_s(buf, "%.0f", v);
+                    id = buf;
+                } else if (!SkipValue(body, i)) {
+                    return false;
+                }
+            }
+            continue;
+        }
+        if (key == "accesskey") {
+            if (body[i] == '"') { if (!ParseJsonStringAt(body, i, accesskey)) return false; }
+            else if (!SkipValue(body, i)) return false;
+            continue;
+        }
+        if (!SkipValue(body, i)) return false;
+    }
+    return !id.empty() && !accesskey.empty();
+}
+
+std::wstring BuildKugouDownloadPath(const std::string& id, const std::string& accesskey) {
+    return L"/download?ver=1&client=pc&id=" + Utf8ToWide(id.c_str()) +
+           L"&accesskey=" + Utf8ToWide(accesskey.c_str()) + L"&fmt=lrc&charset=utf8";
+}
+
+// base64 解码。用系统 API，不自己写 —— crypt32 是系统库，不是第三方依赖。
+bool Base64Decode(const std::string& in, std::string& out) {
+    out.clear();
+    if (in.empty()) return false;
+
+    DWORD need = 0;
+    if (!CryptStringToBinaryA(in.c_str(), static_cast<DWORD>(in.size()),
+                              CRYPT_STRING_BASE64, nullptr, &need, nullptr, nullptr) ||
+        need == 0) {
+        return false;
+    }
+
+    out.resize(need);
+    DWORD got = need;
+    if (!CryptStringToBinaryA(in.c_str(), static_cast<DWORD>(in.size()),
+                              CRYPT_STRING_BASE64,
+                              reinterpret_cast<BYTE*>(&out[0]), &got, nullptr, nullptr)) {
+        out.clear();
+        return false;
+    }
+    out.resize(got);
+    return true;
+}
+
+// 第 3 步：响应 {"status":200,"fmt":"lrc","content":"<base64>"}
+bool ParseKugouDownloadRoot(const std::string& body, std::string& lrcOut) {
+    lrcOut.clear();
+
+    static const char kContentKey[] = "\"content\"";
+    const size_t k = body.find(kContentKey);
+    if (k == std::string::npos) return false;
+
+    size_t i = SkipWs(body, k + sizeof(kContentKey) - 1);
+    if (i >= body.size() || body[i] != ':') return false;
+    ++i;
+    i = SkipWs(body, i);
+    if (i >= body.size() || body[i] != '"') return false;
+
+    std::string b64;
+    if (!ParseJsonStringAt(body, i, b64)) return false;
+    if (!Base64Decode(b64, lrcOut)) return false;
+
+    // 解出来的是 UTF-8 字节；酷狗会带 BOM（实测 EF BB BF 开头），去掉它，
+    // 否则第一行会变成 "\xEF\xBB\xBF[id:$00000000]" —— 解析器认不出这行是标签。
+    if (lrcOut.size() >= 3 &&
+        static_cast<unsigned char>(lrcOut[0]) == 0xEF &&
+        static_cast<unsigned char>(lrcOut[1]) == 0xBB &&
+        static_cast<unsigned char>(lrcOut[2]) == 0xBF) {
+        lrcOut.erase(0, 3);
+    }
+    return !lrcOut.empty();
+}
+
+// 剥掉开头的 LRC 元数据标签行（[id:] [ar:] [ti:] [al:] [by:] [hash:] …）。
+//
+// 【为什么要专门剥】我们的 LRC 解析器本来就会忽略这些标签，所以**功能上不必剥**；
+// 但「剥制作人员名单」那段逻辑是"从第一行开始连续剥"，而这些标签行挡在最前面 ——
+// 名单剥不掉。实测酷狗返回的正是这个形状：
+//     [id:$00000000] / [ar:純白P、洛天依] / [ti:扁桃体] / [by:...] / [hash:...] / [00:19.830]...
+//
+// ⚠️⚠️ **行尾的 `\r` 必须容忍**。酷狗返回的是 **CRLF**，而第一版判断写的是
+//     `close + 1 == line.size()` —— 行尾那个 `\r` 让它永远不成立，
+//     于是**一个标签都没剥掉**。真实夹具一测就露了（那条断言直接红了）。
+//     这类 bug 很阴：函数"正常工作"（返回了完整输入），只是什么都没做。
+//
+// ⚠️ **`[offset:]` 绝对不能剥** —— 解析器靠它整体平移时间轴，剥了会静默走音。
+std::string StripLeadingLrcTags(const std::string& lrc) {
+    std::string out;
+    out.reserve(lrc.size());
+
+    bool stripping = true;
+    size_t pos = 0;
+    while (pos <= lrc.size()) {
+        size_t nl = lrc.find('\n', pos);
+        if (nl == std::string::npos) nl = lrc.size();
+        const std::string line = lrc.substr(pos, nl - pos);
+
+        if (stripping) {
+            // 判断时用去掉行尾 \r 的视图；输出仍用原始行。
+            const size_t end = (line.size() > 0 && line.back() == '\r')
+                                   ? line.size() - 1 : line.size();
+            const size_t open  = line.find('[');
+            const size_t close = (open == std::string::npos) ? std::string::npos
+                                                             : line.find(']', open);
+            const bool isTagOnly = (open == 0 && close != std::string::npos &&
+                                    close + 1 == end);
+            if (isTagOnly) {
+                const std::string key = line.substr(1, close - 1);
+                const size_t colon = key.find(':');
+                const std::string name = (colon == std::string::npos)
+                                             ? key : key.substr(0, colon);
+                // 只认真正的元数据标签名。`[00:19.83]` 这种时间戳的"名字"是数字，
+                // 靠 isTagOnly + 这张名字表一起挡住。
+                //
+                // 表里的名字来自**真实响应**（见 tests/harness/kugou_fixtures.h）：
+                // 酷狗实际会带 id / ar / ti / by / hash 五种。
+                static const char* kMetaTags[] = {
+                    "id", "ar", "ti", "al", "by", "re", "ve", "hash", "total", "length",
+                };
+                bool metadata = false;
+                for (const char* t : kMetaTags) {
+                    if (_stricmp(name.c_str(), t) == 0) { metadata = true; break; }
+                }
+                if (metadata) {
+                    if (nl >= lrc.size()) break;
+                    pos = nl + 1;
+                    continue;
+                }
+            }
+            stripping = false;
+        }
+
+        out += line;
+        out += '\n';
+        if (nl >= lrc.size()) break;
+        pos = nl + 1;
+    }
+    return out;
+}
+
+// 一轮酷狗查询。返回 true 表示拿到了一份可用的歌词（已填进 entry）。
+bool TryKugou(const OnlineLyricRequest& req, ULONGLONG retryDeadline,
+              LrclibEntry& entry, bool& requestFailed, std::wstring& note,
+              const OnlineCancelFlag& cancel = nullptr) {
+    requestFailed = false;
+    if (IsCancelled(cancel)) return false;
+
+    // 查询词：歌手 + 曲名，和网易云同一个构造口径（切音轨号、剥版本标记）。
+    std::wstring q;
+    {
+        const std::wstring artist = IsPlaceholderTag(TrimWs(req.artist))
+                                        ? std::wstring() : TrimWs(req.artist);
+        const std::wstring title = StripLeadingTrackNumber(StripEditionMarker(TrimWs(req.title)));
+        if (!artist.empty() && !title.empty()) q = artist + L" ";
+        q += title;
+    }
+    if (q.empty()) return false;
+
+    const HttpReply search = HttpGet(kKugouSearchHost, BuildKugouSearchPath(q), retryDeadline);
+    if (!search.transportOk) {
+        requestFailed = true;
+        OnlineLog("在线歌词：酷狗搜索传输失败（已尝试 %d 次）：%s",
+                  search.attempts, WideToUtf8(search.error).c_str());
+        note = L"酷狗搜索网络错误：" + search.error;
+        return false;
+    }
+    if (search.status != 200) {
+        requestFailed = true;
+        OnlineLog("在线歌词：酷狗搜索返回 HTTP %lu（已尝试 %d 次）",
+                  search.status, search.attempts);
+        note = L"酷狗搜索 HTTP " + std::to_wstring(search.status);
+        return false;
+    }
+
+    std::vector<KugouHit> hits;
+    if (!ParseKugouSearchRoot(search.body, hits)) {
+        // HTTP 200 但没有 lists 数组 = 这个搜索词在酷狗上没有结果（确定性结论）
+        OnlineLog("在线歌词：酷狗搜索无结果（响应里没有 lists 数组）");
+        return false;
+    }
+    OnlineLog("在线歌词：酷狗搜索返回 %zu 个候选", hits.size());
+    if (hits.empty()) return false;
+
+    // 转成统一候选结构再核验。id 位置放**下标**，选完靠它找回 hash ——
+    // 酷狗的标识是字符串 hash，而 NetEaseSong.id 只有 double，
+    // 塞下标比塞 hash 的哈希值可靠（不用考虑碰撞）。
+    std::vector<NetEaseSong> cands;
+    cands.reserve(hits.size());
+    for (size_t n = 0; n < hits.size(); ++n) {
+        NetEaseSong c;
+        c.hasId       = true;
+        c.id          = static_cast<double>(n);
+        c.name        = hits[n].name;
+        c.artist      = hits[n].singer;
+        c.durationMs  = hits[n].durationSec * 1000.0;
+        cands.push_back(std::move(c));
+    }
+
+    NetEaseSong pick;
+    if (!PickNetEaseCandidate(cands, req, pick, "酷狗")) {
+        OnlineLog("在线歌词：酷狗 %zu 个候选都没通过硬闸（曲名/时长）", hits.size());
+        return false;
+    }
+    const size_t idx = static_cast<size_t>(pick.id);
+    if (idx >= hits.size()) return false;   // 不该发生
+    const KugouHit& hit = hits[idx];
+
+    OnlineLog("在线歌词：酷狗选中 hash=%s 「%s」 by %s（%.1fs）",
+              hit.hash.c_str(), hit.name.c_str(), hit.singer.c_str(), hit.durationSec);
+
+    if (IsCancelled(cancel)) { OnlineLog("在线歌词：已取消，跳过酷狗取词"); return false; }
+
+    // ---- 第 2 步：hash -> id + accesskey ----
+    const HttpReply krcs = HttpGet(kKugouKrcsHost, BuildKugouKrcsPath(q, hit.hash,
+                                                                     hit.durationSec * 1000.0),
+                                   retryDeadline);
+    if (!krcs.transportOk || krcs.status != 200) {
+        requestFailed = true;
+        OnlineLog("在线歌词：酷狗取词第一步失败（传输=%d HTTP=%lu）",
+                  krcs.transportOk ? 1 : 0, krcs.status);
+        note = L"酷狗取词第一步失败";
+        return false;
+    }
+
+    std::string lyricId, accesskey;
+    if (!ParseKugouKrcsRoot(krcs.body, lyricId, accesskey)) {
+        // 拿不到 id/accesskey 最常见的原因是**这首没有上传歌词**，
+        // 而不是网络问题 —— 但也不能确定，所以按"没问出来"处理（不写负缓存）。
+        requestFailed = true;
+        OnlineLog("在线歌词：酷狗没有返回可用的 id/accesskey（多半是这首没上传歌词）");
+        note = L"酷狗没有可用的歌词条目";
+        return false;
+    }
+
+    if (IsCancelled(cancel)) { OnlineLog("在线歌词：已取消，跳过酷狗下载"); return false; }
+
+    // ---- 第 3 步：下载 base64 的 LRC ----
+    const HttpReply dl = HttpGet(kKugouLyricHost, BuildKugouDownloadPath(lyricId, accesskey),
+                                 retryDeadline);
+    if (!dl.transportOk || dl.status != 200) {
+        requestFailed = true;
+        OnlineLog("在线歌词：酷狗歌词下载失败（传输=%d HTTP=%lu）",
+                  dl.transportOk ? 1 : 0, dl.status);
+        note = L"酷狗歌词下载失败";
+        return false;
+    }
+
+    std::string lrc;
+    if (!ParseKugouDownloadRoot(dl.body, lrc) || lrc.empty()) {
+        OnlineLog("在线歌词：酷狗 id=%s 的歌词为空或解不出来", lyricId.c_str());
+        return false;
+    }
+
+    // ---- 剥头部标签 + 制作人员名单 ----
+    lrc = StripNetEaseCredits(StripLeadingLrcTags(lrc));
+    if (lrc.empty()) {
+        OnlineLog("在线歌词：酷狗 hash=%s 剥掉头部后没有正文", hit.hash.c_str());
+        return false;
+    }
+
+    entry.hasSynced   = true;
+    entry.synced      = std::move(lrc);
+    entry.hasId       = false;   // 酷狗的标识是字符串 hash，塞不进 double —— 干脆不带
+    entry.id          = 0;
+    entry.hasDuration = hit.durationSec > 0.0;
+    entry.duration    = hit.durationSec;
+    entry.artistName  = hit.singer;
+    entry.trackName   = hit.name;
+    entry.albumName.clear();
+    entry.fromSearch  = true;    // 和网易云一样是搜索来的，调用方必须核对
     return true;
 }
 
 // 一轮网易云查询。返回 true 表示拿到了一份可用的歌词（已填进 entry）。
 //
 // **只允许在后台线程调用**（它内部走 HttpGet，会 Sleep 重试）。
-// 取消检查：调用方换曲 / 重查时，后台这一轮就没必要再发请求了。
-//
-// 【放在哪里】每个**联网动作之前**，加上写未命中标记之前。
-// 中间那段（解析、合并翻译）是纯计算，几百微秒，不值得再插检查点 ——
-// 插多了只是把代码弄乱。
-bool IsCancelled(const OnlineCancelFlag& flag) {
-    return flag != nullptr && flag->load(std::memory_order_relaxed);
-}
-
+// 取消令牌用法见文件上方的 IsCancelled。
 bool TryNetEase(const OnlineLyricRequest& req, ULONGLONG retryDeadline,
                 LrclibEntry& entry, bool& requestFailed, std::wstring& note,
                 const OnlineCancelFlag& cancel = nullptr) {
@@ -3231,7 +3690,39 @@ OnlineLyricResult FetchLyricOnline(const OnlineLyricRequest& req,
             result.error = L"已取消（期间换过曲）";
             return result;
         }
-        OnlineLog("在线歌词：网易云未命中，继续查 LRCLIB");
+        OnlineLog("在线歌词：网易云未命中，继续查酷狗");
+    }
+
+    // ---- 2.1 酷狗（第二个源）----
+    //
+    // 顺序：网易云 -> 酷狗 -> LRCLIB。依据是**实测的命中分布** ——
+    // 用户曲库以中文同人曲为主，网易云和酷狗都强，而 LRCLIB 在这类上基本没有
+    // （8 次标题搜索 6 次返回 0 条）。英文/欧美曲目最后交给 LRCLIB。
+    //
+    // 【串行会不会成倍变慢】不会：重试预算是**整轮共享**的一个墙钟截止时刻
+    //（kTotalRetryBudgetMs），多个源共用它，所以"每个源各超时一次"这种
+    // 最坏情况不会发生 —— 见 retryDeadline 的说明。
+    if (!title.empty()) {
+        bool kugouFailed = false;
+        std::wstring kugouNote;
+        LrclibEntry kg;
+
+        if (TryKugou(req, retryDeadline, kg, kugouFailed, kugouNote, cancel)) {
+            OnlineLog("在线歌词：酷狗命中，采用该结果");
+            return SaveAndReturn(paths, cacheUsable, kg, 200,
+                                 /*fromSearch=*/true, "酷狗搜索");
+        }
+        if (kugouFailed) {
+            anyRequestFailed = true;
+            noteFailure(kugouNote);
+        }
+        if (IsCancelled(cancel)) {
+            OnlineLog("在线歌词：已取消，不再查 LRCLIB");
+            result.cancelled = true;
+            result.error = L"已取消（期间换过曲）";
+            return result;
+        }
+        OnlineLog("在线歌词：酷狗未命中，继续查 LRCLIB");
     }
 
 

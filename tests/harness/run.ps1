@@ -55,7 +55,7 @@ $suites = @(
     @{ key='lyric';  name='LRC 解析器';    compile=@('test_lyric.cpp','lyric.cpp');                    extra=@();                        shims=@();                  libs='' },
     # online 组要**额外**编 lyric_search.cpp：网易云候选核验复用了那边的
     # NormalizeLyricStem。不加就会在链接期报 LNK2019 修饰名看不懂。
-    @{ key='online'; name='在线歌词 JSON'; compile=@('test_online.cpp','lyric.cpp','lyric_search.cpp'); extra=@('online_lyric.cpp','online_lyric.h'); shims=@();          libs='winhttp.lib' },
+    @{ key='online'; name='在线歌词 JSON'; compile=@('test_online.cpp','lyric.cpp','lyric_search.cpp'); extra=@('online_lyric.cpp','online_lyric.h'); shims=@();          libs='winhttp.lib crypt32.lib' },
     # 绘制层这组要用**替身** playback_state.h 覆盖真实那份：
     # 真实那份要读 metadb / playback_control，而绘制层只用几个只读访问器。
     @{ key='view';   name='绘制层布局';    compile=@('test_view.cpp','lyrics_view.cpp','scroll_anim.cpp','lyric.cpp'); extra=@('lyrics_view.h','scroll_anim.h'); shims=@('playback_state.h'); libs='gdi32.lib user32.lib' },
@@ -96,6 +96,10 @@ foreach ($s in $suites) {
     foreach ($f in $s.shims) {
         Copy-Item (Join-Path $harness "shim\$f") $work -Force
     }
+    # 夹具头（由真实响应自动生成，见 kugou_fixtures.h）。
+    # 它住在 harness 目录而不是 src —— extra 只从 src 找，所以单独复制一次。
+    $fixtureHeader = Join-Path $harness 'kugou_fixtures.h'
+    if (Test-Path $fixtureHeader) { Copy-Item $fixtureHeader $work -Force }
     # compile 列表里既有 harness 目录的测试文件，也有 src 目录的源码 —— 两头都找一遍
     foreach ($f in $s.compile) {
         $hp = Join-Path $harness $f

@@ -19,6 +19,7 @@
 // ---------------------------------------------------------------------------
 
 #include "online_lyric.cpp"
+#include "kugou_fixtures.h"   // 酷狗真实响应夹具（自动生成，别手改）
 
 #include <cmath>
 #include <cstdio>
@@ -1008,6 +1009,94 @@ void TestOnlineCancel() {
     RemoveDirectoryW(dir.c_str());
 }
 
+// 酷狗（第二个在线源）的三个解析器 —— 全部对着**真实响应**测。
+//
+// 【为什么必须用真实响应】见 kugou_fixtures.h 的说明：手写夹具只能证明
+// "解析器能读我以为的形状"。这次就用真实响应抓到一个：
+// krcs 的 `id` 是**字符串**，我按数字解析，整条路会静默失败（取词 400）。
+void TestKugouParsers() {
+    std::printf("\n== 酷狗解析（真实响应夹具）==\n");
+
+    // ---- 第 1 步：搜索 ----
+    std::vector<lyricus::KugouHit> hits;
+    Check(lyricus::ParseKugouSearchRoot(kugou_fixture::kSearchJson, hits),
+          "★ 搜索响应解析成功（真实响应，26KB 那个的裁剪版）");
+    Check(hits.size() == 2, "两条候选都解析出来了");
+
+    if (hits.size() >= 2) {
+        Check(hits[0].hash == "3F9B5ED9D0C68911A547A2561CB1C658", "第 1 条 FileHash 正确");
+        Check(hits[0].name == "【洛天依AI原创】扁桃体", "第 1 条 SongName 正确（含全角括号）");
+        Check(hits[0].singer == "纯白P", "第 1 条 SingerName 正确");
+        Check(hits[0].durationSec == 126.0,
+              "★ 第 1 条 Duration = 126（**秒**，不是毫秒 —— 第 2 步那边才是毫秒）");
+
+        Check(hits[1].hash == "E5232169747A1EF38AE53A3499273084", "第 2 条 FileHash 正确");
+        Check(hits[1].name == "扁桃体", "第 2 条 SongName 正确");
+        Check(hits[1].singer == "純白P、洛天依",
+              "★ 第 2 条 SingerName 用「、」分隔（繁体純）—— 演唱者闸要能吃这种写法");
+    }
+
+    // ---- 第 2 步：hash -> id/accesskey ----
+    std::string kid, kkey;
+    Check(lyricus::ParseKugouKrcsRoot(kugou_fixture::kKrcsJson, kid, kkey),
+          "★ krcs 响应解析成功");
+    Check(kid == "115268531",
+          "★★ id = 115268531 —— 服务端给的是**字符串**，按数字解析会拿到空串、取词直接 400");
+    Check(kkey == "7DAC232D6A03A7E8D4D35095F78ACC03", "accesskey 解析正确");
+
+    // ---- 第 3 步：下载（base64）----
+    std::string lrc;
+    Check(lyricus::ParseKugouDownloadRoot(kugou_fixture::kDownloadJson, lrc),
+          "★ download 响应解析 + base64 解码成功");
+    Check(!lrc.empty() && lrc.find("[ti:扁桃体]") != std::string::npos,
+          "解码出来的确实是这首歌的 LRC（带 [ti:] 头）");
+    Check(lrc.find("[00:") != std::string::npos, "里面有真正的时间戳行");
+
+    // BOM 必须去干净，否则第一行变成 "\xEF\xBB\xBF[id:...]" 认不出是标签
+    Check(!(lrc.size() >= 3 && static_cast<unsigned char>(lrc[0]) == 0xEF),
+          "★ 开头的 BOM 已去掉（酷狗会带）");
+
+    // ---- 头部标签要先剥掉，否则"剥制作人员名单"那段够不着后面的名单 ----
+    {
+        const std::string stripped = lyricus::StripLeadingLrcTags(lrc);
+        Check(stripped.find("[ti:") == std::string::npos &&
+              stripped.find("[ar:") == std::string::npos &&
+              stripped.find("[id:") == std::string::npos,
+              "★ [id:] [ar:] [ti:] 头部标签被剥掉");
+        Check(stripped.find("[00:") != std::string::npos, "时间戳行**没有**被误伤");
+    }
+
+    // ★ `[offset:]` 绝对不能剥 —— 解析器靠它整体平移时间轴
+    {
+        const std::string withOffset =
+            "[ti:某某]\n[offset:-500]\n[00:10.000]第一句\n";
+        const std::string out = lyricus::StripLeadingLrcTags(withOffset);
+        Check(out.find("[ti:") == std::string::npos, "[ti:] 剥掉");
+        Check(out.find("[offset:-500]") != std::string::npos,
+              "★★ [offset:] **保留**（剥了会静默走音，而且没有任何报错）");
+        Check(out.find("[00:10.000]第一句") != std::string::npos, "正文行原样保留");
+    }
+
+    // ---- 畸形输入不能崩、也不能假装成功 ----
+    {
+        std::vector<lyricus::KugouHit> dummy;
+        Check(!lyricus::ParseKugouSearchRoot("", dummy), "空串 -> 失败");
+        Check(!lyricus::ParseKugouSearchRoot("{\"status\":1}", dummy),
+              "没有 lists 键 -> 失败（不是崩）");
+        Check(!lyricus::ParseKugouSearchRoot("{\"lists\":[", dummy),
+              "截断的数组 -> 失败（不是崩）");
+
+        std::string a, b;
+        Check(!lyricus::ParseKugouKrcsRoot("{\"candidates\":[]}", a, b), "空候选 -> 失败");
+        Check(!lyricus::ParseKugouKrcsRoot("", a, b), "空串 -> 失败");
+
+        std::string l;
+        Check(!lyricus::ParseKugouDownloadRoot("{\"content\":\"\"}", l), "空 content -> 失败");
+        Check(!lyricus::ParseKugouDownloadRoot("{\"content\":\"这不是base64!!!\"}", l),
+              "垃圾 base64 -> 失败（不是崩、也不是半截文本）");
+    }
+}
+
 void TestLeadInSeparator() {
     std::printf("\n== 前奏分隔线（新取的词 + 缓存里的词，同一个出口）==\n");
 
@@ -1137,6 +1226,7 @@ int wmain() {
     TestNetEaseLyricPath();
     TestMissMarker();
     TestOnlineCancel();
+    TestKugouParsers();
     TestLeadInSeparator();
     TestTranslationMerge();
 
