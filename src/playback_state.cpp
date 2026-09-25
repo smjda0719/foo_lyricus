@@ -754,19 +754,18 @@ double PlaybackState::LyricOffsetSec() const {
 }
 
 void PlaybackState::NudgeLyricOffset(double deltaSec) {
-    if (!m_hasTrack || m_trackUrl.empty()) {
-        popup_message::g_show("现在没有在播放，无法调整歌词偏移。", "Lyricus");
-        return;
-    }
+    if (!m_hasTrack || m_trackUrl.empty()) return;
+    SetLyricOffsetLive(m_lyricOffsetSec + deltaSec);
+    CommitLyricOffset();
+}
 
-    double next = m_lyricOffsetSec + deltaSec;
+// 只改内存、**不落盘**。给滑动条拖动时用 —— 拖一次会发几十上百条消息，
+// 每条都写配置是白白磨损配置文件。落盘交给 CommitLyricOffset()。
+void PlaybackState::SetLyricOffsetLive(double sec) {
+    if (sec >  30.0) sec =  30.0;
+    if (sec < -30.0) sec = -30.0;
 
-    // 夹到 ±30 秒：再大就不该用偏移解决了（那是"匹配到了别的歌"）。
-    if (next >  30.0) next =  30.0;
-    if (next < -30.0) next = -30.0;
-
-    m_lyricOffsetSec = next;
-    OffsetMapSet(m_trackUrl, next);
+    m_lyricOffsetSec = sec;
 
     // 逼下一次 RefreshPosition 重算当前行。
     //
@@ -775,22 +774,17 @@ void PlaybackState::NudgeLyricOffset(double deltaSec) {
     // 下一拍必然返回 TickChange::Line，三个宿主都会立刻重绘。
     m_currentLine = LyricDocument::npos;
     m_displayLine = LyricDocument::npos;
+}
 
-    DebugLog("歌词偏移: %+.1f 秒（%s）", next, deltaSec > 0 ? "歌词提前" : "歌词延后");
-
-    char msg[128];
-    sprintf_s(msg, "当前曲目的歌词偏移 = %+.1f 秒%s", next,
-              next > 0 ? "（歌词提前）" : (next < 0 ? "（歌词延后）" : "（已复位）"));
-    popup_message::g_show(msg, "Lyricus");
+void PlaybackState::CommitLyricOffset() {
+    if (m_trackUrl.empty()) return;
+    OffsetMapSet(m_trackUrl, m_lyricOffsetSec);
+    DebugLog("歌词偏移: %+.1f 秒（已记住这首歌）", m_lyricOffsetSec);
 }
 
 void PlaybackState::ResetLyricOffset() {
-    if (m_trackUrl.empty()) return;
-    m_lyricOffsetSec = 0.0;
-    OffsetMapSet(m_trackUrl, 0.0);
-    m_currentLine = LyricDocument::npos;
-    m_displayLine = LyricDocument::npos;
-    DebugLog("歌词偏移: 已复位");
+    SetLyricOffsetLive(0.0);
+    CommitLyricOffset();
 }
 
 // ---------------------------------------------------------------------------

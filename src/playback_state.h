@@ -97,6 +97,14 @@ public:
     // 名字叫 Nudge 而不是 Set 是有意的：用户入口是"再提前半秒"这种相对动作，
     // 而绝对值他没法凭空知道。
     void NudgeLyricOffset(double deltaSec);
+
+    // 只改内存、不落盘 —— 给滑动条拖动时用。
+    //
+    // 【为什么必须拆开】拖动一次会发几十上百条 WM_HSCROLL，每条都写配置
+    // 是白白磨损配置文件。拖动期间走 Live，松手（点确定）才 Commit。
+    void SetLyricOffsetLive(double sec);
+    void CommitLyricOffset();
+
     void ResetLyricOffset();
 
     bool                 IsPlaying()  const { return m_isPlaying; }

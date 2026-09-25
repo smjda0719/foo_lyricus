@@ -3,6 +3,7 @@
 #include "control_window.h"
 #include "config.h"
 #include "folder_hint.h"
+#include "adjust_dialog.h"
 #include "playback_state.h"
 #include "debug_log.h"
 
@@ -44,14 +45,14 @@ const GUID guid_cmd_shift = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,
 // 0x15：为文件夹指定歌词线索（无标签曲目用）
 const GUID guid_cmd_hint = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x15}};
 
-// 歌词时间偏移（0x16-0x18）。见 config.h 的 cfg_lyric_offset_map 和 D-048。
-const GUID guid_cmd_off_earlier = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x16}};
-const GUID guid_cmd_off_later   = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x17}};
-const GUID guid_cmd_off_reset   = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x18}};
-
-// 每次点半秒。0.5 秒是"听得出来"和"不用点十几次"之间的折中：
-// 整首偏移通常是几秒（剪辑版本不同），0.5 秒大概点 4~14 次到位。
-constexpr double kOffsetStepSec = 0.5;
+// 「调节面板」（0x16）。见 adjust_dialog.h 与 D-048/D-049。
+//
+// 第一版把这几个量做成了循环档（字号、行位置）和「点一次提前 0.5 秒」，
+// 用户 2026-09-25 连着否掉两次：「这么点太麻烦了」
+// 「也把字号，行数，行位置，透明度也这么改」。现在是一条命令开一个
+// 五条滑动条的面板，拖动实时生效。
+// 0x17 / 0x18 留空（那两条命令的 GUID 已废弃，不再分配）。
+const GUID guid_cmd_adjust = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x16}};
 
 // 显示设置用「点一下换下一档」而不是弹子菜单：
 // 和已有的「切换背景材质」一个路子，代码少一截，而且改完立刻能在面板上看到效果 ——
@@ -113,9 +114,7 @@ public:
         cmd_span,
         cmd_shift,
         cmd_hint,
-        cmd_off_earlier,
-        cmd_off_later,
-        cmd_off_reset,
+        cmd_adjust,
         cmd_total
     };
 
@@ -135,9 +134,7 @@ public:
         case cmd_span:         return guid_cmd_span;
         case cmd_shift:        return guid_cmd_shift;
         case cmd_hint:         return guid_cmd_hint;
-        case cmd_off_earlier:  return guid_cmd_off_earlier;
-        case cmd_off_later:    return guid_cmd_off_later;
-        case cmd_off_reset:    return guid_cmd_off_reset;
+        case cmd_adjust:       return guid_cmd_adjust;
         default: uBugCheck();
         }
     }
@@ -182,20 +179,17 @@ public:
             out = "指定歌词搜索线索...";
             break;
 
-        // 偏移那三条也把当前值写进名字 —— 菜单每次展开都会重新调 get_name，
-        // 所以不用自己维护勾选状态，用户扫一眼就知道现在是几秒。
-        case cmd_off_earlier:
-        case cmd_off_later: {
-            char buf[64];
-            sprintf_s(buf, "%s（当前 %+.1f 秒）",
-                      index == cmd_off_earlier ? "歌词提前 0.5 秒" : "歌词延后 0.5 秒",
+        // 名字里带上关键的两项当前值 —— 菜单每次展开都会重新调 get_name，
+        // 不用自己维护勾选状态，扫一眼就知道现在是什么档。
+        case cmd_adjust: {
+            const lyricus::LyricDisplayConfig c = lyricus::GetLyricDisplayConfig();
+            char buf[128];
+            sprintf_s(buf, "调节面板...（字号 %d%%  位置 %d%%  偏移 %+.1f 秒）",
+                      c.fontPct, c.currentRatio,
                       lyricus::PlaybackState::Get().LyricOffsetSec());
             out = buf;
             break;
         }
-        case cmd_off_reset:
-            out = "复位歌词偏移";
-            break;
         default: uBugCheck();
         }
     }
@@ -241,15 +235,12 @@ public:
                   "带上「阿良良木健」后第 1 条就是它。对整个文件夹生效，填一次管十几首。";
             return true;
 
-        case cmd_off_earlier:
-            out = "把当前曲目的歌词提前半秒 —— 用在「声音已经唱到下一句、面板还停在上一句」"
-                  "这种**整首歌**的偏移上。设置按曲目记住，重启后仍然有效。";
-            return true;
-        case cmd_off_later:
-            out = "把当前曲目的歌词延后半秒 —— 用在「面板比声音快」的情况。按曲目记住。";
-            return true;
-        case cmd_off_reset:
-            out = "把当前曲目的歌词偏移清零，回到原始时间轴。";
+        case cmd_adjust:
+            out = "一个面板调五项：歌词偏移 / 字号 / 显示行数 / 当前行位置 / 面板不透明度。"
+                  "**拖动时实时生效**，看着调，满意了点确定；取消会把五项一起还原。\n"
+                  "歌词偏移只对当前曲目生效并记住 —— 用在「声音已经唱到下一句、"
+                  "面板还停在上一句」那种整首歌的偏移上（多半是因为在线歌词来自"
+                  "另一个剪辑版本）。其余四项是全局的。";
             return true;
         default:
             return false;
@@ -394,17 +385,10 @@ public:
             break;
         }
 
-        // 歌词偏移这三条**不需要**通知任何窗口：把行号置成 npos 之后，
-        // 下一次 RefreshPosition（最多 250ms）必然返回 TickChange::Line，
-        // 三个宿主都会立刻重绘 —— 和其他显示设置一样靠轮询。
-        case cmd_off_earlier:
-            lyricus::PlaybackState::Get().NudgeLyricOffset(+kOffsetStepSec);
-            break;
-        case cmd_off_later:
-            lyricus::PlaybackState::Get().NudgeLyricOffset(-kOffsetStepSec);
-            break;
-        case cmd_off_reset:
-            lyricus::PlaybackState::Get().ResetLyricOffset();
+        // 拖动时实时生效、确定才落盘，所以这里不需要通知任何窗口 ——
+        // 面板下一拍（最多 250ms）自己就跟着变了。
+        case cmd_adjust:
+            lyricus::PromptAdjustPanel(core_api::get_main_window());
             break;
 
         default:

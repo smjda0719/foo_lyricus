@@ -81,3 +81,59 @@ BEGIN
     DEFPUSHBUTTON   "确定", IDOK, 132, 96, 55, 16
     PUSHBUTTON      "取消", IDCANCEL, 192, 96, 55, 16
 END
+
+// ---------------------------------------------------------------------------
+// 「调节面板」
+//
+// 五条滑动条：歌词偏移（逐曲目）+ 字号 / 行数 / 行位置 / 不透明度（全局）。
+// 拖动时**实时生效**，取消会把全部原值还回去。
+//
+// 【为什么合成一个面板】用户 2026-09-25 连着两次提这个方向：
+//   「改成打开一个面板，通过滑动条调整。这么点太麻烦了。」
+//   「也把字号，行数，行位置，透明度也这么改。透明度我记得有另外一个面板，
+//     但是太深了不好找。」
+// 这几个量的共同点是**要一边看面板一边调** —— 分开做四个面板反而更难找。
+// 透明度那个首选项页仍然保留（那里还有配色），这里只是给它一个近路。
+// ---------------------------------------------------------------------------
+
+IDD_LYRICUS_ADJUST DIALOGEX 0, 0, 306, 192
+STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "调节面板"
+FONT 9, "MS Shell Dlg", 400, 0, 0x86
+BEGIN
+    LTEXT           "曲目：", -1, 7, 8, 26, 10
+    LTEXT           "", IDC_LBL_TRACK, 36, 8, 263, 10
+
+    LTEXT           "歌词偏移", -1, 7, 28, 54, 10
+    CONTROL         "", IDC_SLIDER_OFFSET, "msctls_trackbar32",
+                    TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, 64, 24, 174, 16
+    LTEXT           "+0.0 秒", IDC_LBL_V_OFFSET, 242, 28, 58, 10
+
+    LTEXT           "歌词字号", -1, 7, 50, 54, 10
+    CONTROL         "", IDC_SLIDER_FONT, "msctls_trackbar32",
+                    TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, 64, 46, 174, 16
+    LTEXT           "", IDC_LBL_V_FONT, 242, 50, 58, 10
+
+    LTEXT           "显示行数", -1, 7, 72, 54, 10
+    CONTROL         "", IDC_SLIDER_SPAN, "msctls_trackbar32",
+                    TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, 64, 68, 174, 16
+    LTEXT           "", IDC_LBL_V_SPAN, 242, 72, 58, 10
+
+    LTEXT           "当前行位置", -1, 7, 94, 54, 10
+    CONTROL         "", IDC_SLIDER_RATIO, "msctls_trackbar32",
+                    TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, 64, 90, 174, 16
+    LTEXT           "", IDC_LBL_V_RATIO, 242, 94, 58, 10
+
+    LTEXT           "面板不透明度", -1, 7, 116, 54, 10
+    CONTROL         "", IDC_SLIDER_ADJ_ALPHA, "msctls_trackbar32",
+                    TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, 64, 112, 174, 16
+    LTEXT           "", IDC_LBL_V_ALPHA, 242, 116, 58, 10
+
+    LTEXT           "拖动任意一条，面板立刻跟着变 —— 看着调，满意了点确定。\n字号 / 行数 / 行位置 / 不透明度是全局的；歌词偏移只对当前曲目生效并记住。",
+                    -1, 7, 136, 293, 24
+
+    PUSHBUTTON      "偏移归零", IDC_BTN_OFFSET_ZERO, 7, 170, 58, 16
+    PUSHBUTTON      "显示恢复默认", IDC_BTN_DISPLAY_DEF, 69, 170, 74, 16
+    DEFPUSHBUTTON   "确定", IDOK, 192, 170, 52, 16
+    PUSHBUTTON      "取消", IDCANCEL, 248, 170, 52, 16
+END
