@@ -58,7 +58,7 @@ $suites = @(
     @{ key='online'; name='在线歌词 JSON'; compile=@('test_online.cpp','lyric.cpp','lyric_search.cpp'); extra=@('online_lyric.cpp','online_lyric.h'); shims=@();          libs='winhttp.lib' },
     # 绘制层这组要用**替身** playback_state.h 覆盖真实那份：
     # 真实那份要读 metadb / playback_control，而绘制层只用几个只读访问器。
-    @{ key='view';   name='绘制层布局';    compile=@('test_view.cpp','lyrics_view.cpp','lyric.cpp');   extra=@('lyrics_view.h');         shims=@('playback_state.h'); libs='gdi32.lib user32.lib' },
+    @{ key='view';   name='绘制层布局';    compile=@('test_view.cpp','lyrics_view.cpp','scroll_anim.cpp','lyric.cpp'); extra=@('lyrics_view.h','scroll_anim.h'); shims=@('playback_state.h'); libs='gdi32.lib user32.lib' },
     # bench 不是测试，是**基准**：它只打印耗时，不判通过与否。
     # 所以默认的 all 会跳过它（不能让"性能数字"影响单测的通过/失败），
     # 要用就显式 -Suite bench。

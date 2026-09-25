@@ -265,7 +265,7 @@ int DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& theme,
 | 步 | 做什么 | 完了能验证什么 |
 |---|---|---|
 | **1 ✅** | **遮罩（`IntersectClipRect`）+ 所有行改单行省略号** | **已完成**。单测 `TestLongLineEllipsis` / `TestMask`；折行撤掉，版面立刻回稳 |
-| 2 | `LyricAnimator` + 单测 | 时间线离线可验证，一行渲染代码都还没改 |
+| **2 ✅** | **`LyricAnimator` + 单测** | **已完成**。时间线离线可验证（`TestAnimator`，21 条断言），渲染层一行代码都还没改 |
 | 3 | 渲染层接 `anim`，当前行横滚（省略号换成裁剪） | 三个宿主同时生效（共用渲染层） |
 | 4 | 宿主加动画定时器 | 真机看到滚起来；日志给出真实耗时 |
 | 5 | 上滑过渡 | 换行不再是硬切 |

@@ -108,6 +108,7 @@
     <ClCompile Include="..\src\initquit.cpp" />
     <ClCompile Include="..\src\svg_icon.cpp" />
     <ClCompile Include="..\src\lyrics_view.cpp" />
+    <ClCompile Include="..\src\scroll_anim.cpp" />
     <ClCompile Include="..\src\dui_element.cpp" />
     <ClCompile Include="..\src\cui_panel.cpp" />
     <!-- libPPUI 的 WIN32_OP_FAIL()：ui_element_impl_withpopup 的 bump 路径要用到
@@ -126,6 +127,7 @@
   <ItemGroup>
     <ClInclude Include="..\src\svg_icon.h" />
     <ClInclude Include="..\src\lyrics_view.h" />
+    <ClInclude Include="..\src\scroll_anim.h" />
     <ClInclude Include="..\3rdparty\lunasvg\include\*.h" />
     <ClInclude Include="..\3rdparty\lunasvg\source\*.h" />
     <ClInclude Include="..\3rdparty\lunasvg\plutovg\include\*.h" />

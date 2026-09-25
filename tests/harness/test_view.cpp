@@ -16,6 +16,7 @@
 // ---------------------------------------------------------------------------
 
 #include "lyrics_view.h"
+#include "scroll_anim.h"      // 动画时间线（横滚 / 上滑）
 #include "playback_state.h"   // 单测里这个是替身（见 shim/playback_state.h）
 
 #include <windows.h>
@@ -678,6 +679,198 @@ void TestMask() {
           "★ 曲名的位置不受裁剪线影响（遮罩只管歌词）");
 }
 
+// ---------------------------------------------------------------------------
+// 动画时间线（LyricAnimator）—— 纯逻辑，把时钟推着走
+//
+// 【为什么值得单测】这条时间线在真机上**没法验**：660ms 和 900ms 的差别
+// 肉眼分不出，而"滚到尾部就该停"如果写错成"一直滚"，看两秒也看不出来。
+// 这里注入 nowMs，整条曲线一次性走完，还能顺手验时钟回退这类异常输入。
+// ---------------------------------------------------------------------------
+namespace {
+
+// 同一个 animator 上按时间顺序推进一行，取某一刻的帧。
+// 时间必须单调递增 —— animator 是有状态的（靠行号变化判断换行）。
+lyricus::LyricAnimFrame At(lyricus::LyricAnimator& a, ULONGLONG t,
+                           size_t line, int overflow, int step = 0) {
+    return a.Update(t, line, overflow, step);
+}
+
+// 溢出 overflowPx 时，滚完一趟需要多久（和实现里同一个算法，
+// 写在测试里是**故意的**：实现改了这里就该跟着改，改不动就说明判据变了）
+ULONGLONG ExpectDurationMs(int overflowPx) {
+    ULONGLONG ms = static_cast<ULONGLONG>(overflowPx) * 1000 / lyricus::kScrollPxPerSec;
+    if (ms < lyricus::kScrollMinMs) ms = lyricus::kScrollMinMs;
+    if (ms > lyricus::kScrollMaxMs) ms = lyricus::kScrollMaxMs;
+    return ms;
+}
+
+} // namespace
+
+void TestAnimator() {
+    std::printf("\n== 动画时间线（横滚 / 上滑）==\n");
+
+    constexpr size_t kLine = 7;
+    const int kOverflow = 300;                       // 宽出去 300px
+    const ULONGLONG dur = ExpectDurationMs(kOverflow);
+
+    std::printf("     溢出 %d px -> 停顿 %llu ms，滚动 %llu ms\n",
+                kOverflow,
+                static_cast<unsigned long long>(lyricus::kScrollLeadMs),
+                static_cast<unsigned long long>(dur));
+
+    // ---- 1. 放得下：一点都不动，也不要后续帧 ----
+    {
+        lyricus::LyricAnimator a;
+        bool everMoved = false, everAnimated = false;
+        for (ULONGLONG t = 0; t <= 20000; t += 250) {
+            const auto f = At(a, t, kLine, /*overflow=*/0);
+            if (f.scrollX != 0) everMoved = true;
+            if (f.animating)    everAnimated = true;
+        }
+        Check(!everMoved,    "★ 放得下的行从头到尾 scrollX 恒为 0");
+        Check(!everAnimated, "★ 放得下的行全程不要后续帧（一个定时器都不该开）");
+    }
+
+    // ---- 2. 放不下：静止 -> 左移 -> 停在尾部 ----
+    {
+        lyricus::LyricAnimator a;
+
+        const auto t0 = At(a, 0, kLine, kOverflow);
+        Check(t0.scrollX == 0, "刚换行时不动（从头开始看）");
+        Check(!t0.animating,
+              "★ 起步前的静止期**不要**后续帧 —— 900ms 空转 25fps 是白烧主线程");
+
+        const auto tLead = At(a, lyricus::kScrollLeadMs, kLine, kOverflow);
+        Check(tLead.scrollX == 0, "★ 静止期结束时仍然没动（停顿真的存在）");
+
+        const auto tMid = At(a, lyricus::kScrollLeadMs + dur / 2, kLine, kOverflow);
+        std::printf("     滚到一半 -> scrollX=%d（目标 %d）\n", tMid.scrollX, kOverflow);
+        Check(tMid.scrollX > 0 && tMid.scrollX < kOverflow,
+              "★ 中途是**中间值**（真的在滚，不是从 0 直接跳到尾）");
+        Check(tMid.animating, "滚动途中要后续帧");
+
+        const auto tEnd = At(a, lyricus::kScrollLeadMs + dur, kLine, kOverflow);
+        Check(tEnd.scrollX == kOverflow, "★ 滚满时正好停在尾部");
+        Check(!tEnd.animating, "★ 滚到尾部就**不要再要帧**了（用户定的取向：只滚一次）");
+
+        const auto tLater = At(a, lyricus::kScrollLeadMs + dur + 30000, kLine, kOverflow);
+        Check(tLater.scrollX == kOverflow,
+              "★ 之后一直停在尾部，不会回头、不会循环");
+    }
+
+    // ---- 3. 单调递增：不能有回头路 ----
+    {
+        lyricus::LyricAnimator a;
+        int prev = -1;
+        bool monotone = true;
+        for (ULONGLONG t = 0; t <= lyricus::kScrollLeadMs + dur; t += 100) {
+            const auto f = At(a, t, kLine, kOverflow);
+            if (f.scrollX < prev) monotone = false;
+            prev = f.scrollX;
+        }
+        Check(monotone, "★ scrollX 单调递增（中途不回头）");
+    }
+
+    // ---- 4. 时长的上下限：很短和很长的溢出 ----
+    //
+    // ⚠️ 每个 animator 的**第一次** Update 是"这一行刚开始"，
+    //    它会把 lineStart 设成那一刻 —— 所以必须先喂一个 t=0 起算，
+    //    否则 elapsed 恒为 0、断言会"因为没滚"而通过（空断言）。
+    {
+        lyricus::LyricAnimator a;
+        const int tiny = 5;
+        At(a, 0, kLine, tiny);
+        // 溢出 5px，按速度只要 83ms —— 必须被夹到下限，否则快得像闪一下
+        const auto f = At(a, lyricus::kScrollLeadMs + lyricus::kScrollMinMs - 1, kLine, tiny);
+        Check(f.scrollX < tiny, "★ 极小的溢出也走完整个最短时长（不会一闪而过）");
+
+        lyricus::LyricAnimator b;
+        const int huge = 100000;
+        At(b, 0, kLine, huge);
+        const auto g = At(b, lyricus::kScrollLeadMs + lyricus::kScrollMaxMs, kLine, huge);
+        Check(g.scrollX == huge, "★ 超长行在上限时长内滚完（靠提速，不拖着滚）");
+        Check(!g.animating, "超长行滚完也停住");
+    }
+
+    // ---- 5. 上滑：只对「顺序推进」生效 ----
+    {
+        constexpr int kStep = 34;
+
+        lyricus::LyricAnimator a;
+        At(a, 0, 10, 0);                                   // 先落在第 10 行
+        const auto s0 = At(a, 1000, 11, 0, kStep);         // 顺序 +1
+        Check(s0.slideY == kStep, "★ 顺序换行时从「低一步」起步（往上滑）");
+        Check(s0.animating, "上滑途中要后续帧");
+
+        const auto sMid = At(a, 1000 + lyricus::kSlideMs / 2, 11, 0, kStep);
+        std::printf("     上滑一半 -> slideY=%d（起点 %d）\n", sMid.slideY, kStep);
+        Check(sMid.slideY > 0 && sMid.slideY < kStep, "★ 上滑中途是中间值");
+
+        const auto sEnd = At(a, 1000 + lyricus::kSlideMs, 11, 0, kStep);
+        Check(sEnd.slideY == 0, "★ 上滑结束正好落在最终位置");
+        Check(!sEnd.animating, "上滑结束不再要帧");
+    }
+
+    // ---- 6. seek 不该滑 ----
+    {
+        lyricus::LyricAnimator a;
+        At(a, 0, 10, 0);
+        Check(At(a, 500, 12, 0, 34).slideY == 0, "★ 跨行 seek（+2）不上滑");
+        Check(At(a, 1000, 4, 0, 34).slideY == 0, "★ 往回 seek 不上滑");
+        Check(At(a, 1500, 0, 0, 34).slideY == 0, "★ 换曲（行号回到 0）不上滑");
+    }
+
+    // ---- 7. Reset 之后第一帧不上滑 ----
+    {
+        lyricus::LyricAnimator a;
+        At(a, 0, 10, 0);
+        a.Reset();
+        Check(At(a, 100, 11, 0, 34).slideY == 0,
+              "★ Reset 之后第一帧不上滑（seek 后要的是干净的画面）");
+    }
+
+    // ---- 8. 面板拉窄：原本放得下的行变成长行 ----
+    {
+        lyricus::LyricAnimator a;
+        At(a, 0, kLine, 0);                       // 一开始放得下
+        const auto f = At(a, 30000, kLine, 300);  // 30 秒后拉窄
+        Check(f.scrollX == 0 && !f.animating,
+              "★ 拉窄的那一刻时间线**重新起算**（不因为「这一行已经显示了 30 秒」直接跳到尾部）");
+        const auto g = At(a, 30000 + lyricus::kScrollLeadMs + ExpectDurationMs(300),
+                          kLine, 300);
+        Check(g.scrollX == 300, "重新起算之后照样能滚完");
+    }
+
+    // ---- 9. 时钟回退 / 乱序调用都不许炸 ----
+    //
+    // GetTickCount64 不会回退，所以这一条纯粹是**防御式**的：
+    // 真出事时（时钟异常、宿主传错）绝不能算出天文数字把动画甩到终点。
+    {
+        // (a) 时间早于"这一行的起算点"—— 直接踩 Elapsed 的夹取分支
+        lyricus::LyricAnimator a;
+        At(a, 100000, kLine, kOverflow);                  // 起算点就在 100000
+        const auto back = At(a, 50, kLine, kOverflow);    // 早于起算点
+        Check(back.scrollX == 0,
+              "★ 时间早于起算点时当成「刚起步」，不会算出一个天文数字");
+    }
+    {
+        // (b) 乱序调用：倒回静止期应该给出**那一刻**的位置，而不是保留上一帧
+        lyricus::LyricAnimator b;
+        At(b, 0, kLine, kOverflow);
+
+        const ULONGLONG midT = lyricus::kScrollLeadMs + dur / 2;
+        const auto mid = At(b, midT, kLine, kOverflow);
+        Check(mid.scrollX > 0, "先滚到中途（否则下面的倒流对照是空的）");
+
+        const auto rewind = At(b, 100, kLine, kOverflow);   // 倒回静止期
+        Check(rewind.scrollX == 0, "★ 时间倒回静止期，位置也跟着回到那一刻");
+
+        const auto again = At(b, midT, kLine, kOverflow);   // 再回到原处
+        Check(again.scrollX == mid.scrollX,
+              "★ 时间回到原处就回到原位置（不炸、也不跳）");
+    }
+}
+
 } // namespace
 
 int wmain() {
@@ -692,6 +885,7 @@ int wmain() {
     TestTranslationPrimary();
     TestLongLineEllipsis();
     TestMask();
+    TestAnimator();
     TestNoTrack();
 
     std::printf("\n----------------------------------------\n");
