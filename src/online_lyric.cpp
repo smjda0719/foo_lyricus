@@ -2786,6 +2786,60 @@ std::wstring DefaultOnlineCacheDir() {
     return dir + L"cache";
 }
 
+// 「哪些曲目在所有在线源上都没找到歌词」—— 从 .miss 标记里读回来。
+//
+// 【为什么要能列出来】用户 2026-09-24 的原话是「还是有部分没有匹配到」。
+// 但"部分"是哪些，光看面板永远不知道 —— 面板只在**播到那一首**的时候才告诉你。
+// 而 .miss 标记里现在写着 `artist=[..] title=[..] album=[..] duration=..`，
+// 于是可以把这张名单直接摆出来给用户看：**知道了才谈得上采取行动**
+//（比如给那个文件夹指定搜索线索 —— 那会作废标记并重查，见 SetFolderHint）。
+//
+// 只返回「当前逻辑版本」写下的标记：旧版本算出来的"没有"不算数，
+// 查询路径会把它们作废重查，列出来只会误导。
+std::vector<std::wstring> ListUnmatchedTracks() {
+    std::vector<std::wstring> out;
+
+    const std::wstring dir = DefaultOnlineCacheDir();
+    auto join = [](const std::wstring& d, const wchar_t* name) {
+        std::wstring p = d;
+        if (!p.empty() && p.back() != L'\\' && p.back() != L'/') p += L'\\';
+        return p + name;
+    };
+
+    WIN32_FIND_DATAW fd{};
+    const std::wstring pattern = join(dir, L"*.miss");
+    HANDLE h = FindFirstFileW(pattern.c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return out;
+
+    do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+
+        const std::wstring path = join(dir, fd.cFileName);
+        std::string raw;
+        if (!ReadWholeFile(path, raw)) continue;
+
+        // 第一行是 `时间戳 HTTP码 版本`，第二行（新格式才有）是曲目身份。
+        const size_t nl = raw.find('\n');
+        if (nl == std::string::npos) continue;          // 老格式：没有身份，列不出来
+        std::string identity = raw.substr(nl + 1);
+        while (!identity.empty() &&
+               (identity.back() == '\n' || identity.back() == '\r')) {
+            identity.pop_back();
+        }
+        if (identity.empty()) continue;
+
+        // 版本不对的直接跳过（和查询路径一个判据 —— 那边会作废它们）
+        MissMarker m;
+        if (ReadMissMarker(path, m) && m.logic != kMissLogicVersion) continue;
+
+        out.push_back(Utf8ToWide(identity.c_str()));
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
 std::wstring StripEditionMarkerForMatch(const std::wstring& title) {
     return StripEditionMarker(title);
 }

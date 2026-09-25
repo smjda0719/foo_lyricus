@@ -2,6 +2,7 @@
 
 #include <functional>
 #include <string>
+#include <vector>
 
 // ---------------------------------------------------------------------------
 // 在线歌词查询（数据源：LRCLIB，https://lrclib.net）
@@ -174,6 +175,17 @@ std::wstring DefaultOnlineCacheDir();
 //
 // 返回删掉了几个标记。
 size_t InvalidateMissMarkers();
+
+// 列出「在所有在线源上都没找到歌词」的曲目身份（形如
+// `artist=[阿良良木健] title=[哀歌] album=[] duration=319s`），已排序。
+//
+// 【为什么要能列出来】用户的说法一直是「还是有部分没匹配到」，可"部分"是哪些，
+// 光看面板永远不知道 —— 面板只在**播到那一首**时才告诉你。
+// 知道了才谈得上行动（给那个文件夹指定搜索线索，那会作废标记并重查）。
+//
+// 只包含**当前逻辑版本**写下的标记；老格式（没有身份那一行）也列不出来，
+// 因为那时根本没记曲目是谁。
+std::vector<std::wstring> ListUnmatchedTracks();
 
 // 剥掉曲名末尾「同内容」的版本标记：`白夜梦 [Remastered]` -> `白夜梦`。
 //

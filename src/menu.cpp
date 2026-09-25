@@ -5,6 +5,7 @@
 #include "folder_hint.h"
 #include "adjust_dialog.h"
 #include "playback_state.h"
+#include "online_lyric.h"   // ListUnmatchedTracks
 #include "debug_log.h"
 
 #include <commdlg.h>
@@ -54,6 +55,9 @@ const GUID guid_cmd_hint = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0
 // 五条滑动条的面板，拖动实时生效 —— 那四条旧命令随之删掉。
 const GUID guid_cmd_adjust = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x16}};
 
+// 0x19：列出没找到歌词的曲目（见 online_lyric.h 的 ListUnmatchedTracks）
+const GUID guid_cmd_unmatched = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x19}};
+
 // 【这里原本有四组"点一下换下一档"的档位表】—— 字号 / 行数 / 行位置 / 背景通透度。
 //
 // 2026-09-25 全部删掉，因为「调节面板」把它们都收进去了：
@@ -78,6 +82,7 @@ public:
         cmd_pick_lyric,
         cmd_auto_lyric,
         cmd_hint,
+        cmd_unmatched,
         cmd_adjust,
         cmd_total
     };
@@ -94,6 +99,7 @@ public:
         case cmd_pick_lyric:   return guid_cmd_pick_lyric;
         case cmd_auto_lyric:   return guid_cmd_auto_lyric;
         case cmd_hint:         return guid_cmd_hint;
+        case cmd_unmatched:    return guid_cmd_unmatched;
         case cmd_adjust:       return guid_cmd_adjust;
         default: uBugCheck();
         }
@@ -108,6 +114,9 @@ public:
         case cmd_auto_lyric:   out = "恢复自动匹配歌词"; break;
         case cmd_hint:
             out = "指定歌词搜索线索...";
+            break;
+        case cmd_unmatched:
+            out = "查看没找到歌词的曲目...";
             break;
 
         // 名字里带上关键的两项当前值 —— 菜单每次展开都会重新调 get_name，
@@ -147,6 +156,13 @@ public:
             out = "给当前曲目**所在的文件夹**补一句搜索线索（歌手 / 专辑），专治没打标签的曲目。"
                   "实测「哀歌」不带歌手时正确答案连前 10 都进不去，"
                   "带上「阿良良木健」后第 1 条就是它。对整个文件夹生效，填一次管十几首。";
+            return true;
+
+        case cmd_unmatched:
+            out = "列出所有在线源上都没找到歌词的曲目。\n"
+                  "知道是**哪些**才谈得上处理：如果它们多半集中在某张专辑里，"
+                  "就用「指定歌词搜索线索」给那个文件夹补上歌手/专辑 —— "
+                  "那会作废这些结论并重新查一遍。";
             return true;
 
         case cmd_adjust:
@@ -262,6 +278,40 @@ public:
         case cmd_adjust:
             lyricus::PromptAdjustPanel(core_api::get_main_window());
             break;
+
+        case cmd_unmatched: {
+            const std::vector<std::wstring> list = lyricus::ListUnmatchedTracks();
+
+            if (list.empty()) {
+                popup_message::g_show(
+                    "当前没有被标记为「找不到歌词」的曲目。\n\n"
+                    "（只有联网查过、并且所有在线源都确实没有的曲目才会进这张名单；"
+                    "本地已经有 .lrc 的不算。）",
+                    "Lyricus —— 没找到歌词的曲目");
+                break;
+            }
+
+            // 名单可能很长，弹窗只给前 25 条 + 总数 —— 剩下的写进日志。
+            // 全部塞进弹窗会变成一个比屏幕还高的框，反而没法看。
+            constexpr size_t kMaxShown = 25;
+            std::string body = "共 " + std::to_string(list.size()) +
+                               " 首在所有在线源上都没找到歌词：\n\n";
+            for (size_t i = 0; i < list.size() && i < kMaxShown; ++i) {
+                body += "  " + lyricus::WideToUtf8(list[i]) + "\n";
+            }
+            if (list.size() > kMaxShown) {
+                body += "\n…… 还有 " + std::to_string(list.size() - kMaxShown) +
+                        " 首，完整名单见日志文件。";
+            }
+            body += "\n\n如果它们集中在某张专辑里：用「指定歌词搜索线索」给那个文件夹"
+                    "补上歌手 / 专辑，会作废这些结论并重查。";
+
+            for (const auto& s : list) {
+                lyricus::DebugLog("没找到歌词: %s", lyricus::WideToUtf8(s).c_str());
+            }
+            popup_message::g_show(body.c_str(), "Lyricus —— 没找到歌词的曲目");
+            break;
+        }
 
         default:
             uBugCheck();
