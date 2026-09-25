@@ -130,6 +130,7 @@ private:
     // 所以问题只可能在这条路上：定时器死了，或者状态在变但重绘没生效。
     unsigned m_diagTickCount    = 0;   // 定时器打了多少拍
     int      m_diagRepaintCount = 0;   // 上一段心跳以来重绘了几次
+    unsigned m_diagAnimTicks    = 0;   // 上一段心跳以来动画拍打了几次（= 帧率×10）
 
     // 上一次 UpdateLayeredWindow 成功没有。
     // 初值 true：这样第一次失败会走"好 -> 坏"的翻转，记下那条关键日志。

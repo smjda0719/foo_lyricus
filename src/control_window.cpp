@@ -785,7 +785,6 @@ LRESULT ControlWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 positionDue || animChanged) {
                 m_lastPositionRepaint = now;
                 m_lastRevision = st.Revision();
-                ++m_diagRepaintCount;
                 RequestRepaint();
             }
 
@@ -801,14 +800,23 @@ LRESULT ControlWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             //     （对应 RenderLayered 里 UpdateLayeredWindow 失败 —— 那个另有一条日志）
             ++m_diagTickCount;
             if (m_diagTickCount % 40 == 0) {
+                // 动画拍单列一栏：**它就是实际帧率**。
+                //
+                // 【为什么要单列】用户 2026-09-25 报「帧数确实不高」。
+                // 想回答"到底几帧"只有一个可靠办法：数动画定时器真打了几拍。
+                // 「本段重绘」做不到这件事 —— 它统计的是绘制次数，
+                // 而一次动画拍不一定重绘（帧没变就不重绘），
+                // 一次逻辑拍也可能重绘好几次。两个数混在一起谁也说明不了。
                 DebugLog("面板心跳: 拍=%u  位置=%.1fs  行=%zu/%zu  rev=%u  "
-                         "本段重绘=%d  本拍=%s",
+                         "本段重绘=%d  动画拍=%u（=%.1f fps）  本拍=%s",
                          m_diagTickCount, st.PositionSec(),
                          st.CurrentLine(), st.Lyrics().Count(), st.Revision(),
                          m_diagRepaintCount,
+                         m_diagAnimTicks, m_diagAnimTicks / 10.0,
                          change == TickChange::None ? "无变化" :
                          (change == TickChange::Line ? "换行" : "仅位置"));
                 m_diagRepaintCount = 0;
+                m_diagAnimTicks    = 0;
             }
 
             return 0;
@@ -820,6 +828,7 @@ LRESULT ControlWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         //    逻辑拍每拍要查 3 次 fb2k::configStore，25fps 就是每秒 75 次查表 ——
         //    纯浪费。这里唯一的职责就是"把动画的下一帧画出来"。
         if (wp == kAnimTimerId) {
+            ++m_diagAnimTicks;
             TickAnimation(GetTickCount64());
             return 0;
         }
@@ -1146,6 +1155,16 @@ bool ControlWindow::AdvanceAnimation(ULONGLONG now) {
 
 void ControlWindow::RequestRepaint() {
     if (m_hwnd == nullptr || !IsWindow(m_hwnd)) return;
+
+    // 计数放在这里 —— **唯一的绘制出口**。
+    //
+    // 【踩过的坑】原先是在逻辑拍里 `++m_diagRepaintCount`，而动画拍走的是
+    // TickAnimation -> RequestRepaint()，**完全绕过**了那个计数器。
+    // 于是心跳里那个"本段重绘"只统计逻辑拍的重绘，动画帧数一个都没算进去 ——
+    // 我拿它去判断"动画定时器没跑"，判断反了（见 D-047）。
+    // 计数必须在出口，不在入口。
+    ++m_diagRepaintCount;
+
     if (static_cast<BackdropMode>(cfg_backdrop_mode.get()) == BackdropMode::Translucent) {
         RenderLayered();
     } else {
