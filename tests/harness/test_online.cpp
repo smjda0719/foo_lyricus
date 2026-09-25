@@ -900,7 +900,7 @@ void TestMissMarker() {
     // ---- 新格式：写出来要能被读回去 ----
     const std::wstring path = dir + L"\\probe.miss";
     lyricus::WriteMissMarker(path, 200,
-                             "artist=[阿良良木健] title=[哀歌] album=[] duration=319s");
+                             "artist=[阿良良木健] title=[哀歌] album=[] duration=319s", false);
 
     lyricus::MissMarker m;
     Check(lyricus::ReadMissMarker(path, m), "新格式写得出来也读得回去");
@@ -931,10 +931,37 @@ void TestMissMarker() {
 
     // ---- 空身份不该写出半行 ----
     const std::wstring bare = dir + L"\\bare.miss";
-    lyricus::WriteMissMarker(bare, 0, "");
+    lyricus::WriteMissMarker(bare, 0, "", false);
     lyricus::MissMarker bm;
     Check(lyricus::ReadMissMarker(bare, bm), "空身份也写得出、读得回");
     Check(bm.logic == lyricus::kMissLogicVersion, "空身份时逻辑版本仍然对");
+
+    // ---- 「纯音乐」这条结论要能存下来再读回去 ----
+    //
+    // 不存的话，7 天负缓存命中时界面只能显示笼统的「（无歌词）」，
+    // 把已经知道的信息丢了（用户 2026-09-26 的意见）。
+    {
+        const std::wstring ins = dir + L"\\ins.miss";
+        lyricus::WriteMissMarker(ins, 200, "artist=[a] title=[b] album=[] duration=100s", true);
+        lyricus::MissMarker im;
+        Check(lyricus::ReadMissMarker(ins, im), "带纯音乐标记的写得出来、读得回去");
+        Check(im.instrumental, "★ instrumental=1 读回来了");
+        Check(im.logic == lyricus::kMissLogicVersion && im.status == 200,
+              "★ 多出来的 instrumental 尾巴**没有**影响前三个字段");
+
+        const std::wstring plain = dir + L"\\plain.miss";
+        lyricus::WriteMissMarker(plain, 200, "artist=[a] title=[b] album=[] duration=100s", false);
+        lyricus::MissMarker pm;
+        lyricus::ReadMissMarker(plain, pm);
+        Check(!pm.instrumental, "没标记时读出来是 false");
+
+        // ★ 老标记（没有这个字段）读出来也该是 false，且**不需要升逻辑版本**
+        //   —— 升了会让用户的负缓存白重查一遍，而这里只是少一句话。
+        Check(im.logic == pm.logic, "带不带纯音乐标记，逻辑版本都一样（格式兼容）");
+
+        DeleteFileW(ins.c_str());
+        DeleteFileW(plain.c_str());
+    }
 
     // ---- 垃圾输入不能当成有效标记 ----
     const std::wstring junk = dir + L"\\junk.miss";

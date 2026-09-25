@@ -283,7 +283,15 @@ LyricsViewResult DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& t
         if (!st.HasTrack()) {
             // 没在播放：什么都不说，留白
         } else {
-            const wchar_t* msg = L"（无歌词）";
+            // 有源明确说过"这是纯音乐"（它返回的是「纯音乐，请欣赏」占位文本）
+            // 就显示得更具体一点。
+            //
+            // 【为什么值得区分】用户 2026-09-26 指出：占位文本本身不是问题，
+            // 它是有用的信息 —— 比笼统的「（无歌词）」精确。
+            // 所以那句话不作为歌词收下（不写歌词缓存，见 IsPlaceholderLyric），
+            // 但结论留了下来，由**本地**在这里显示。
+            const wchar_t* msg = st.IsInstrumental() ? L"（纯音乐，请欣赏）"
+                                                     : L"（无歌词）";
             std::wstring sub = st.LyricPath().empty() ? std::wstring()
                                                       : FileNameOf(st.LyricPath());
             const int gap = S(4);

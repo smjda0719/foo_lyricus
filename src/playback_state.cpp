@@ -260,6 +260,7 @@ void PlaybackState::OnNewTrack(metadb_handle_ptr track) {
     m_positionSec = 0.0;
     m_currentLine = LyricDocument::npos;
     m_displayLine = LyricDocument::npos;
+    m_instrumental = false;   // 见 IsInstrumental()
     m_lyrics      = LyricDocument();
     m_trackUrl.clear();
     m_trackPath.clear();
@@ -351,6 +352,7 @@ void PlaybackState::ReloadLyrics() {
     m_lyrics      = LyricDocument();
     m_currentLine = LyricDocument::npos;
     m_displayLine = LyricDocument::npos;
+    m_instrumental = false;   // 见 IsInstrumental()
     m_lyricPath.clear();
 
     // ★ 重新加载 = "把之前知道的忘掉，重新问一遍"。
@@ -445,6 +447,7 @@ bool PlaybackState::LoadLyricFile(const std::wstring& path, bool remember) {
     m_lyricPath   = path;
     m_currentLine = LyricDocument::npos;
     m_displayLine = LyricDocument::npos;
+    m_instrumental = false;   // 见 IsInstrumental()
     ++m_revision;
 
     if (remember) {
@@ -670,9 +673,17 @@ void PlaybackState::ApplyOnlineResult(unsigned gen, const std::string& url,
     if (!res.ok) {
         // 「确实没有」和「查询失败」在缓存层已经分开了（见 online_lyric.h），
         // 这里原样转述，不要自己再加判断。
-        DebugLog("在线歌词：未命中 —— %s", WideToUtf8(res.error).c_str());
+        //
+        // 但「纯音乐」这条结论要留下：渲染层据此把「（无歌词）」换成
+        // 「（纯音乐，请欣赏）」—— 它比笼统的"没找到"精确，而且这是
+        // **源站明确说过**的（返回了占位文本），不是我们猜的。
+        m_instrumental = res.instrumental;
+        DebugLog("在线歌词：未命中 —— %s%s", WideToUtf8(res.error).c_str(),
+                 res.instrumental ? "（但有源说明这是纯音乐）" : "");
         return;
     }
+
+    m_instrumental = false;   // 有真歌词了，这条结论作废
 
     // 核对时用的歌手必须是**实际发出去查询的那个**，不能是标签里的。
     //

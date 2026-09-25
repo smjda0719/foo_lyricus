@@ -36,12 +36,13 @@ PlaybackState& PlaybackState::Get() {
 
 void PlaybackState::SetFake(bool hasTrack, const std::wstring& displayName,
                             LyricDocument lyrics, size_t currentLine,
-                            const std::wstring& lyricPath) {
-    m_hasTrack    = hasTrack;
-    m_displayName = displayName;
-    m_lyrics      = std::move(lyrics);
-    m_currentLine = currentLine;
-    m_lyricPath   = lyricPath;
+                            const std::wstring& lyricPath, bool instrumental) {
+    m_hasTrack     = hasTrack;
+    m_displayName  = displayName;
+    m_lyrics       = std::move(lyrics);
+    m_currentLine  = currentLine;
+    m_lyricPath    = lyricPath;
+    m_instrumental = instrumental;
 }
 
 std::wstring FileNameOf(const std::wstring& path) {

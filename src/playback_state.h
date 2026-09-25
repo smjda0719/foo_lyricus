@@ -87,6 +87,13 @@ public:
     // 换算成显示序号之后，"下一句"恒为 +1，seek 仍然是 +N 或负数 —— 判据不变，
     // 只是量纲对了。
     size_t               DisplayLine() const;
+
+    // 有在线源明确说过"这是纯音乐"（返回的是「纯音乐，请欣赏」占位文本）。
+    //
+    // 【为什么留着一个方法而不是丢掉】用户 2026-09-26：占位文本本身**不是问题**，
+    // 它是有用的信息 —— 比笼统的"无歌词"精确。所以结论留着，由渲染层
+    // **本地**显示成「（纯音乐，请欣赏）」；它永远不会被当成歌词存进缓存。
+    bool                 IsInstrumental() const { return m_instrumental; }
     // ---- 逐曲目的歌词时间偏移 ----
     //
     // 正值 = **歌词提前**（同一播放位置去歌词里更靠后的地方找），用来修
@@ -153,6 +160,7 @@ private:
     size_t              m_currentLine = LyricDocument::npos;
     size_t              m_displayLine = LyricDocument::npos;   // 见 DisplayLine()
     double              m_lyricOffsetSec = 0.0;                // 见 LyricOffsetSec()
+    bool                m_instrumental = false;                // 见 IsInstrumental()
 
     // ---- 标签缓存 ----
     // ReloadLyrics() 取一次，歌词搜索和在线查询共用。

@@ -34,10 +34,16 @@ public:
     size_t               CurrentLine() const { return m_currentLine; }
     const std::wstring&  LyricPath()   const { return m_lyricPath; }
 
+    // 「有源说过这是纯音乐」。绘制层据此把「（无歌词）」换成「（纯音乐，请欣赏）」。
+    // 替身里做成可设置（SetFake 的最后一个参数），这样绘制层那条分支也能测到 ——
+    // 恒返回 false 的话，那个三元表达式永远只走一边，等于没测。
+    bool                 IsInstrumental() const { return m_instrumental; }
+
     // ---- 只有单测用的设置接口 ----
     void SetFake(bool hasTrack, const std::wstring& displayName,
                  LyricDocument lyrics, size_t currentLine,
-                 const std::wstring& lyricPath = std::wstring());
+                 const std::wstring& lyricPath = std::wstring(),
+                 bool instrumental = false);
 
 private:
     PlaybackState() = default;
@@ -47,6 +53,7 @@ private:
     LyricDocument       m_lyrics;
     size_t              m_currentLine = LyricDocument::npos;
     std::wstring        m_lyricPath;
+    bool                m_instrumental = false;
 };
 
 // 取路径的文件名部分（含扩展名）—— 绘制层用它显示"无歌词"时的文件名

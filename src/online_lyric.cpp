@@ -422,6 +422,9 @@ long long NowUnixSeconds() {
 // 【第三个字段：匹配逻辑版本】后加的，但很关键 ——
 // 见 kMissLogicVersion 的说明。
 struct MissMarker {
+    // 「纯音乐」这条结论也要一起存：不存的话，7 天负缓存命中时界面只能显示
+    // 笼统的「（无歌词）」，把已经知道的信息丢了。
+    bool instrumental = false;
     long long stamp  = 0;
     long      status = 0;
     int       logic  = 0;
@@ -530,11 +533,16 @@ bool ReadMissMarker(const std::wstring& path, MissMarker& out) {
     out.stamp  = stamp;
     out.status = status;
     out.logic  = (got >= 3) ? logic : 0;
+
+    // 「纯音乐」那条结论附在身份行末尾（`… instrumental=1`）。
+    // 老标记没有它 -> 保持 false，**不需要升逻辑版本**（升了会让用户的负缓存
+    // 白重查一遍，而这里只是少一句话，不值那个代价）。
+    out.instrumental = (text.find(" instrumental=1") != std::string::npos);
     return true;
 }
 
 bool WriteMissMarker(const std::wstring& path, long httpStatus,
-                     const std::string& identity) {
+                     const std::string& identity, bool instrumental) {
     // 【为什么要把曲目身份写进去】原先只存 `时间戳 HTTP码 逻辑版本`，
     // 结果事后**完全没法追查**：用户说"这首没匹配到"，我打开 .miss 也看不出
     // 是哪一首，于是分不清"在线源确实没有"还是"我们的匹配逻辑错了"。
@@ -548,6 +556,8 @@ bool WriteMissMarker(const std::wstring& path, long httpStatus,
     std::string text = head;
     if (!identity.empty()) {
         text += identity;
+        // 附在身份行**末尾**：老解析器只取前面几个 key=[..]，多一个尾巴不影响它。
+        if (instrumental) text += " instrumental=1";
         text += '\n';
     }
     return WriteWholeFile(path, text.c_str(), text.size());
@@ -2883,8 +2893,10 @@ std::string StripLeadingLrcTags(const std::string& lrc) {
 // 一轮酷狗查询。返回 true 表示拿到了一份可用的歌词（已填进 entry）。
 bool TryKugou(const OnlineLyricRequest& req, ULONGLONG retryDeadline,
               LrclibEntry& entry, bool& requestFailed, std::wstring& note,
+              bool& sawPlaceholder,
               const OnlineCancelFlag& cancel = nullptr) {
     requestFailed = false;
+    sawPlaceholder = false;
     if (IsCancelled(cancel)) return false;
 
     // 查询词：歌手 + 曲名，和网易云同一个构造口径（切音轨号、剥版本标记）。
@@ -3006,8 +3018,10 @@ bool TryKugou(const OnlineLyricRequest& req, ULONGLONG retryDeadline,
     //（`[00:01.58]纯音乐，请欣赏`，79 字节，五首不同的歌字节完全相同）。
     // 把它当命中收下的后果比"没找到"糟得多，而且会被写进缓存 —— 见函数说明。
     if (IsPlaceholderLyric(lrc)) {
+        // **不当歌词收，但把结论带出去** —— 见 OnlineLyricResult::instrumental
         OnlineLog("在线歌词：酷狗 hash=%s 返回的是占位文件（「纯音乐，请欣赏」之类），"
-                  "当作这个源没有歌词", hit.hash.c_str());
+                  "当作这个源没有歌词（但记下「纯音乐」这条结论给界面用）", hit.hash.c_str());
+        sawPlaceholder = true;
         return false;
     }
 
@@ -3030,8 +3044,10 @@ bool TryKugou(const OnlineLyricRequest& req, ULONGLONG retryDeadline,
 // 取消令牌用法见文件上方的 IsCancelled。
 bool TryNetEase(const OnlineLyricRequest& req, ULONGLONG retryDeadline,
                 LrclibEntry& entry, bool& requestFailed, std::wstring& note,
+                bool& sawPlaceholder,
                 const OnlineCancelFlag& cancel = nullptr) {
     requestFailed = false;
+    sawPlaceholder = false;
 
     // 已取消就直接走人 —— 一次请求都不发。
     if (IsCancelled(cancel)) return false;
@@ -3266,7 +3282,8 @@ bool TryNetEase(const OnlineLyricRequest& req, ULONGLONG retryDeadline,
     // 但源站改回传占位文本时就漏了 —— 所以两个源都要过这一关。
     if (IsPlaceholderLyric(lrc)) {
         OnlineLog("在线歌词：网易云 id=%.0f 返回的是占位文本（「纯音乐，请欣赏」之类），"
-                  "当作这个源没有歌词", pick.id);
+                  "当作这个源没有歌词（但记下「纯音乐」这条结论给界面用）", pick.id);
+        sawPlaceholder = true;
         return false;
     }
 
@@ -3694,6 +3711,7 @@ OnlineLyricResult FetchLyricOnline(const OnlineLyricRequest& req,
                     // 这两个维度互不替代，头文件里写了。
                     result.ok = false;
                     result.fromCache = true;
+                    result.instrumental = marker.instrumental;   // 见 MissMarker 的说明
                     result.httpStatus = marker.status;
                     result.error = L"缓存记录：在线源上都没有这首歌的歌词，还有 " +
                                    std::to_wstring((kMissTtlSeconds - ageSec) / 86400) +
@@ -3729,6 +3747,7 @@ OnlineLyricResult FetchLyricOnline(const OnlineLyricRequest& req,
     // 理由是"宁可下次重查，也不要记住一个可能是错的'没有'"：
     // 重查的代价是一次网络请求，记错的代价是用户 7 天看不到歌词。
     bool  anyRequestFailed = false;
+    bool  anyInstrumental  = false;   // 有源明确说这是纯音乐（见 instrumental）
     DWORD lastHttpStatus   = 0;
 
     // 把失败原因攒起来塞进 error，调用方要提示用户时能说清楚是网络问题
@@ -3787,11 +3806,14 @@ OnlineLyricResult FetchLyricOnline(const OnlineLyricRequest& req,
             std::wstring neteaseNote;
             LrclibEntry ne;
 
-            if (TryNetEase(req, retryDeadline, ne, neteaseFailed, neteaseNote, cancel)) {
+            bool nePlaceholder = false;
+            if (TryNetEase(req, retryDeadline, ne, neteaseFailed, neteaseNote,
+                           nePlaceholder, cancel)) {
                 OnlineLog("在线歌词：网易云命中，采用该结果");
                 return SaveAndReturn(paths, cacheUsable, ne, 200,
                                      /*fromSearch=*/true, "网易云搜索");
             }
+            if (nePlaceholder) anyInstrumental = true;
             if (neteaseFailed) {
                 anyRequestFailed = true;
                 noteFailure(neteaseNote);
@@ -3805,11 +3827,14 @@ OnlineLyricResult FetchLyricOnline(const OnlineLyricRequest& req,
             std::wstring kugouNote;
             LrclibEntry kg;
 
-            if (TryKugou(req, retryDeadline, kg, kugouFailed, kugouNote, cancel)) {
+            bool kgPlaceholder = false;
+            if (TryKugou(req, retryDeadline, kg, kugouFailed, kugouNote,
+                         kgPlaceholder, cancel)) {
                 OnlineLog("在线歌词：酷狗命中，采用该结果");
                 return SaveAndReturn(paths, cacheUsable, kg, 200,
                                      /*fromSearch=*/true, "酷狗搜索");
             }
+            if (kgPlaceholder) anyInstrumental = true;
             if (kugouFailed) {
                 anyRequestFailed = true;
                 noteFailure(kugouNote);
@@ -3948,8 +3973,9 @@ OnlineLyricResult FetchLyricOnline(const OnlineLyricRequest& req,
 
     // ---- 3. 收尾 ----
     result.httpStatus = static_cast<long>(lastHttpStatus);
-    result.fromCache = false;
-    result.ok = false;
+    result.fromCache  = false;
+    result.ok         = false;
+    result.instrumental = anyInstrumental;
 
     if (anyRequestFailed) {
         // 有请求没问出结果 -> **一个字都不写进缓存**，下次播放还会重试。
@@ -3997,7 +4023,7 @@ OnlineLyricResult FetchLyricOnline(const OnlineLyricRequest& req,
         "] album=[" + WideToUtf8(req.album) + "] duration=" +
         std::to_string(static_cast<long long>(req.durationSec + 0.5)) + "s";
 
-    if (cacheUsable && WriteMissMarker(paths.miss, lastHttpStatus, identity)) {
+    if (cacheUsable && WriteMissMarker(paths.miss, lastHttpStatus, identity, anyInstrumental)) {
         OnlineLog("在线歌词：确定未命中，已写 7 天有效的标记（HTTP %lu）：%s",
                   lastHttpStatus, identity.c_str());
     } else {
