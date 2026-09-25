@@ -140,9 +140,13 @@ struct OnlineLyricResult {
 // nullptr = 永不取消（离线单测和一次性调用用这个，行为与加它之前完全一致）。
 using OnlineCancelFlag = std::shared_ptr<std::atomic<bool>>;
 
+// sourceOrderText：源顺序与启用状态（`netease:1,kugou:0,lrclib:1`）。
+// 空串 = 出厂顺序且全部启用。**由调用方从配置里读好传进来** —— 本模块刻意
+// 不依赖 config.h，这样它能进离线单测台（见 source_order.h）。
 OnlineLyricResult FetchLyricOnline(const OnlineLyricRequest& req,
                                    const std::wstring& cacheDir,
-                                   OnlineCancelFlag cancel = nullptr);
+                                   OnlineCancelFlag cancel = nullptr,
+                                   const std::wstring& sourceOrderText = std::wstring());
 
 // 异步查询的回调。参数按值传，回调可以随便存起来慢慢用。
 using OnlineLyricCallback = std::function<void(OnlineLyricRequest, OnlineLyricResult)>;
@@ -176,7 +180,8 @@ using OnlineLyricCallback = std::function<void(OnlineLyricRequest, OnlineLyricRe
 void FetchLyricOnlineAsync(const OnlineLyricRequest& req,
                            const std::wstring& cacheDir,
                            OnlineLyricCallback cb,
-                           OnlineCancelFlag cancel = nullptr);
+                           OnlineCancelFlag cancel = nullptr,
+                           const std::wstring& sourceOrderText = std::wstring());
 
 // 默认缓存目录：DLL 同级的 cache\ 子目录。
 //

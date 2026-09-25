@@ -26,7 +26,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('all', 'search', 'lyric', 'online', 'view', 'bench')] [string]$Suite = 'all'
+    [ValidateSet('all', 'search', 'lyric', 'order', 'online', 'view', 'bench')] [string]$Suite = 'all'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -53,9 +53,11 @@ if (-not (Test-Path $vcvars)) {
 $suites = @(
     @{ key='search'; name='搜索算法';      compile=@('test_search.cpp','lyric_search.cpp');            extra=@();                        shims=@();                  libs='' },
     @{ key='lyric';  name='LRC 解析器';    compile=@('test_lyric.cpp','lyric.cpp');                    extra=@();                        shims=@();                  libs='' },
+    # 歌词源顺序：纯逻辑 + 配置串容错，不碰 SDK（见 source_order.h 的说明）。
+    @{ key='order';  name='歌词源顺序';    compile=@('test_source_order.cpp','source_order.cpp');                         extra=@('source_order.h');        shims=@();                  libs='' },
     # online 组要**额外**编 lyric_search.cpp：网易云候选核验复用了那边的
     # NormalizeLyricStem。不加就会在链接期报 LNK2019 修饰名看不懂。
-    @{ key='online'; name='在线歌词 JSON'; compile=@('test_online.cpp','lyric.cpp','lyric_search.cpp'); extra=@('online_lyric.cpp','online_lyric.h'); shims=@();          libs='winhttp.lib crypt32.lib' },
+    @{ key='online'; name='在线歌词 JSON'; compile=@('test_online.cpp','lyric.cpp','lyric_search.cpp','source_order.cpp'); extra=@('online_lyric.cpp','online_lyric.h','source_order.h'); shims=@();          libs='winhttp.lib crypt32.lib' },
     # 绘制层这组要用**替身** playback_state.h 覆盖真实那份：
     # 真实那份要读 metadb / playback_control，而绘制层只用几个只读访问器。
     @{ key='view';   name='绘制层布局';    compile=@('test_view.cpp','lyrics_view.cpp','scroll_anim.cpp','lyric.cpp'); extra=@('lyrics_view.h','scroll_anim.h'); shims=@('playback_state.h'); libs='gdi32.lib user32.lib' },

@@ -72,6 +72,27 @@
 #define IDC_SLIDER_RATIO     1207
 #define IDC_LBL_V_RATIO      1208
 #define IDC_SLIDER_ADJ_ALPHA 1209
+
+// ---------------------------------------------------------------------------
+// 「歌词源顺序」对话框
+//
+// 起因：网易云排第一位、命中就收工，于是备用源（酷狗 / LRCLIB）在正常使用中
+// **几乎永远跑不到** —— 实测用户连放十几首，酷狗一次都没轮到。用户
+// 2026-09-25 说「暂时把网易云源短接掉」，随后自己提了更好的办法：
+// 「可以给用户自定义查找歌词顺序的面板」。
+// 与其在代码里临时短接（迟早忘了恢复），不如把这个选择交给用户。
+//
+// 纯逻辑在 source_order.cpp（可离线单测），这里只负责界面。
+// ---------------------------------------------------------------------------
+
+#define IDD_LYRICUS_SOURCES  104
+
+#define IDC_LIST_SOURCES     1301
+#define IDC_BTN_SRC_UP       1302
+#define IDC_BTN_SRC_DOWN     1303
+#define IDC_BTN_SRC_TOGGLE   1304
+#define IDC_BTN_SRC_RESET    1305
+#define IDC_LBL_SRC_HINT     1306
 #define IDC_LBL_V_ALPHA      1210
 #define IDC_LBL_TRACK        1211
 #define IDC_BTN_OFFSET_ZERO  1212

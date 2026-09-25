@@ -75,6 +75,12 @@ extern cfg_var_modern::cfg_int cfg_ratio_base_ver;
 // 从时长差**看不出来**，只能靠耳朵判断。所以给一个用户入口，按曲目记住。
 extern cfg_var_modern::cfg_string cfg_lyric_offset_map;
 
+// 在线歌词源的**顺序与启用状态**，格式 `netease:1,kugou:0,lrclib:1`。
+//
+// 用户在菜单的「歌词源顺序...」面板里调，见 source_order.h。
+// 空串 = 没配置过 = 出厂顺序且全部启用。
+extern cfg_var_modern::cfg_string cfg_lyric_source_order;
+
 // ---------------------------------------------------------------------------
 // 设置项：走 foobar2000 的 Advanced 首选项（SDK/advconfig_impl.h）
 //

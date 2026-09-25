@@ -137,3 +137,33 @@ BEGIN
     DEFPUSHBUTTON   "确定", IDOK, 192, 170, 52, 16
     PUSHBUTTON      "取消", IDCANCEL, 248, 170, 52, 16
 END
+
+// ---------------------------------------------------------------------------
+// 「歌词源顺序」
+//
+// 起因见 resource.h 那段说明：网易云排第一、命中就收工，备用源在正常使用中
+// 几乎永远跑不到。用户 2026-09-25 提的就是"给一个自定义顺序的面板"。
+//
+// 用普通 LISTBOX（不 owner-draw）：三行文字，勾/叉用字符表示就够了 ——
+// owner-draw 要多写一个 WM_DRAWITEM 和一套配色，收益只是几个像素的对齐。
+// ---------------------------------------------------------------------------
+
+IDD_LYRICUS_SOURCES DIALOGEX 0, 0, 252, 178
+STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "歌词源顺序"
+FONT 9, "MS Shell Dlg", 400, 0, 0x86
+BEGIN
+    LTEXT           "从上到下依次尝试，命中即停。想验证某个备用源，把它移到最前面。",
+                    -1, 7, 7, 238, 20
+    LISTBOX         IDC_LIST_SOURCES, 7, 28, 238, 86, LBS_NOTIFY | WS_VSCROLL | WS_TABSTOP
+
+    PUSHBUTTON      "上移", IDC_BTN_SRC_UP, 7, 120, 46, 16
+    PUSHBUTTON      "下移", IDC_BTN_SRC_DOWN, 57, 120, 46, 16
+    PUSHBUTTON      "启用 / 停用", IDC_BTN_SRC_TOGGLE, 107, 120, 64, 16
+    PUSHBUTTON      "恢复默认", IDC_BTN_SRC_RESET, 175, 120, 70, 16
+
+    LTEXT           "", IDC_LBL_SRC_HINT, 7, 141, 238, 24
+
+    DEFPUSHBUTTON   "确定", IDOK, 133, 158, 52, 16
+    PUSHBUTTON      "取消", IDCANCEL, 191, 158, 54, 16
+END

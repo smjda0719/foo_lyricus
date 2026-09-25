@@ -2,6 +2,7 @@
 #include "online_lyric.h"
 
 #include "debug_log.h"
+#include "source_order.h"   // SourcesToTry / SourceDisplayName
 #include "lyric.h"          // Utf8ToWide / WideToUtf8 —— 宽窄转换沿用工程里已有的实现
 #include "lyric_search.h"   // NormalizeLyricStem —— 核验网易云候选时复用本地搜索那套归一化
 
@@ -3500,7 +3501,8 @@ size_t InvalidateMissMarkers() {
 
 OnlineLyricResult FetchLyricOnline(const OnlineLyricRequest& req,
                                    const std::wstring& cacheDir,
-                                   OnlineCancelFlag cancel) {
+                                   OnlineCancelFlag cancel,
+                                   const std::wstring& sourceOrderText) {
     OnlineLyricResult result;
 
     // 这个函数**只允许在后台线程调用**（头文件里反复强调了）。
@@ -3665,84 +3667,86 @@ OnlineLyricResult FetchLyricOnline(const OnlineLyricRequest& req,
         failNotes += s;
     };
 
-    // ---- 2.0 网易云（排在 LRCLIB 前面）----
+    // ---- 2. 按**用户配置的顺序**依次尝试各个源 ----
     //
-    // 顺序是用户 2026-09-24 定的。依据是实测：用户曲库里大量同人曲 / OST
-    // 在 LRCLIB 上一首都没有（8 次标题搜索 6 次返回 0 条），而网易云连
-    // 「塞壬唱片-MSR - Battleplan Obliteration」都能精确命中。
-    // LRCLIB 退居兵底，负责它更擅长的欧美曲目。
+    // 顺序与启用状态存在 `cfg_lyric_source_order` 里（见 source_order.h），
+    // 用户在菜单的「歌词源顺序...」面板里调。出厂顺序：网易云 -> 酷狗 -> LRCLIB。
     //
-    // 【它返回的结果 fromSearch 恒为 true】网易云这条路只有搜索接口可用
-    // （没有 LRCLIB 那种 artist+title 精确查询），所以调用方**必须**核对。
-    if (!title.empty()) {
-        bool neteaseFailed = false;
-        std::wstring neteaseNote;
-        LrclibEntry ne;
-
-        if (TryNetEase(req, retryDeadline, ne, neteaseFailed, neteaseNote, cancel)) {
-            OnlineLog("在线歌词：网易云命中，采用该结果");
-            return SaveAndReturn(paths, cacheUsable, ne, 200,
-                                 /*fromSearch=*/true, "网易云搜索");
-        }
-        if (neteaseFailed) {
-            anyRequestFailed = true;
-            noteFailure(neteaseNote);
-        }
-
-        // 取消 -> 立刻收工。**这一条必须在"继续查 LRCLIB"之前**，
-        // 而且绝不能让后面的写标记路径跑起来（见函数尾部的检查）。
-        if (IsCancelled(cancel)) {
-            OnlineLog("在线歌词：已取消，不再查 LRCLIB");
-            result.cancelled = true;
-            result.error = L"已取消（期间换过曲）";
-            return result;
-        }
-        OnlineLog("在线歌词：网易云未命中，继续查酷狗");
-    }
-
-    // ---- 2.1 酷狗（第二个源）----
-    //
-    // 顺序：网易云 -> 酷狗 -> LRCLIB。依据是**实测的命中分布** ——
-    // 用户曲库以中文同人曲为主，网易云和酷狗都强，而 LRCLIB 在这类上基本没有
-    // （8 次标题搜索 6 次返回 0 条）。英文/欧美曲目最后交给 LRCLIB。
+    // 【为什么把顺序交给用户】网易云排第一位、命中就收工，于是备用源在正常
+    // 使用中**几乎永远跑不到**（实测：用户连放十几首，酷狗一次都没轮到）。
+    // 想验证备用源能不能干活就得先把第一位让开 —— 用户 2026-09-25 的原话是
+    // 「暂时把网易云源短接掉」。与其在代码里临时短接（迟早忘了恢复），
+    // 不如把这个选择交给用户。
     //
     // 【串行会不会成倍变慢】不会：重试预算是**整轮共享**的一个墙钟截止时刻
     //（kTotalRetryBudgetMs），多个源共用它，所以"每个源各超时一次"这种
     // 最坏情况不会发生 —— 见 retryDeadline 的说明。
-    if (!title.empty()) {
-        bool kugouFailed = false;
-        std::wstring kugouNote;
-        LrclibEntry kg;
-
-        if (TryKugou(req, retryDeadline, kg, kugouFailed, kugouNote, cancel)) {
-            OnlineLog("在线歌词：酷狗命中，采用该结果");
-            return SaveAndReturn(paths, cacheUsable, kg, 200,
-                                 /*fromSearch=*/true, "酷狗搜索");
-        }
-        if (kugouFailed) {
-            anyRequestFailed = true;
-            noteFailure(kugouNote);
-        }
-        if (IsCancelled(cancel)) {
-            OnlineLog("在线歌词：已取消，不再查 LRCLIB");
-            result.cancelled = true;
-            result.error = L"已取消（期间换过曲）";
-            return result;
-        }
-        OnlineLog("在线歌词：酷狗未命中，继续查 LRCLIB");
-    }
-
-
     if (title.empty()) {
-        // 这是调用方的输入问题（LRCLIB 的 track_name 必填，空着发必然 400），
-        // 不是"这首歌没有歌词"，所以**不写**未命中标记。
+        // 每个源的曲名都是必填项（LRCLIB 空着发必然 400，网易云/酷狗也搜不出东西）。
+        // 这是**调用方的输入问题**，不是"这首歌没有歌词"，所以不写未命中标记。
         result.error = L"曲名为空，无法联网查询（各在线源的曲名都是必填项）";
         OnlineLog("在线歌词：%s", WideToUtf8(result.error).c_str());
         return result;
     }
 
-    // 本轮出现过"没能确定答案"的请求 —— 声明已经提到网易云那一段之前了
-    // （两个源要共用同一套失败记账），这里不再重复声明。
+    const std::vector<LyricSource> order = SourcesToTry(sourceOrderText);
+    if (order.empty()) {
+        OnlineLog("在线歌词：所有源都被停用了（菜单里的「歌词源顺序...」可以改），本次不联网");
+    } else {
+        std::wstring tried;
+        for (LyricSource s : order) {
+            if (!tried.empty()) tried += L" -> ";
+            tried += SourceDisplayName(s);
+        }
+        OnlineLog("在线歌词：按配置顺序尝试 %s", WideToUtf8(tried).c_str());
+    }
+
+    for (LyricSource src : order) {
+        if (IsCancelled(cancel)) {
+            OnlineLog("在线歌词：已取消，不再尝试后续的源");
+            result.cancelled = true;
+            result.error = L"已取消（期间换过曲）";
+            return result;
+        }
+
+        switch (src) {
+        case LyricSource::NetEase: {
+            bool neteaseFailed = false;
+            std::wstring neteaseNote;
+            LrclibEntry ne;
+
+            if (TryNetEase(req, retryDeadline, ne, neteaseFailed, neteaseNote, cancel)) {
+                OnlineLog("在线歌词：网易云命中，采用该结果");
+                return SaveAndReturn(paths, cacheUsable, ne, 200,
+                                     /*fromSearch=*/true, "网易云搜索");
+            }
+            if (neteaseFailed) {
+                anyRequestFailed = true;
+                noteFailure(neteaseNote);
+            }
+            OnlineLog("在线歌词：网易云未命中，看后面还有没有别的源");
+            break;
+        }
+
+        case LyricSource::Kugou: {
+            bool kugouFailed = false;
+            std::wstring kugouNote;
+            LrclibEntry kg;
+
+            if (TryKugou(req, retryDeadline, kg, kugouFailed, kugouNote, cancel)) {
+                OnlineLog("在线歌词：酷狗命中，采用该结果");
+                return SaveAndReturn(paths, cacheUsable, kg, 200,
+                                     /*fromSearch=*/true, "酷狗搜索");
+            }
+            if (kugouFailed) {
+                anyRequestFailed = true;
+                noteFailure(kugouNote);
+            }
+            OnlineLog("在线歌词：酷狗未命中，看后面还有没有别的源");
+            break;
+        }
+
+        case LyricSource::Lrclib: {
 
     // 2a. 精确查询。
     // 只有 artist 和 title 都齐了才发：缺 artist 会直接 400，
@@ -3864,6 +3868,11 @@ OnlineLyricResult FetchLyricOnline(const OnlineLyricRequest& req,
             }
         }
     }
+            break;   // case LyricSource::Lrclib
+        }            // case 块
+
+        }   // switch
+    }       // for (源)
 
     // ---- 3. 收尾 ----
     result.httpStatus = static_cast<long>(lastHttpStatus);
@@ -3929,7 +3938,8 @@ OnlineLyricResult FetchLyricOnline(const OnlineLyricRequest& req,
 void FetchLyricOnlineAsync(const OnlineLyricRequest& req,
                            const std::wstring& cacheDir,
                            OnlineLyricCallback cb,
-                           OnlineCancelFlag cancel) {
+                           OnlineCancelFlag cancel,
+                           const std::wstring& sourceOrderText) {
     // 【后台线程用的是 SDK 的机制，不是自己 CreateThread / std::thread】
     //
     // fb2k::splitTask 是 SDK 给"分离线程"的官方入口
@@ -3950,12 +3960,14 @@ void FetchLyricOnlineAsync(const OnlineLyricRequest& req,
     // 取消令牌本来就是 shared_ptr，直接按值捕获 —— 它必须比这个线程活得久，
     // 而调用方那边换曲时还要用它置位，所以不能是 unique。
     auto sharedCancel = cancel;
+    // 源顺序也一起拷进后台线程：配置对象不属于那个线程，读它不安全。
+    auto sharedOrder = std::make_shared<std::wstring>(sourceOrderText);
 
-    fb2k::splitTask([sharedReq, sharedDir, sharedCb, sharedCancel] {
+    fb2k::splitTask([sharedReq, sharedDir, sharedCb, sharedCancel, sharedOrder] {
         // ---- 后台线程 ----
         OnlineLyricResult result;
         try {
-            result = FetchLyricOnline(*sharedReq, *sharedDir, sharedCancel);
+            result = FetchLyricOnline(*sharedReq, *sharedDir, sharedCancel, *sharedOrder);
         } catch (const std::exception& e) {
             // FetchLyricOnline 本身不抛（std::bad_alloc 之类的极端情况除外），
             // 但 std::function 里的异常跑出去会直接 terminate 掉整个进程，

@@ -94,6 +94,7 @@ advconfig_checkbox_factory g_online(
     "本地找不到时联网查询歌词（LRCLIB）", "lyricus.onlineLookup",
     kOnlineGuid, kBranchGuid, 6, true);
 
+
 // 有翻译时哪个当正文。
 //
 // 【为什么要给这一档】听日语/同人曲的人很多只看得懂译文，原文对他们反而是参照。

@@ -101,6 +101,8 @@
     <ClCompile Include="..\src\folder_hint.cpp" />
     <ClCompile Include="..\src\hint_dialog.cpp" />
     <ClCompile Include="..\src\adjust_dialog.cpp" />
+    <ClCompile Include="..\src\source_order.cpp" />
+    <ClCompile Include="..\src\source_dialog.cpp" />
     <ClCompile Include="..\src\online_lyric.cpp" />
     <ClCompile Include="..\src\lyric.cpp" />
     <ClCompile Include="..\src\playback_state.cpp" />

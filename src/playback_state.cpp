@@ -630,7 +630,8 @@ void PlaybackState::StartOnlineLookup() {
             if (!g_onlineAlive.alive.load()) return;
             ApplyOnlineResult(gen, url, res);
         },
-        m_onlineCancel);
+        m_onlineCancel,
+        Utf8ToWide(cfg_lyric_source_order.get().get_ptr()));
 }
 
 void PlaybackState::CancelOnlineLookup() {

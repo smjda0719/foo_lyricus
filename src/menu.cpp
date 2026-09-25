@@ -4,6 +4,8 @@
 #include "config.h"
 #include "folder_hint.h"
 #include "adjust_dialog.h"
+#include "source_dialog.h"   // 歌词源顺序面板
+#include "source_order.h"    // SourcesToTry / SourceDisplayName（菜单名字里要显示当前顺序）
 #include "playback_state.h"
 #include "online_lyric.h"   // ListUnmatchedTracks
 #include "debug_log.h"
@@ -56,6 +58,8 @@ const GUID guid_cmd_hint = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0
 const GUID guid_cmd_adjust = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x16}};
 
 // 0x19：列出没找到歌词的曲目（见 online_lyric.h 的 ListUnmatchedTracks）
+// 0x1A：歌词源顺序面板（见 source_order.h / source_dialog.h）
+const GUID guid_cmd_sources = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x1a}};
 const GUID guid_cmd_unmatched = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x19}};
 
 // 【这里原本有四组"点一下换下一档"的档位表】—— 字号 / 行数 / 行位置 / 背景通透度。
@@ -83,6 +87,7 @@ public:
         cmd_auto_lyric,
         cmd_hint,
         cmd_unmatched,
+        cmd_sources,
         cmd_adjust,
         cmd_total
     };
@@ -100,6 +105,7 @@ public:
         case cmd_auto_lyric:   return guid_cmd_auto_lyric;
         case cmd_hint:         return guid_cmd_hint;
         case cmd_unmatched:    return guid_cmd_unmatched;
+        case cmd_sources:      return guid_cmd_sources;
         case cmd_adjust:       return guid_cmd_adjust;
         default: uBugCheck();
         }
@@ -118,6 +124,23 @@ public:
         case cmd_unmatched:
             out = "查看没找到歌词的曲目...";
             break;
+        case cmd_sources: {
+            // 名字里带上当前实际顺序 —— 一眼就知道现在会按什么顺序查
+            const std::vector<lyricus::LyricSource> t = lyricus::SourcesToTry(
+                lyricus::Utf8ToWide(lyricus::cfg_lyric_source_order.get().get_ptr()));
+            std::wstring s = L"歌词源顺序...（";
+            if (t.empty()) {
+                s += L"全部停用";
+            } else {
+                for (size_t i = 0; i < t.size(); ++i) {
+                    if (i) s += L"→";
+                    s += lyricus::SourceDisplayName(t[i]);
+                }
+            }
+            s += L"）";
+            out = lyricus::WideToUtf8(s).c_str();
+            break;
+        }
 
         // 名字里带上关键的两项当前值 —— 菜单每次展开都会重新调 get_name，
         // 不用自己维护勾选状态，扫一眼就知道现在是什么档。
@@ -163,6 +186,15 @@ public:
                   "知道是**哪些**才谈得上处理：如果它们多半集中在某张专辑里，"
                   "就用「指定歌词搜索线索」给那个文件夹补上歌手/专辑 —— "
                   "那会作废这些结论并重新查一遍。";
+            return true;
+
+        case cmd_sources:
+            out = "调整在线歌词源的**尝试顺序**，也可以单独停用某一个。从上到下依次尝试，"
+                  "命中即停。\n"
+                  "默认是 网易云 → 酷狗 → LRCLIB。**网易云排第一、命中就收工**，"
+                  "所以后面的源在正常使用中几乎永远跑不到 —— 想验证某个备用源，"
+                  "在面板里把它移到最前面（或把前面的停用）。\n"
+                  "改动只影响以后的查询，正在显示的歌词不受影响。";
             return true;
 
         case cmd_adjust:
@@ -277,6 +309,12 @@ public:
         // 面板下一拍（最多 250ms）自己就跟着变了。
         case cmd_adjust:
             lyricus::PromptAdjustPanel(core_api::get_main_window());
+            break;
+
+        // 源顺序只影响**以后**的查询，不碰正在显示的歌词，
+        // 所以同样不需要通知任何窗口。
+        case cmd_sources:
+            lyricus::PromptSourceOrder(core_api::get_main_window());
             break;
 
         case cmd_unmatched: {
