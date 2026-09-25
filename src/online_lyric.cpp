@@ -453,13 +453,37 @@ struct MissMarker {
 // ── v8（2026-09-25）：繁简折叠 ──
 //         NormalizeLyricStem 里加了繁->简折叠（FoldToSimplified），
 //         曲名硬闸 / 演唱者软闸 / 本地文件名比对**同时**变得繁简无关。
-//         证据：标定时翻日志抓到 `純白P - 扁桃体` —— 过曲名闸 1 条，
-//         但演唱者对上 0、时长对上 0，整条被拒；那 1 条多半就是正主，
-//         卡死在繁简上（D-034 的老病根，当时只把症状绕开了）。
-// ── v9（2026-09-25 晚）：演唱者闸认得出"汉字骨架"相同的写法 ──
-//         「純白P」=「Soda纯白」（去掉拉丁字母/数字后汉字骨架都是「纯白」）。
-//         现场数据：`純白P - 扁桃体` 的候选第 1 条就是正主，卡在这一条上被拒。
-constexpr int kMissLogicVersion = 9;
+//         起因：标定时翻日志看到 `純白P - 扁桃体` 过曲名闸 1 条、
+//         演唱者对上 0、时长对上 0，怀疑是 D-034 那个老病根。
+// ── v9（2026-09-25 晚）：演唱者闸认"汉字骨架" ──
+//         「純白P」=「Soda纯白」（去掉拉丁字母/数字后骨架都是「纯白」）。
+// ── v10（2026-09-25 晚，紧随 v9）：时长倍数上限 1.5 ──
+//         ⚠️ v8/v9 的**出发点被用户否掉了**：`扁桃体` 那条候选
+//         （2:06 vs 本地 4:02）用户明确说「不是一首，是另一个版本」。
+//         而 v9 让演唱者闸认得出它 -> 在"时长或演唱者其一即可"的规则下
+//         会被接受 -> 错配。所以补一道时长倍数上限：同一个人、同一个歌名，
+//         长度差一倍就是另一版录音，谁对上都不算。
+//         边界由实测数据卡出（心加心 1.12 收、扁桃体 1.92 拒），见
+//         kSameRecordingRatioCeiling 的说明。
+constexpr int kMissLogicVersion = 10;
+
+// 时长倍数上限：两边长度相差超过这个倍数，就当成**另一版录音**，直接拒。
+//
+// 【为什么需要它，以及为什么是 1.5】原来的规则是"曲名（硬）+ 时长或演唱者
+// 其一即可（软）" —— 也就是说**光靠演唱者对得上就能接受一条长度差一倍的候选**。
+// 2026-09-25 用户实测确认了那个后果：
+//   `純白P - 扁桃体` 本地 4:02，网易云那条（Soda纯白/洛天依）2:06 ——
+//   用户明确说「**不是一首，网易云那条是另一个版本**」。
+//   而演唱者闸刚被改成认得出 `純白P = Soda纯白`，于是它会被接受 -> 错配。
+//
+// 边界由三组**实测**数据卡出来，不是拍的：
+//   心加心   308.0 / 273.9 = 1.12  -> 接受（用户拍板"宁可偏，也要有词"）
+//   春风来   247.1 / 240.0 = 1.03  -> 接受（那条 7 秒差是剪辑版本）
+//   扁桃体   242.3 / 126.0 = 1.92  -> **拒绝**（用户：另一个版本）
+// 1.5 落在最后一个真实分界（1.12 与 1.92）之间，两边都留了余量。
+//
+// ⚠️ 只在**两边时长都已知**时才判 —— 时长未知的候选交还给原来的两道软闸。
+constexpr double kSameRecordingRatioCeiling = 1.5;
 
 // 未命中时日志里最多列几条候选。
 //
@@ -2327,6 +2351,7 @@ bool PickNetEaseCandidate(const std::vector<NetEaseSong>& songs,
     int    bestScore = -1;
     size_t bestIdx   = 0;
     int    passedTitle = 0, passedDur = 0, passedArtist = 0;
+    int    rejectedByLength = 0;   // 被"时长差太多 = 另一版录音"直接拒掉的条数
 
     // ---- 诊断用：前几条候选长什么样 ----
     //
@@ -2376,6 +2401,17 @@ bool PickNetEaseCandidate(const std::vector<NetEaseSong>& songs,
         if (wantDur > 0.0 && durSec > 0.0) {
             const double d = (durSec > wantDur) ? (durSec - wantDur) : (wantDur - durSec);
             durOk = (d <= kCandidateDurationTolSec);
+
+            // ---- 时长"是不是同一版录音"的天花板 ----
+            //
+            // 这一条**优先于演唱者闸**：长度差一倍就不是同一版录音了，
+            // 演唱者再对也不能把它的时间轴套到我们这个文件上（见上面常量说明）。
+            const double hi = (durSec > wantDur) ? durSec : wantDur;
+            const double lo = (durSec > wantDur) ? wantDur : durSec;
+            if (hi / lo > kSameRecordingRatioCeiling) {
+                ++rejectedByLength;
+                continue;
+            }
         }
         if (durOk) ++passedDur;
 
@@ -2401,6 +2437,11 @@ bool PickNetEaseCandidate(const std::vector<NetEaseSong>& songs,
         // 不必再去打接口猜（两次都是靠它定位的）。
         OnlineLog("在线歌词：网易云候选核验 —— 过曲名闸 %d 条，其中时长对上 %d 条、"
                   "演唱者对上 %d 条，可用 0 条", passedTitle, passedDur, passedArtist);
+
+        if (rejectedByLength > 0) {
+            OnlineLog("    其中 %d 条因**时长相差超过 %.1f 倍**被当成另一版录音直接拒"
+                      "（这一条优先于演唱者闸）", rejectedByLength, kSameRecordingRatioCeiling);
+        }
 
         // 再补两行"我们拿什么去比"和"候选长什么样" —— 有了这两行，
         // 一次未命中在日志里就是**自解释**的，不用回头重打接口（会撞限流）。

@@ -455,6 +455,52 @@ void TestNetEaseCandidatePick() {
     Check(lyricus::PickNetEaseCandidate(wrongDur, req, picked),
           "时长差 131 秒但演唱者对得上 -> 接受（宁可偏也要有词）");
 
+    // ---- ★ 时长相差一倍 = 另一版录音，演唱者再对也不能要（2026-09-25 实测）----
+    //
+    // 现场：`純白P - 扁桃体`（专辑「再见，碳酸海」，本地 4:02 = 242.3s）
+    //   网易云候选第 1 条 `扁桃体 | Soda纯白/洛天依 | 126.0s`
+    //   曲名闸过、演唱者闸**也**过（刚学会认「純白P = Soda纯白」）
+    //   用户明确说：「**不是一首，网易云那条是另一个版本**」。
+    //
+    // 这条钉住的正是"演唱者闸不能反过来把另一版录音放进来" ——
+    // 没有它，v9 那个改动会直接造成错配（歌词时间轴套到长度两倍的文件上）。
+    {
+        lyricus::OnlineLyricRequest reqB;
+        reqB.artist = L"純白P";
+        reqB.title  = L"扁桃体";
+        reqB.album  = L"再见，碳酸海";
+        reqB.durationSec = 242.3;
+
+        std::vector<lyricus::NetEaseSong> v;
+        lyricus::NetEaseSong b;
+        b.hasId = true; b.id = 1.0; b.durationMs = 126000.0;
+        b.name = "扁桃体"; b.artist = "Soda纯白/洛天依";
+        v.push_back(b);
+
+        Check(!lyricus::PickNetEaseCandidate(v, reqB, picked),
+              "★ 时长 1.92 倍 -> 当成另一版录音拒掉（哪怕演唱者对得上：純白P=Soda纯白）");
+    }
+
+    // ---- 反向：真实 remaster 的 1.12 倍不能被误杀 ----
+    //
+    // 《恋爱理论》「心加心」本地 308.0s、网易云原版 273.9s —— 用户当时拍板
+    // "宁可偏，也要有词"。天花板必须留得住这一条，否则就是修一个坏一个。
+    {
+        lyricus::OnlineLyricRequest reqX;
+        reqX.artist = L"阿良良木健";
+        reqX.title  = L"心加心";
+        reqX.durationSec = 308.0;
+
+        std::vector<lyricus::NetEaseSong> v;
+        lyricus::NetEaseSong x;
+        x.hasId = true; x.id = 2.0; x.durationMs = 273900.0;
+        x.name = "心加心"; x.artist = "阿良良木健";
+        v.push_back(x);
+
+        Check(lyricus::PickNetEaseCandidate(v, reqX, picked),
+              "★ 时长 1.12 倍（真实 remaster）-> 仍然接受（宁可偏也要有词）");
+    }
+
     // ---- ★ 但两道软闸不能一起失效：时长差很多 + 演唱者也对不上 -> 拒绝 ----
     //
     // 这是 D-024 那道保护的残余：搜 "Best Wishes" 曾经回来一首完全不相干的歌
