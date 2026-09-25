@@ -148,7 +148,7 @@ END
 // owner-draw 要多写一个 WM_DRAWITEM 和一套配色，收益只是几个像素的对齐。
 // ---------------------------------------------------------------------------
 
-IDD_LYRICUS_SOURCES DIALOGEX 0, 0, 252, 178
+IDD_LYRICUS_SOURCES DIALOGEX 0, 0, 252, 184
 STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "歌词源顺序"
 FONT 9, "MS Shell Dlg", 400, 0, 0x86
@@ -162,8 +162,14 @@ BEGIN
     PUSHBUTTON      "启用 / 停用", IDC_BTN_SRC_TOGGLE, 107, 120, 64, 16
     PUSHBUTTON      "恢复默认", IDC_BTN_SRC_RESET, 175, 120, 70, 16
 
-    LTEXT           "", IDC_LBL_SRC_HINT, 7, 141, 238, 24
+    // ⚠️ 这块提示文字的矩形**不许和下面的按钮重叠**（rc 里用 ; 注释，不是 //）。
+    // 第一版是 y=141 高=24（141..165），按钮在 y=158（158..174）—— 重叠 7 个单位。
+    // 症状很怪：**只有改顺序的时候**，确定/取消**只画出下半截**。
+    // 原因：改顺序会调 SetDlgItemText 更新这行提示，而 Windows 只重画**这个
+    // static 的矩形** —— 那一下把按钮的上半擦掉，按钮不在失效区里所以不会重画。
+    // 首次整窗绘制按 z 序来，所以启动时一切正常，只有局部重画才露馅。
+    LTEXT           "", IDC_LBL_SRC_HINT, 7, 137, 238, 18
 
-    DEFPUSHBUTTON   "确定", IDOK, 133, 158, 52, 16
-    PUSHBUTTON      "取消", IDCANCEL, 191, 158, 54, 16
+    DEFPUSHBUTTON   "确定", IDOK, 133, 162, 52, 16
+    PUSHBUTTON      "取消", IDCANCEL, 191, 162, 54, 16
 END
