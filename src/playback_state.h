@@ -75,6 +75,17 @@ public:
     double               PositionSec() const { return m_positionSec; }
     double               LengthSec()   const { return m_lengthSec; }
     size_t               CurrentLine() const { return m_currentLine; }
+
+    // 当前行的**显示序号**（参照行不占号）。
+    //
+    // 【为什么动画必须用它而不是 CurrentLine】双语歌词是"同时间戳、原文在前、
+    // 翻译在后"两行，而 LineIndexAt 会退到组首 —— 于是原始行号每推进一个
+    // 时间戳就跳 **2**（实测 34→35→37→38→41…）。换行上滑的判据是"顺序 +1"，
+    // 拿原始行号去比几乎永远不成立，上滑等于没做（D-046）。
+    //
+    // 换算成显示序号之后，"下一句"恒为 +1，seek 仍然是 +N 或负数 —— 判据不变，
+    // 只是量纲对了。
+    size_t               DisplayLine() const;
     bool                 IsPlaying()  const { return m_isPlaying; }
     bool                 IsPaused()   const { return m_isPaused; }
     float                VolumeDb()   const { return m_volumeDb; }
@@ -119,6 +130,7 @@ private:
     float               m_volumeDb    = 0.0f;   // playback_control 的音量单位是 dB，0 为满音量
     bool                m_isMuted     = false;
     size_t              m_currentLine = LyricDocument::npos;
+    size_t              m_displayLine = LyricDocument::npos;   // 见 DisplayLine()
 
     // ---- 标签缓存 ----
     // ReloadLyrics() 取一次，歌词搜索和在线查询共用。

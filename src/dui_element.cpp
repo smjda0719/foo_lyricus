@@ -435,7 +435,7 @@ bool LyricusDui::AdvanceAnimation(ULONGLONG now) {
     // 宽出量和步距来自**上一次绘制**（只有渲染层知道），差一拍无所谓 ——
     // animator 的重置条件是行号变化，换行那一拍它还在起步前的静止期里。
     const LyricAnimFrame f = m_animator.Update(
-        now, state.CurrentLine(), m_lastResult.currentOverflow, m_lastResult.currentStepH);
+        now, state.DisplayLine(), m_lastResult.currentOverflow, m_lastResult.currentStepH);
 
     const bool frameChanged = (f.scrollX != m_animFrame.scrollX) ||
                               (f.slideY  != m_animFrame.slideY);

@@ -928,6 +928,22 @@ void ControlWindow::ReleaseLayeredCache() {
 void ControlWindow::RenderLayered() {
     ScopedTimer timer("RenderLayered（重绘 + 提交）", 5.0);
 
+    // 分段计时。**只在整帧偏慢时才写一行**（借用 ScopedTimer 的 5ms 阈值），
+    // 免得平时把日志刷爆。
+    //
+    // 【为什么要它】用户 2026-09-25 报「现在能动了，不过帧数确实不高」。
+    // 日志里能看出动画期间每帧 8.4~13.9ms、静态 5.2~6.0ms，
+    // 但**差在哪一段**看不出来 —— 而对策完全取决于这个：
+    //   * 铺底/预乘占大头 -> 上"带状重绘"（只重算变化的那一条）
+    //   * 画文字占大头    -> 缓存整行的栅格（一行只栅格化一次）
+    //   * 提交占大头      -> 省 CPU 没用，只能降帧率或改脏区提交
+    LARGE_INTEGER qpf{}, qpc0{}, qpc1{}, qpc2{}, qpc3{}, qpc4{}, qpc5{};
+    QueryPerformanceFrequency(&qpf);
+    QueryPerformanceCounter(&qpc0);
+    auto msBetween = [&qpf](const LARGE_INTEGER& a, const LARGE_INTEGER& b) {
+        return (b.QuadPart - a.QuadPart) * 1000.0 / static_cast<double>(qpf.QuadPart);
+    };
+
     if (m_hwnd == nullptr || !IsWindow(m_hwnd)) return;
     if (static_cast<BackdropMode>(cfg_backdrop_mode.get()) != BackdropMode::Translucent) return;
 
@@ -1013,10 +1029,13 @@ void ControlWindow::RenderLayered() {
         }
     }
 
+    QueryPerformanceCounter(&qpc1);
+
     HDC memDC = m_layeredDC;
 
     // 2) 文字照常交给 GDI。GDI 只改 RGB，不会破坏上面写好的 alpha 值。
     DrawTextContent(memDC, rc);
+    QueryPerformanceCounter(&qpc2);
 
     // 2.5) 修正 alpha 并预乘。
     //   (a) GDI 不写 alpha —— 文字像素的 alpha 仍是底色的那个值，表现为「字也是透明的」。
@@ -1034,11 +1053,13 @@ void ControlWindow::RenderLayered() {
             p[2] = static_cast<BYTE>(p[2] * p[3] / 255);
         }
     }
+    QueryPerformanceCounter(&qpc3);
 
     // 2.6) SVG 图标。**必须在这之后混** —— 上面的 alpha 修正会把所有非背景
     //      像素的 alpha 拉到 255，先混进来的图标抗锯齿边缘会被毁成硬边。
     DrawIconOverlay(static_cast<unsigned char*>(bits), w, h, w * 4,
                     static_cast<int>(GetDpiForWindowSafe(m_hwnd)));
+    QueryPerformanceCounter(&qpc4);
 
     // 3) 提交
     RECT wr{};
@@ -1048,6 +1069,19 @@ void ControlWindow::RenderLayered() {
     SIZE size{ w, h };
     BLENDFUNCTION blend{ AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
     const BOOL uwlOk = UpdateLayeredWindow(m_hwnd, screenDC, &dst, &size, memDC, &src, 0, &blend, ULW_ALPHA);
+    QueryPerformanceCounter(&qpc5);
+
+    // 整帧偏慢就写一行分解。阈值同 ScopedTimer（5ms）——
+    // 平时不写，动画期间才看得到，正好是我们要诊断的场景。
+    {
+        const double total = msBetween(qpc0, qpc5);
+        if (total >= 5.0) {
+            DebugLog("RenderLayered 分解: 铺底=%.1f 画=%.1f 预乘=%.1f 图标=%.1f 提交=%.1f 共=%.1f ms",
+                     msBetween(qpc0, qpc1), msBetween(qpc1, qpc2),
+                     msBetween(qpc2, qpc3), msBetween(qpc3, qpc4),
+                     msBetween(qpc4, qpc5), total);
+        }
+    }
 
     // 提交失败**必须留痕**，而且只在"好->坏"翻转时记一条。
     //
@@ -1087,7 +1121,7 @@ bool ControlWindow::AdvanceAnimation(ULONGLONG now) {
 
     const auto& st = PlaybackState::Get();
     const LyricAnimFrame f = m_animator.Update(
-        now, st.CurrentLine(), m_lastResult.currentOverflow, m_lastResult.currentStepH);
+        now, st.DisplayLine(), m_lastResult.currentOverflow, m_lastResult.currentStepH);
 
     const bool frameChanged = (f.scrollX != m_animFrame.scrollX) ||
                               (f.slideY  != m_animFrame.slideY);

@@ -173,6 +173,59 @@ void TestLineIndexAt() {
     Check(empty.LineIndexAt(5.0) == lyricus::LyricDocument::npos, "空文档 -> npos");
 }
 
+// 显示序号 —— 换行上滑的判据就是靠它。
+//
+// 出处：用户 2026-09-25「好像没有做出歌词逐行上移，上一行歌词是突然消失的」。
+// 根因是双语歌词"同时间戳、原文在前、翻译在后"两行，而 LineIndexAt 会退到组首，
+// 于是**原始行号每推进一个时间戳就跳 2**（真机日志实测 34→35→37→38→41…）。
+// 上滑的判据是"顺序 +1"，拿原始行号去比几乎永远不成立 —— 上滑等于没做。
+//
+// 换算成显示序号之后"下一句"恒为 +1，而 seek 仍然是 +N 或负数。
+void TestDisplayIndex() {
+    std::printf("\n== DisplayIndex（显示序号）==\n");
+
+    // 双语：每个时间戳一组两行（原文 + 翻译）
+    auto d = Parse("[00:00.00]a\n[00:00.00]A\n"
+                   "[00:10.00]b\n[00:10.00]B\n"
+                   "[00:20.00]c\n[00:20.00]C\n");
+    if (d.Count() != 6) { Check(false, "前置条件：六行（三组双语）"); return; }
+
+    Check(!d.IsSubLine(0) && d.IsSubLine(1), "组内第一行是正文、第二行是参照行");
+    Check(d.DisplayIndex(0) == 0, "第 0 行 -> 显示序号 0");
+    Check(d.DisplayIndex(2) == 1, "★ 原始行号 2（第二组正文）-> 显示序号 **1**");
+    Check(d.DisplayIndex(4) == 2, "★ 原始行号 4 -> 显示序号 **2**");
+
+    // ★ 这条就是上滑判据能成立的原因
+    Check(d.DisplayIndex(2) == d.DisplayIndex(0) + 1 &&
+          d.DisplayIndex(4) == d.DisplayIndex(2) + 1,
+          "★ 相邻两句的显示序号差**恒为 1**（原始行号差是 2）");
+
+    // 参照行不占序号：它和它上面那行是同一句
+    Check(d.DisplayIndex(1) == d.DisplayIndex(0),
+          "参照行的显示序号和它上面那行相同（同一句歌词）");
+
+    // 没有翻译的普通 LRC：显示序号 == 原始行号（这条改动对它必须是无操作）
+    auto plain = Parse("[00:00.00]a\n[00:10.00]b\n[00:20.00]c\n");
+    if (plain.Count() == 3) {
+        bool identity = true;
+        for (size_t i = 0; i < 3; ++i)
+            if (plain.DisplayIndex(i) != i) identity = false;
+        Check(identity, "★ 普通 LRC 下显示序号 == 原始行号（对既有行为无操作）");
+    }
+
+    Check(d.DisplayIndex(lyricus::LyricDocument::npos) == lyricus::LyricDocument::npos,
+          "npos -> npos（没在播放时不能瞎给一个序号）");
+    Check(d.DisplayIndex(999) == lyricus::LyricDocument::npos, "越界 -> npos");
+
+    // 真机上那个形状：一段里有的时间戳有翻译、有的没有 -> 步长 1 和 2 混着来
+    auto mixed = Parse("[00:00.00]a\n[00:00.00]A\n[00:10.00]b\n[00:20.00]c\n[00:20.00]C\n");
+    if (mixed.Count() == 5) {
+        Check(mixed.DisplayIndex(0) == 0 && mixed.DisplayIndex(2) == 1 &&
+              mixed.DisplayIndex(3) == 2,
+              "★ 混着来也成立：0 -> 1 -> 2（原始行号是 0 -> 2 -> 3）");
+    }
+}
+
 void TestOddInput() {
     std::printf("\n== 畸形输入不能崩 ==\n");
 
@@ -207,6 +260,7 @@ int wmain() {
     TestOffset();
     TestEncodings();
     TestLineIndexAt();
+    TestDisplayIndex();
     TestOddInput();
 
     std::printf("\n----------------------------------------\n");

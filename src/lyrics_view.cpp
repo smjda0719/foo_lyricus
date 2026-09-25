@@ -182,20 +182,10 @@ int ClampInt(int v, int lo, int hi) {
     return v;
 }
 
-// 这一行是不是**参照行**（也就是合并进来的翻译）。
-//
-// 判据是"和上一行同一时间戳"—— 双语歌词就是这么写的
-//（见 online_lyric.cpp 的 MergeTranslationLines：原文在前、翻译紧随其后、同戳）。
-// ⚠️ 没给 LyricLine 加字段是有意的：加了就得改解析器，
-//    而那是全工程共用的（D-038 那次一改就打挂 26 条断言）。
-//    这里靠"同戳"这个**格式本身**来判断，解析器一行不用动。
-bool IsSubLine(const LyricDocument& doc, size_t i) {
-    if (i == 0 || i >= doc.Count()) return false;   // 第 0 行不可能是参照行
-    const double a = doc.At(i).timeSec;
-    const double b = doc.At(i - 1).timeSec;
-    const double d = (a > b) ? (a - b) : (b - a);
-    return d < 0.01;
-}
+// 「这一行是不是参照行（合并进来的翻译）」已经搬到 LyricDocument::IsSubLine ——
+// 它不是"怎么画"的问题，而是"这份文档长什么样"的问题，PlaybackState 算显示序号时
+// 也要用它。留在这里的话就只有本文件能用，第二个需要它的地方只好再抄一份。
+// （D-044 记过"同一个判据散在多处"这个反复咬人的坑，别再犯。）
 
 // 第 i 行的**正文**文本（i 必须不是参照行）。
 //
@@ -204,7 +194,7 @@ bool IsSubLine(const LyricDocument& doc, size_t i) {
 //                    原文对他们反而是参照（用户 2026-09-24 提的）。
 //                    那一行没有翻译时**退回原文**，不能空着。
 const std::wstring& MainTextOf(const LyricDocument& doc, size_t i, bool tlPrimary) {
-    if (tlPrimary && IsSubLine(doc, i + 1)) return doc.At(i + 1).text;
+    if (tlPrimary && doc.IsSubLine(i + 1)) return doc.At(i + 1).text;
     return doc.At(i).text;
 }
 
@@ -216,9 +206,9 @@ const std::wstring& MainTextOf(const LyricDocument& doc, size_t i, bool tlPrimar
 const std::wstring* SubTextOf(const LyricDocument& doc, size_t i, bool tlPrimary) {
     if (tlPrimary) {
         // 没有翻译时不该凭空多出一行"原文参照"—— 那等于把同一句话显示两遍
-        return IsSubLine(doc, i + 1) ? &doc.At(i).text : nullptr;
+        return doc.IsSubLine(i + 1) ? &doc.At(i).text : nullptr;
     }
-    return IsSubLine(doc, i + 1) ? &doc.At(i + 1).text : nullptr;
+    return doc.IsSubLine(i + 1) ? &doc.At(i + 1).text : nullptr;
 }
 
 } // namespace
@@ -340,7 +330,7 @@ LyricsViewResult DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& t
             // 跳过它，否则步距会短一个小字的距离。
             if (cur > 0) {
                 size_t prev = cur - 1;
-                if (IsSubLine(doc, prev) && prev > 0) --prev;
+                if (doc.IsSubLine(prev) && prev > 0) --prev;
                 result.currentStepH = MeasureLine(dc, MainTextOf(doc, prev, tlPrimary).c_str(),
                                                   fBody, maxW) + gapNormal;
             }
@@ -392,6 +382,26 @@ LyricsViewResult DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& t
             // 写死行数会在 DUI 里浪费大片空间。
             const int span = (layout.span > 0) ? layout.span : 0;
 
+            // ---- 动画量 ----
+            //
+            // 必须在铺行**之前**算出来：slideY 要参与"上一行画不画得下"的判断
+            //（判据是**画出来的位置**，见下面 above 循环里的说明）。
+            //
+            // slideY = 整块歌词**下移**多少像素（0 = 最终位置）。换行的过渡里
+            // 它从 currentStepH 降到 0，看上去就是整块往上滑了一行的距离。
+            //
+            // ⚠️ 它只作用在**绘制**上，不参与排版：行数、`above`/`below` 的成员、
+            //    夹取全都照原来算。否则过渡途中"能塞下的行数"会变，
+            //    滑到位的一瞬间会**跳一下**（行数突变）。
+            //    （唯一的例外就是上面那个"减去 slideY"的边界判断，
+            //      它的作用是让上一行**多**留一会儿，方向是单调的、不会突变。）
+            const int slideY = (anim.slideY > 0) ? anim.slideY : 0;
+
+            // scrollX = 当前行往左移出多少像素。它在绘制时改变 x，**不改宽度**：
+            // 宽度是整行的真实宽度，永远不变，所以裁剪框（DC 裁剪区）也永远不动。
+            // 这就是"文字在动、框不动"，横滚的全部秘密。
+            const int scrollX = (anim.scrollX > 0) ? anim.scrollX : 0;
+
             // ---- 往上铺 ----
             // above[0] 是紧邻当前行的上一行，依次向远处排。
             //
@@ -400,13 +410,24 @@ LyricsViewResult DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& t
             std::vector<size_t> above;
             int up = curTop;
             for (size_t i = cur; i-- > 0; ) {
-                if (IsSubLine(doc, i)) continue;
+                if (doc.IsSubLine(i)) continue;
                 if (span > 0 && above.size() >= static_cast<size_t>(span)) break;
                 // 用 MainTextOf —— 翻译为主时上下行也要显示翻译，
                 // 否则会出现"当前行是译文、上下文是原文"的割裂
                 const int h = MeasureLine(dc, MainTextOf(doc, i, tlPrimary).c_str(),
                                           fBody, maxW) + gapNormal;
-                if (up - h < y) break;      // 越过歌词区上边界就停
+
+                // ⚠️ 判据是**画出来的位置**，不是排版位置 —— 两者差一个 slideY。
+                //
+                // 上滑过渡里整块下移了 slideY，所以上一行**画**在 up + slideY，
+                // 比 up 低。用 up 判的话，面板刚够不下一行时（用户那块 920x300
+                // 就是这样）上一行会被判成"放不下"而**根本不画** ——
+                // 表现就是用户说的「上一行歌词突然消失」，完全没有上移的过程。
+                //
+                // 放低 slideY 之后：过渡开始时上一行正好还留在原位，
+                // 随着 slideY 减小被往上推出裁剪区；等它被判定为"放不下"时，
+                // 它的绘制位置已经贴着 y（裁剪线）了，所以**看不见突变**。
+                if (up - h < y - slideY) break;   // 越过歌词区上边界就停
                 up -= h;
                 above.push_back(i);
             }
@@ -417,7 +438,7 @@ LyricsViewResult DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& t
             std::vector<size_t> below;
             int down = curTop + curBlockH + gapCurrent;
             for (size_t i = cur + 1 + (curSub != nullptr ? 1 : 0); i < total; ++i) {
-                if (IsSubLine(doc, i)) continue;
+                if (doc.IsSubLine(i)) continue;
                 if (span > 0 && below.size() >= static_cast<size_t>(span)) break;
                 const int h = MeasureLine(dc, MainTextOf(doc, i, tlPrimary).c_str(),
                                           fBody, maxW) + gapNormal;
@@ -425,25 +446,6 @@ LyricsViewResult DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& t
                 below.push_back(i);
                 down += h;
             }
-
-            // ---- 动画：上滑 ----
-            //
-            // slideY = 整块歌词**下移**多少像素（0 = 最终位置）。换行的过渡里
-            // 它从 currentStepH 降到 0，看上去就是整块往上滑了一行的距离。
-            //
-            // ⚠️ 只作用在**绘制**上，不参与排版：行数、`above`/`below` 的成员、
-            //    夹取全都照原来算。否则过渡途中"能塞下的行数"会变，
-            //    滑到位的一瞬间会**跳一下**（行数突变）。
-            //    代价是 t=0 时最下面一行会越过 limit —— 那是遮罩的活（见上面
-            //    IntersectClipRect 那段），也正是它存在的理由。
-            const int slideY = (anim.slideY > 0) ? anim.slideY : 0;
-
-            // ---- 动画：当前行横滚 ----
-            //
-            // scrollX = 当前行往左移出多少像素。它在绘制时改变 x，**不改宽度**：
-            // 宽度是 maxW，永远不变，所以裁剪框（DC 裁剪区）也永远不动。
-            // 这就是"文字在动、框不动"，横滚的全部秘密。
-            const int scrollX = (anim.scrollX > 0) ? anim.scrollX : 0;
 
             // 上方：above 是「由近及远」，画的时候要从最远的一行开始（倒序）。
             // up 此刻正好停在最上面那一行的 y 上。

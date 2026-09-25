@@ -658,7 +658,7 @@ bool LyricusCuiPanel::AdvanceAnimation(ULONGLONG now) {
     const auto& state = PlaybackState::Get();
 
     const LyricAnimFrame f = m_animator.Update(
-        now, state.CurrentLine(), m_lastResult.currentOverflow, m_lastResult.currentStepH);
+        now, state.DisplayLine(), m_lastResult.currentOverflow, m_lastResult.currentStepH);
 
     const bool frameChanged = (f.scrollX != m_animFrame.scrollX) ||
                               (f.slideY  != m_animFrame.slideY);

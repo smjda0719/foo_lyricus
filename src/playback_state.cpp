@@ -194,6 +194,7 @@ void PlaybackState::OnNewTrack(metadb_handle_ptr track) {
     m_isPlaying   = true;
     m_positionSec = 0.0;
     m_currentLine = LyricDocument::npos;
+    m_displayLine = LyricDocument::npos;
     m_lyrics      = LyricDocument();
     m_trackUrl.clear();
     m_trackPath.clear();
@@ -272,6 +273,7 @@ void PlaybackState::ReloadLyrics() {
     ++m_revision;
     m_lyrics      = LyricDocument();
     m_currentLine = LyricDocument::npos;
+    m_displayLine = LyricDocument::npos;
     m_lyricPath.clear();
 
     // ★ 重新加载 = "把之前知道的忘掉，重新问一遍"。
@@ -362,6 +364,7 @@ bool PlaybackState::LoadLyricFile(const std::wstring& path, bool remember) {
     m_lyrics      = std::move(doc);
     m_lyricPath   = path;
     m_currentLine = LyricDocument::npos;
+    m_displayLine = LyricDocument::npos;
     ++m_revision;
 
     if (remember) {
@@ -608,6 +611,7 @@ void PlaybackState::ApplyOnlineResult(unsigned gen, const std::string& url,
     m_lyrics      = std::move(doc);
     m_lyricPath.clear();   // 歌词不在本地文件里，这个字段没有对应物
     m_currentLine = LyricDocument::npos;
+    m_displayLine = LyricDocument::npos;
     ++m_revision;
 
     DebugLog("在线歌词：已载入 %zu 行（%s）",
@@ -643,10 +647,15 @@ TickChange PlaybackState::RefreshPosition() {
 
     const size_t idx = m_lyrics.LineIndexAt(m_positionSec);
     if (idx != m_currentLine) {
-        m_currentLine = idx;
+        m_currentLine  = idx;
+        m_displayLine  = m_lyrics.DisplayIndex(idx);
         return TickChange::Line;
     }
     return positionChanged ? TickChange::Position : TickChange::None;
+}
+
+size_t PlaybackState::DisplayLine() const {
+    return m_displayLine;
 }
 
 // ---------------------------------------------------------------------------

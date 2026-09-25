@@ -332,9 +332,11 @@ struct ClipProbe {
     int currentY   = -1;   // 当前行中心（阈值 250，只有纯白的当前行能达到）
     int lowestInkY = -1;   // 最靠下的一行墨迹（阈值 70，连小字的光晕也算）
     int firstTop   = -1;   // 最靠上的一行墨迹 —— 曲名在遮罩外面，它不该被裁剪动到
+    int bands      = 0;    // 横带条数（阈值 70）
 };
 
-ClipProbe ProbeClip(const lyricus::LyricsViewLayout& layout, const RECT& rc) {
+ClipProbe ProbeClip(const lyricus::LyricsViewLayout& layout, const RECT& rc,
+                    const lyricus::LyricAnimFrame& anim = lyricus::LyricAnimFrame{}) {
     ClipProbe p;
 
     const std::string raw = MakeLrc(21);
@@ -347,7 +349,9 @@ ClipProbe ProbeClip(const lyricus::LyricsViewLayout& layout, const RECT& rc) {
 
     lyricus::LyricsViewTheme theme;
     theme.dpi = 96;
-    lyricus::DrawLyricsView(cv.dc, rc, theme, layout);
+    lyricus::DrawLyricsView(cv.dc, rc, theme, layout, anim);
+
+    p.bands = static_cast<int>(cv.Bands(70).size());
 
     bool sawTop = false;
     for (int y = 0; y < kHeight; ++y) {
@@ -984,6 +988,52 @@ void TestScrollRender() {
     Check(maxX(c.ink) >= 570, "滚到尾部时右边缘用满了（尾巴真的露出来了）");
 }
 
+// 上滑过渡：**上一行必须还在**，不能突然消失。
+//
+// 出处：用户 2026-09-25「好像没有做出歌词逐行上移，上一行歌词是突然消失的」。
+//
+// 【为什么上一行会消失】面板矮的时候"上一行"本来就放不下
+//（用户那块 920x300 配 125% 字号，一行就占满了，见 plan.md 的"已知小问题"），
+// 于是 `above` 列表是空的、上一行根本不画。上滑过渡里整块已经下移了 slideY，
+// 但边界判断用的还是**排版位置**，没用**画出来的位置** —— 于是上一行
+// 从第一帧起就不见了，看着就是"啪"地换掉。
+//
+// 这里专门造一个**装不下上一行**的画布（高度压到 120），
+// 于是这条测试真的能分辨两种做法：
+//   slideY=0   -> 上一行不画，N 条横带
+//   slideY=步距 -> 上一行必须出现，N+1 条横带
+void TestSlideKeepsPrevLine() {
+    std::printf("\n== 上滑过渡：上一行不许突然消失 ==\n");
+
+    // 矮画布：歌词区上沿之下只够放当前行，上一行挤不进来
+    const RECT shortPanel{ 0, 0, kWidth, 120 };
+
+    const auto flat = ProbeClip({100, 0, 50}, shortPanel);
+
+    lyricus::LyricAnimFrame slid;
+    slid.slideY = 22;                     // = 上下文的行高 + 行距（96dpi 下约这么多）
+    const auto start = ProbeClip({100, 0, 50}, shortPanel, slid);
+
+    std::printf("     不滑动   -> %d 条横带（最低墨迹 y=%d）\n", flat.bands, flat.lowestInkY);
+    std::printf("     滑动起点 -> %d 条横带（最低墨迹 y=%d）\n", start.bands, start.lowestInkY);
+
+    Check(flat.bands > 0 && flat.currentY > 0, "矮面板里当前行照画不误");
+
+    // 对照的前提：不滑动时**上一行放不下**。
+    // 这条画布（600x120）里能看到三条带：曲名、当前行、下一行 ——
+    // 唯独**上面**那条没有，这正是用户那块面板的形状。
+    Check(flat.bands == 3,
+          "★ 不滑动时是曲名 + 当前行 + 下一行三条带（上一行确实放不下 —— 对照的前提）");
+
+    // ★ 核心判据：滑动开始时**正好多出一条**（就是上一行）
+    Check(start.bands == flat.bands + 1,
+          "★ 滑动开始时正好多出**一条**横带 —— 上一行还在，它该滑出去而不是突然消失");
+
+    // 上一行画在 slideY 那个位置上：整块下移，所以最低墨迹也跟着下移
+    Check(start.lowestInkY > flat.lowestInkY,
+          "★ 整块确实下移了 slideY（这就是「从低一步升上来」的起点）");
+}
+
 } // namespace
 
 int wmain() {
@@ -993,6 +1043,7 @@ int wmain() {
     TestSpan();
     TestRatio();
     TestResizeAndClip();
+    TestSlideKeepsPrevLine();
     TestFontPct();
     TestBilingual();
     TestTranslationPrimary();

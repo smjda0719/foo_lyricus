@@ -193,8 +193,35 @@ size_t LyricDocument::LineIndexAt(double timeSec) const {
     return idx;
 }
 
-LyricDocument LyricDocument::Parse(const std::vector<unsigned char>& bytes) {
-    LyricDocument doc;
+bool LyricDocument::IsSubLine(size_t index) const {
+    if (index == 0 || index >= m_lines.size()) return false;   // 第 0 行不可能是参照行
+    const double a = m_lines[index].timeSec;
+    const double b = m_lines[index - 1].timeSec;
+    const double d = (a > b) ? (a - b) : (b - a);
+    return d < 0.01;
+}
+
+size_t LyricDocument::DisplayIndex(size_t index) const {
+    if (index == npos || index >= m_lines.size()) return npos;
+
+    // 参照行归到它所属的那一句：往回退到组首。
+    //
+    // 调用方正常传进来的都是组首（LineIndexAt 退过了），所以这个循环
+    // 在真实路径上一次都不进。但把"参照行不占序号"写成一句空话，
+    // 不如让它**真的**成立 —— 否则这是一个将来一定会咬人的隐含前提
+    //（单测当场就把这条抓出来了）。
+    while (index > 0 && IsSubLine(index)) --index;
+
+    // 数一数它前面有多少行"真正要显示的"。O(n)，但 n 是一首歌的行数
+    //（几十），而且调用点每 250ms 才一次 —— 不值得为它做缓存。
+    size_t ordinal = 0;
+    for (size_t i = 0; i < index; ++i) {
+        if (!IsSubLine(i)) ++ordinal;
+    }
+    return ordinal;
+}
+
+LyricDocument LyricDocument::Parse(const std::vector<unsigned char>& bytes) {    LyricDocument doc;
     const std::wstring text = DecodeToWide(bytes);
     if (text.empty()) return doc;
 
