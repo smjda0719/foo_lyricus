@@ -1,6 +1,7 @@
 #pragma once
 
 #include "lyric.h"
+#include "online_lyric.h"   // OnlineCancelFlag —— 换曲时要置位的取消令牌
 
 // ---------------------------------------------------------------------------
 // 当前播放状态 + 歌词缓存
@@ -86,7 +87,6 @@ public:
     // 换算成显示序号之后，"下一句"恒为 +1，seek 仍然是 +N 或负数 —— 判据不变，
     // 只是量纲对了。
     size_t               DisplayLine() const;
-
     // ---- 逐曲目的歌词时间偏移 ----
     //
     // 正值 = **歌词提前**（同一播放位置去歌词里更靠后的地方找），用来修
@@ -175,6 +175,14 @@ private:
     // 换曲时自增。回调回来时对不上就说明用户已经换歌了，结果直接丢弃 ——
     // 后台查询可能几十秒才回来，期间换歌是常态。
     unsigned            m_onlineGeneration = 0;
+
+    // 当前这一轮在线查询的取消令牌（见 online_lyric.h 的 OnlineCancelFlag）。
+    // 换曲 / 重查时置位并换一块新的 —— 后台那一轮会在下一个检查点收工，
+    // 省下它本来要发的请求。
+    OnlineCancelFlag    m_onlineCancel = std::make_shared<std::atomic<bool>>(false);
+
+    void CancelOnlineLookup();
+    bool IsOnlineLookupCancelled() const;
 
     // **实际发出去查询的歌手**（标签里的，或者用户给文件夹填的线索）。
     //

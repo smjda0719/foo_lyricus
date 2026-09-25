@@ -949,6 +949,65 @@ void TestMissMarker() {
     RemoveDirectoryW(dir.c_str());
 }
 
+// 查询取消 —— 重点**不是**"能提前收工"，而是"收工之后不许留下结论"。
+//
+// 【为什么这条最要紧】取消是用户随手切歌就会触发的、完全无辜的操作。
+// 要是取消路径漏到写标记那一步，就会写下一个 **7 天有效**的
+// "这首歌没有歌词" —— 用户再也查不到它，还会以为是源站的问题。
+// 那种 bug 的表现和"这首歌真的没有"一模一样，事后几乎查不出来。
+//
+// 【为什么能离线测】取消令牌一开始就是 true，TryNetEase 的第一个检查点
+// 就直接返回，一个请求都不发；测试台把 core_api::is_main_thread() 设成 false，
+// 所以主线程那道兜底断言也不会拦。
+void TestOnlineCancel() {
+    std::printf("\n== 查询取消 ==\n");
+
+    // nullptr = 永不取消（离线单测和一次性调用走这条，行为与加取消之前一致）
+    Check(!lyricus::IsCancelled(nullptr), "nullptr 令牌 = 永不取消");
+
+    auto flag = std::make_shared<std::atomic<bool>>(false);
+    Check(!lyricus::IsCancelled(flag), "新建的令牌一开始是「没取消」");
+    flag->store(true);
+    Check(lyricus::IsCancelled(flag), "置位之后就是「已取消」");
+
+    // ---- 关键：取消的那一轮什么都不许留下 ----
+    wchar_t tmp[MAX_PATH]{};
+    GetTempPathW(MAX_PATH, tmp);
+    const std::wstring dir = std::wstring(tmp) + L"lyricus-cancel-test";
+    CreateDirectoryW(dir.c_str(), nullptr);
+
+    auto clearMiss = [&dir]() -> int {   // 返回目录里 .miss 的个数（顺便清空）
+        int n = 0;
+        WIN32_FIND_DATAW fd{};
+        const std::wstring pat = dir + L"\\*.miss";
+        HANDLE h = FindFirstFileW(pat.c_str(), &fd);
+        if (h == INVALID_HANDLE_VALUE) return 0;
+        do {
+            ++n;
+            DeleteFileW((dir + L"\\" + fd.cFileName).c_str());
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+        return n;
+    };
+    clearMiss();   // 清掉上一次跑剩下的
+
+    lyricus::OnlineLyricRequest req;
+    req.artist = L"某歌手";
+    req.title  = L"某首歌";
+    req.album  = L"某专辑";
+    req.durationSec = 200.0;
+
+    auto cancelledFlag = std::make_shared<std::atomic<bool>>(true);
+    const lyricus::OnlineLyricResult r = lyricus::FetchLyricOnline(req, dir, cancelledFlag);
+
+    Check(r.cancelled, "★ 取消 -> 结果明确标成 cancelled（不是 ok=false 那种「确实没有」）");
+    Check(!r.ok, "取消不是成功");
+    Check(clearMiss() == 0,
+          "★★ 取消**不写**未命中标记（否则一次随手切歌就换来 7 天查不到这首歌）");
+
+    RemoveDirectoryW(dir.c_str());
+}
+
 void TestLeadInSeparator() {
     std::printf("\n== 前奏分隔线（新取的词 + 缓存里的词，同一个出口）==\n");
 
@@ -1077,6 +1136,7 @@ int wmain() {
     TestNetEaseSearchQuery();
     TestNetEaseLyricPath();
     TestMissMarker();
+    TestOnlineCancel();
     TestLeadInSeparator();
     TestTranslationMerge();
 

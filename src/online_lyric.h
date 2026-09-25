@@ -1,6 +1,8 @@
 #pragma once
 
+#include <atomic>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -73,6 +75,14 @@ struct OnlineLyricResult {
     bool         fromCache = false;
     long         httpStatus = 0;
 
+    // 这一轮是被**取消**打断的（调用方换曲 / 重查了），不是"查完了没有"。
+    //
+    // 【为什么必须和 ok=false 分开】ok=false 有两种含义截然不同的情况：
+    //   "各源确实没有"（会写 7 天负缓存）和 "没问出结果"（不写）。
+    //   取消属于第三种：**什么都没问出来，而且不该留下任何结论**。
+    //   调用方看到它就是安静丢掉；本模块保证**不写未命中标记**。
+    bool         cancelled = false;
+
     // =======================================================================
     //  命中的到底是哪首歌 —— 调用方**必须**用这几个字段核对
     //
@@ -120,7 +130,19 @@ struct OnlineLyricResult {
 //   之所以要分开：LRCLIB 实测会限流并返回 503 ServerOverloaded，
 //   如果把它也记成"这首歌没有歌词"，一次服务端抖动就能让用户
 //   7 天之内再也查不到这首歌，而且完全看不出原因。
-OnlineLyricResult FetchLyricOnline(const OnlineLyricRequest& req, const std::wstring& cacheDir);
+// 取消令牌：调用方在换曲 / 重查时把它置 true，后台查询会在下一个检查点提前收工。
+//
+// 【为什么要它】原先只有"结果回来时丢弃"（代次比对），也就是说换曲之后旧查询
+// **照样把请求全发完**。实测日志里 `结果已过期（期间换过曲），丢弃` 出现过
+// **36 次** —— 每次都是白烧一个网易云请求，而网易云的限流已经咬过我们
+// （405 冷却，见 D-033）。取消做在这里，省掉的是真金白银的请求配额。
+//
+// nullptr = 永不取消（离线单测和一次性调用用这个，行为与加它之前完全一致）。
+using OnlineCancelFlag = std::shared_ptr<std::atomic<bool>>;
+
+OnlineLyricResult FetchLyricOnline(const OnlineLyricRequest& req,
+                                   const std::wstring& cacheDir,
+                                   OnlineCancelFlag cancel = nullptr);
 
 // 异步查询的回调。参数按值传，回调可以随便存起来慢慢用。
 using OnlineLyricCallback = std::function<void(OnlineLyricRequest, OnlineLyricResult)>;
@@ -149,9 +171,12 @@ using OnlineLyricCallback = std::function<void(OnlineLyricRequest, OnlineLyricRe
 //      matchedDuration（理由见 OnlineLyricResult 里的说明）。
 //
 // cacheDir 传空串表示用 DefaultOnlineCacheDir()。
+//
+// cancel 见上面 OnlineCancelFlag 的说明 —— 传 nullptr 表示不取消。
 void FetchLyricOnlineAsync(const OnlineLyricRequest& req,
                            const std::wstring& cacheDir,
-                           OnlineLyricCallback cb);
+                           OnlineLyricCallback cb,
+                           OnlineCancelFlag cancel = nullptr);
 
 // 默认缓存目录：DLL 同级的 cache\ 子目录。
 //

@@ -267,6 +267,12 @@ void PlaybackState::OnNewTrack(metadb_handle_ptr track) {
 
     // 换曲就作废所有在途的在线查询结果：代次一变，回来的回调会被丢掉。
     // 同时清掉"正在查"的标记，让新曲目能立刻发起自己的查询。
+    //
+    // 光"回来时丢弃"还不够 —— 旧查询会**照样把请求全发完**。实测日志里
+    // `结果已过期（期间换过曲），丢弃` 出现过 36 次，每次都是白烧一个请求，
+    // 而网易云的限流咬过我们。所以这里还把取消令牌置位，让后台那一轮
+    // 在下一个检查点提前收工（见 OnlineCancelFlag）。
+    CancelOnlineLookup();
     ++m_onlineGeneration;
     m_onlinePendingUrl.clear();
     m_onlineWanted = false;
@@ -360,6 +366,9 @@ void PlaybackState::ReloadLyrics() {
     //
     // 代次也要 ++：同名同曲目再查时 url 是不变的，只比 url 分不出新旧，
     // 旧查询的在途结果会被当成新的收下 —— 而那是用**旧线索**搜出来的东西。
+    //
+    // 取消同理：重查意味着"上一条线索的结果我不要了"，后台那一轮该收工。
+    CancelOnlineLookup();
     ++m_onlineGeneration;
     m_onlinePendingUrl.clear();
 
@@ -620,7 +629,21 @@ void PlaybackState::StartOnlineLookup() {
             // 先查存活令牌再碰 this —— 理由见 g_onlineAlive 的声明处。
             if (!g_onlineAlive.alive.load()) return;
             ApplyOnlineResult(gen, url, res);
-        });
+        },
+        m_onlineCancel);
+}
+
+void PlaybackState::CancelOnlineLookup() {
+    // 只置位、不等它 —— 后台线程会在下一个检查点自己收工。
+    // 等它会卡住主线程（网络往返最长几十秒），那比"多烧一个请求"糟得多。
+    if (m_onlineCancel) m_onlineCancel->store(true, std::memory_order_relaxed);
+
+    // 换一块新的给下一轮查询用：旧的那块已经被置位，不能复用。
+    m_onlineCancel = std::make_shared<std::atomic<bool>>(false);
+}
+
+bool PlaybackState::IsOnlineLookupCancelled() const {
+    return m_onlineCancel && m_onlineCancel->load(std::memory_order_relaxed);
 }
 
 void PlaybackState::ApplyOnlineResult(unsigned gen, const std::string& url,
@@ -630,6 +653,17 @@ void PlaybackState::ApplyOnlineResult(unsigned gen, const std::string& url,
         DebugLog("在线歌词：结果已过期（期间换过曲），丢弃");
         return;
     }
+
+    // 被取消的那一轮：**什么都不做**。
+    //
+    // 它和上面那条的区别是"谁先动的手" —— 上面是结果回来了才发现过期，
+    // 这里是后台已经知道自己被取消了。两者都不能当成"没有歌词"处理：
+    // res.ok=false 那条分支会写日志"未命中 —— ..."，而取消根本没问出结论。
+    if (res.cancelled) {
+        DebugLog("在线歌词：本轮查询已被取消，安静丢弃（不下任何结论）");
+        return;
+    }
+
     m_onlinePendingUrl.clear();
 
     if (!res.ok) {

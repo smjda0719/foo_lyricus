@@ -2491,9 +2491,22 @@ bool PickNetEaseCandidate(const std::vector<NetEaseSong>& songs,
 // 一轮网易云查询。返回 true 表示拿到了一份可用的歌词（已填进 entry）。
 //
 // **只允许在后台线程调用**（它内部走 HttpGet，会 Sleep 重试）。
+// 取消检查：调用方换曲 / 重查时，后台这一轮就没必要再发请求了。
+//
+// 【放在哪里】每个**联网动作之前**，加上写未命中标记之前。
+// 中间那段（解析、合并翻译）是纯计算，几百微秒，不值得再插检查点 ——
+// 插多了只是把代码弄乱。
+bool IsCancelled(const OnlineCancelFlag& flag) {
+    return flag != nullptr && flag->load(std::memory_order_relaxed);
+}
+
 bool TryNetEase(const OnlineLyricRequest& req, ULONGLONG retryDeadline,
-                LrclibEntry& entry, bool& requestFailed, std::wstring& note) {
+                LrclibEntry& entry, bool& requestFailed, std::wstring& note,
+                const OnlineCancelFlag& cancel = nullptr) {
     requestFailed = false;
+
+    // 已取消就直接走人 —— 一次请求都不发。
+    if (IsCancelled(cancel)) return false;
 
     const std::wstring title = TrimWs(req.title);
     if (title.empty()) return false;   // 没有曲名就没法搜
@@ -2662,6 +2675,13 @@ bool TryNetEase(const OnlineLyricRequest& req, ULONGLONG retryDeadline,
               pick.id, pick.name.c_str(), pick.artist.c_str(), pick.durationMs / 1000.0);
 
     // ---- 2. 取歌词 ----
+    //
+    // 取词是**第二个**请求，中间隔着一次搜索往返（实测 ~200ms），
+    // 换曲常常就发生在这一小段里 —— 所以这里必须再查一次取消。
+    if (IsCancelled(cancel)) {
+        OnlineLog("在线歌词：已取消，跳过取词请求（id=%.0f）", pick.id);
+        return false;
+    }
     const HttpReply lyric = HttpGet(kNetEaseHost, BuildNetEaseLyricPath(pick.id), retryDeadline);
 
     if (!lyric.transportOk) {
@@ -3010,8 +3030,11 @@ size_t InvalidateMissMarkers() {
     return removed;
 }
 
+// 取消检查见文件上方（TryNetEase 之前）—— 那里是它最早的使用点。
+
 OnlineLyricResult FetchLyricOnline(const OnlineLyricRequest& req,
-                                   const std::wstring& cacheDir) {
+                                   const std::wstring& cacheDir,
+                                   OnlineCancelFlag cancel) {
     OnlineLyricResult result;
 
     // 这个函数**只允许在后台线程调用**（头文件里反复强调了）。
@@ -3190,7 +3213,7 @@ OnlineLyricResult FetchLyricOnline(const OnlineLyricRequest& req,
         std::wstring neteaseNote;
         LrclibEntry ne;
 
-        if (TryNetEase(req, retryDeadline, ne, neteaseFailed, neteaseNote)) {
+        if (TryNetEase(req, retryDeadline, ne, neteaseFailed, neteaseNote, cancel)) {
             OnlineLog("在线歌词：网易云命中，采用该结果");
             return SaveAndReturn(paths, cacheUsable, ne, 200,
                                  /*fromSearch=*/true, "网易云搜索");
@@ -3198,6 +3221,15 @@ OnlineLyricResult FetchLyricOnline(const OnlineLyricRequest& req,
         if (neteaseFailed) {
             anyRequestFailed = true;
             noteFailure(neteaseNote);
+        }
+
+        // 取消 -> 立刻收工。**这一条必须在"继续查 LRCLIB"之前**，
+        // 而且绝不能让后面的写标记路径跑起来（见函数尾部的检查）。
+        if (IsCancelled(cancel)) {
+            OnlineLog("在线歌词：已取消，不再查 LRCLIB");
+            result.cancelled = true;
+            result.error = L"已取消（期间换过曲）";
+            return result;
         }
         OnlineLog("在线歌词：网易云未命中，继续查 LRCLIB");
     }
@@ -3218,6 +3250,12 @@ OnlineLyricResult FetchLyricOnline(const OnlineLyricRequest& req,
     // 只有 artist 和 title 都齐了才发：缺 artist 会直接 400，
     // 白白多一次往返，还会把 400 记进日志里误导排查。
     if (!artist.empty()) {
+        if (IsCancelled(cancel)) {
+            OnlineLog("在线歌词：已取消，跳过 LRCLIB 精确查询");
+            result.cancelled = true;
+            result.error = L"已取消（期间换过曲）";
+            return result;
+        }
         const HttpReply exact = HttpGet(kHost, BuildExactPath(req), retryDeadline);
 
         if (!exact.transportOk) {
@@ -3273,6 +3311,12 @@ OnlineLyricResult FetchLyricOnline(const OnlineLyricRequest& req,
 
     // 2b. 模糊搜索。
     {
+        if (IsCancelled(cancel)) {
+            OnlineLog("在线歌词：已取消，跳过 LRCLIB 模糊搜索");
+            result.cancelled = true;
+            result.error = L"已取消（期间换过曲）";
+            return result;
+        }
         const HttpReply search = HttpGet(kHost, BuildSearchPath(req), retryDeadline);
 
         if (!search.transportOk) {
@@ -3352,6 +3396,21 @@ OnlineLyricResult FetchLyricOnline(const OnlineLyricRequest& req,
     // 一次 LRCLIB 的未命中就会把网易云也一起挡在门外 7 天。
     result.error = L"各在线源上都没有找到这首歌的歌词";
 
+    // ★★★ 取消的最后一关，**绝对不能删** ★★★
+    //
+    // 上面每个检查点都是"提前返回"，但它们的覆盖是**分布式**的：将来谁在
+    // 中间插一段不带检查点的联网动作，就会漏到这里。而这里一旦漏了，
+    // 一次取消（用户随手切歌，完全无辜的操作）就会写下一个
+    // **7 天有效**的"这首歌没有歌词"—— 用户再也查不到它，还会以为是源站的问题。
+    //
+    // 所以这一关是兜底：不管前面漏没漏，取消过的这一轮一律不下结论。
+    if (IsCancelled(cancel)) {
+        OnlineLog("在线歌词：本轮已取消 —— 不发结论、不写未命中标记（兜底检查点）");
+        result.cancelled = true;
+        result.error = L"已取消（期间换过曲）";
+        return result;
+    }
+
     // 把"我们当时拿什么去查的"一起记下来 —— 事后追查全靠它。
     // 用 %s 而不是直接拼宽字符：.miss 是 UTF-8 文本，和其它缓存文件一致。
     const std::string identity =
@@ -3371,7 +3430,8 @@ OnlineLyricResult FetchLyricOnline(const OnlineLyricRequest& req,
 
 void FetchLyricOnlineAsync(const OnlineLyricRequest& req,
                            const std::wstring& cacheDir,
-                           OnlineLyricCallback cb) {
+                           OnlineLyricCallback cb,
+                           OnlineCancelFlag cancel) {
     // 【后台线程用的是 SDK 的机制，不是自己 CreateThread / std::thread】
     //
     // fb2k::splitTask 是 SDK 给"分离线程"的官方入口
@@ -3389,12 +3449,15 @@ void FetchLyricOnlineAsync(const OnlineLyricRequest& req,
     auto sharedReq  = std::make_shared<OnlineLyricRequest>(req);
     auto sharedDir  = std::make_shared<std::wstring>(cacheDir);
     auto sharedCb   = std::make_shared<OnlineLyricCallback>(std::move(cb));
+    // 取消令牌本来就是 shared_ptr，直接按值捕获 —— 它必须比这个线程活得久，
+    // 而调用方那边换曲时还要用它置位，所以不能是 unique。
+    auto sharedCancel = cancel;
 
-    fb2k::splitTask([sharedReq, sharedDir, sharedCb] {
+    fb2k::splitTask([sharedReq, sharedDir, sharedCb, sharedCancel] {
         // ---- 后台线程 ----
         OnlineLyricResult result;
         try {
-            result = FetchLyricOnline(*sharedReq, *sharedDir);
+            result = FetchLyricOnline(*sharedReq, *sharedDir, sharedCancel);
         } catch (const std::exception& e) {
             // FetchLyricOnline 本身不抛（std::bad_alloc 之类的极端情况除外），
             // 但 std::function 里的异常跑出去会直接 terminate 掉整个进程，
