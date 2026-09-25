@@ -129,6 +129,56 @@ void TestNormalize() {
           "标点变空格而不是删掉：'Artist - Song' -> 'artist song'");
 }
 
+// 繁简折叠 —— D-034 的根因，以及 2026-09-25 标定时抓到的活例子。
+//
+// 出处：用户标签写繁体「純白P」、网易云写简体，归一化不折繁简 ->
+// 演唱者闸一条都过不了。当时只把演唱者降级成软闸，症状绕开了、病根还在：
+// 曲名硬闸 / 演唱者闸 / 本地文件名比对，三处都还在繁简上失明。
+//
+// 这个测试是**唯一能证明 LCMAP_SIMPLIFIED_CHINESE 在这台机器上真的可用**的地方 ——
+// 要是哪天系统映射表没了，FoldToSimplified 会静默退化成"原样返回"，
+// 匹配悄悄变回老样子，而没有任何报错。
+void TestFoldSimplified() {
+    std::printf("\n== 繁简折叠（NormalizeLyricStem 里做）==\n");
+
+    // ---- 基本映射 ----
+    Check(lyricus::NormalizeLyricStem(L"純白P") == lyricus::NormalizeLyricStem(L"纯白P"),
+          "★「純白P」和「纯白P」归一化后相等");
+    Check(lyricus::NormalizeLyricStem(L"愛") == lyricus::NormalizeLyricStem(L"爱"),
+          "愛 -> 爱");
+    Check(lyricus::NormalizeLyricStem(L"鋼琴") == lyricus::NormalizeLyricStem(L"钢琴"),
+          "鋼琴 -> 钢琴");
+
+    // ---- 折叠真的发生了（不是"两边都被折成同一个空串"这种假相等）----
+    Check(lyricus::NormalizeLyricStem(L"純白P") == L"纯白p",
+          "★ 折叠后的字面就是简体（防止「两边都变成空串」式的假通过）");
+
+    // ---- 该动的地方动了，不该动的地方别动 ----
+    Check(lyricus::NormalizeLyricStem(L"abc XYZ") == L"abc xyz",
+          "ASCII 不受影响（只有大小写折叠）");
+    Check(lyricus::NormalizeLyricStem(L"") == L"", "空串仍然是空串");
+    Check(lyricus::NormalizeLyricStem(L"晴天") == L"晴天",
+          "本来就是简体 -> 原样");
+
+    // ---- 演唱者闸：这才是 D-034 那条实际被打回来的路径 ----
+    Check(lyricus::ArtistNamesOverlap(L"純白P", L"纯白P"),
+          "★ 演唱者闸现在认得出繁简写法是同一个人");
+    Check(!lyricus::ArtistNamesOverlap(L"純白P", L"周杰伦"),
+          "不相干的演唱者仍然不认（别折过头）");
+
+    // ⚠️ **已知边界，别把这条当 bug 去"修"**：
+    //    D-034 原案的两种写法是繁体「純白P」与简体「Soda纯白」——
+    //    它们差的不只是繁简：一个多前缀 Soda、一个多后缀 P。
+    //    折完是 `纯白p` vs `soda纯白`，谁也不包含谁，所以这里的答案仍然是 false。
+    //
+    //    这正是当初把演唱者**降级成软闸**而不是硬闸的原因：
+    //    它本来就认不全，强求它认全只会误杀（D-034 就是这么把一整张专辑打死的）。
+    //    真正挡翻唱的是**曲名硬闸**；演唱者只是"二者其一对上即可"里的那一个。
+    //    要让它认全就得上别名表或模糊匹配，收益不大、误配风险不小，不做。
+    Check(!lyricus::ArtistNamesOverlap(L"純白P", L"Soda纯白"),
+          "★ 已知边界：繁简之外的差异（多前缀/后缀）仍然认不出 —— 靠曲名闸兜底");
+}
+
 void TestExtensions() {
     std::printf("\n== 多扩展名（目标里明确要求的一项）==\n");
     const auto cfg = DefaultCfg();
@@ -315,6 +365,7 @@ int wmain() {
 
     TestCandidates();
     TestNormalize();
+    TestFoldSimplified();
     TestExtensions();
     TestStrategies();
 

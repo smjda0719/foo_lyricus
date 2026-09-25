@@ -449,7 +449,31 @@ struct MissMarker {
 //         v6 期间「最后的歌（LA LA LA）[Remastered]」「心加心 [Remastered]」
 //         被源头选中却在核对时丢掉；「远恋 [Remastered]」
 //         「依存症（Love Theory Ver.）[Remastered]」连候选都没搜到。
-constexpr int kMissLogicVersion = 7;
+//
+// ── v8（2026-09-25）：繁简折叠 ──
+//         NormalizeLyricStem 里加了繁->简折叠（FoldToSimplified），
+//         曲名硬闸 / 演唱者软闸 / 本地文件名比对**同时**变得繁简无关。
+//         证据：标定时翻日志抓到 `純白P - 扁桃体` —— 过曲名闸 1 条，
+//         但演唱者对上 0、时长对上 0，整条被拒；那 1 条多半就是正主，
+//         卡死在繁简上（D-034 的老病根，当时只把症状绕开了）。
+constexpr int kMissLogicVersion = 8;
+
+// 未命中时日志里最多列几条候选。
+//
+// 5 条足够看出"是搜索词不对"（候选全不相干）还是"闸门太严"
+//（正确答案就在前几条里却没通过）；列 20 条只会把日志刷乱。
+constexpr int kDiagCandidates = 5;
+
+// 把候选曲名列表拼成一行给日志用（`[哀歌] [歌]`）。空列表返回 `(空)`。
+std::wstring JoinForLog(const std::vector<std::wstring>& v) {
+    if (v.empty()) return L"(空)";
+    std::wstring s;
+    for (const std::wstring& e : v) {
+        if (!s.empty()) s += L" ";
+        s += L"[" + e + L"]";
+    }
+    return s;
+}
 
 bool ReadMissMarker(const std::wstring& path, MissMarker& out) {
     std::string text;
@@ -2301,9 +2325,35 @@ bool PickNetEaseCandidate(const std::vector<NetEaseSong>& songs,
     size_t bestIdx   = 0;
     int    passedTitle = 0, passedDur = 0, passedArtist = 0;
 
+    // ---- 诊断用：前几条候选长什么样 ----
+    //
+    // 【为什么必须记】拒绝时原来只有一句「过曲名闸 N 条」，知道了数量、
+    // 不知道**为什么**。而要弄清为什么就得回头再打一次接口 ——
+    // 既慢，又会撞限流（我自己探测时就把用户的网易云弄限流过，见 D-033）。
+    // 一次查询本来就把候选拿在手里，顺手记下来几乎不花钱。
+    //
+    // 只在**一条都没通过**时才写进日志（下面那段），正常查询不产生噪音。
+    std::string candDiag;
+    int diagShown = 0;
+
     for (size_t i = 0; i < songs.size(); ++i) {
         const NetEaseSong& s = songs[i];
         if (!s.hasId || s.name.empty()) continue;
+
+        if (diagShown < kDiagCandidates) {
+            ++diagShown;
+            if (!candDiag.empty()) candDiag += "  ";
+            // name / artist 已经是 UTF-8（直接从 JSON 里取出来的），不用转
+            candDiag += "[" + s.name + " | " + s.artist;
+            if (s.durationMs > 0) {
+                char dbuf[48];
+                sprintf_s(dbuf, " | %.1fs",
+                          s.durationMs / 1000.0 - (wantDur > 0 ? wantDur : 0.0));
+                candDiag += dbuf;
+                if (wantDur > 0) candDiag += "(差)";
+            }
+            candDiag += "]";
+        }
 
         // ---- 硬闸：曲名 ----
         if (!wantTitles.empty()) {
@@ -2348,6 +2398,18 @@ bool PickNetEaseCandidate(const std::vector<NetEaseSong>& songs,
         // 不必再去打接口猜（两次都是靠它定位的）。
         OnlineLog("在线歌词：网易云候选核验 —— 过曲名闸 %d 条，其中时长对上 %d 条、"
                   "演唱者对上 %d 条，可用 0 条", passedTitle, passedDur, passedArtist);
+
+        // 再补两行"我们拿什么去比"和"候选长什么样" —— 有了这两行，
+        // 一次未命中在日志里就是**自解释**的，不用回头重打接口（会撞限流）。
+        OnlineLog("    期望: 曲名=%s | 演唱者=%s | 时长=%.1fs",
+                  WideToUtf8(JoinForLog(wantTitles)).c_str(),
+                  wantArtist.empty() ? "(空)" : WideToUtf8(wantArtist).c_str(),
+                  wantDur);
+        if (!candDiag.empty()) {
+            OnlineLog("    候选(前 %d 条): %s", diagShown, candDiag.c_str());
+        } else {
+            OnlineLog("    候选: （搜索一条都没返回）");
+        }
         return false;
     }
 

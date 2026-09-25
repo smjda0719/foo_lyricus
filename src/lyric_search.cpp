@@ -211,15 +211,56 @@ bool IsDroppablePunct(wchar_t c) {
 
 } // namespace
 
+// 繁 -> 简。用 Windows 自带的映射表，不自己维护那几千字的对照表。
+//
+// 【为什么需要】D-034 的根因就是它：用户标签写繁体「純白P」、网易云写简体
+// 「Soda纯白」，归一化不折繁简 -> 演唱者闸一个都过不了，整张专辑被判死。
+// 当时的处置是把演唱者降级成软闸，**但那只绕开了症状**：
+//   曲名硬闸、演唱者软闸、本地文件名比对，三处都还在繁简上失明。
+// 实测用户曲库里繁简混用是常态（標簽「純白P」+「阿良良木健」同在一张专辑）。
+//
+// 2026-09-25 的标定顺手抓到一个活例子：
+//   `純白P - 扁桃体` 过曲名闸 1 条，但时长对上 0、演唱者对上 0 -> 整条被拒。
+//   曲名既然过了，那一条多半就是正主，卡死在演唱者的繁简差异上。
+//
+// 【为什么放进 NormalizeLyricStem】它是所有比较点的**唯一入口**
+// （本地文件名、去重键、模糊匹配、曲名硬闸、演唱者闸、调用方复核），
+// 而且**从不用于显示、也从不作为持久化键**（缓存键走的是 NormalizeForKey）。
+// 所以在这里折一次，六处一起修好 —— 这正是 D-044 那条"同一个判据别散在多处"。
+std::wstring FoldToSimplified(const std::wstring& s) {
+    if (s.empty()) return s;
+
+    // LCMapStringW 而不是 LCMapStringEx：后者要 LocaleName，而
+    // LCMAP_SIMPLIFIED_CHINESE 在中文区域外的 LCID 上会直接失败。
+    // LOCALE_INVARIANT 在这台机器上实测可用（有单测钉着，见 TestFoldSimplified）。
+    const int need = LCMapStringW(LOCALE_INVARIANT, LCMAP_SIMPLIFIED_CHINESE,
+                                  s.c_str(), static_cast<int>(s.size()), nullptr, 0);
+    if (need <= 0) return s;   // 系统不支持就原样返回：宁可漏折，也不能崩
+
+    std::wstring out(static_cast<size_t>(need), L'\0');
+    const int got = LCMapStringW(LOCALE_INVARIANT, LCMAP_SIMPLIFIED_CHINESE,
+                                 s.c_str(), static_cast<int>(s.size()),
+                                 &out[0], need);
+    if (got <= 0) return s;
+
+    out.resize(static_cast<size_t>(got));
+    return out;
+}
+
 std::wstring NormalizeLyricStem(const std::wstring& name) {
     std::wstring stem, ext;
     SplitExt(FileNameOfPath(name), stem, ext);
 
+    // ⚠️ 先折繁简、再逐字符归一化，顺序不能反。
+    //    反过来的话标点和空白已经被删掉，映射表里带标点的词条就匹配不上了
+    //   （比如「麵」这类字在词中/词尾的映射）。折一次是 O(n) 的，代价可以忽略。
+    const std::wstring folded = FoldToSimplified(stem);
+
     std::wstring out;
-    out.reserve(stem.size());
+    out.reserve(folded.size());
     bool pendingSpace = false;
 
-    for (wchar_t raw : stem) {
+    for (wchar_t raw : folded) {
         const wchar_t c = FoldFullWidth(raw);
         if (IsSpaceChar(c)) {
             // 空白只折叠成一个空格、并推迟到真的还有下一个字符时才落地，
