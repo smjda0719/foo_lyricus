@@ -321,7 +321,21 @@ LyricsViewResult DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& t
             // 当前行**完整**的像素宽度 —— "要不要滚、滚多远"的唯一依据。
             // 用当前行字体量（大而粗），量出来的就是它真正画出来占的宽度。
             const int curTextW = MeasureLineWidth(dc, curText, fCurrent);
-            result.currentOverflow = (curTextW > maxW) ? (curTextW - maxW) : 0;
+
+            // ---- 溢出多少才值得滚 ----
+            //
+            // 用户 2026-09-25 定的：**溢出不到一个字宽就不滚，改用省略号**。
+            //
+            // 【为什么】超 5px 也要滚的话，`ScrollDurationMs` 的下限 600ms 会把
+            // 它变成"整行用 600ms 慢慢挪 5 个像素、然后永远停在那儿" ——
+            // 用户报的「整句漂移」就是这个形状（D-048）。
+            // 一个字以内本来也读不出少了什么，画个 `…` 说明"后面还有字"更划算。
+            const int oneCharW = MeasureLineWidth(dc, L"字", fCurrent);
+            result.currentOverflow = (curTextW > maxW + oneCharW) ? (curTextW - maxW) : 0;
+
+            // 溢出不值得滚时退回省略号那一档；放得下时它也是无操作。
+            const UINT curFlags = (result.currentOverflow > 0) ? kDrawScrollFlags
+                                                               : kDrawEllipsisFlags;
 
             // 上滑的步距 = **上一行**作为上下文行时的行高 + 常规行距。
             //
@@ -466,7 +480,7 @@ LyricsViewResult DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& t
             //     滚动就变成了"窗口在动、文字不动"。
             DrawLine(dc, curText, left - scrollX, curTop + slideY,
                      (curTextW > 0 ? curTextW : maxW),
-                     fCurrent, theme.currentText, gapCurrent, kDrawScrollFlags);
+                     fCurrent, theme.currentText, gapCurrent, curFlags);
 
             // 当前行的参照行：小字、暗色，紧贴在正文下面。
             //

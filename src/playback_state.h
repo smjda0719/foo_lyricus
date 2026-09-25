@@ -86,6 +86,19 @@ public:
     // 换算成显示序号之后，"下一句"恒为 +1，seek 仍然是 +N 或负数 —— 判据不变，
     // 只是量纲对了。
     size_t               DisplayLine() const;
+
+    // ---- 逐曲目的歌词时间偏移 ----
+    //
+    // 正值 = **歌词提前**（同一播放位置去歌词里更靠后的地方找），用来修
+    // 「面板总比声音慢」那种整首歌的偏移。见 config.h 里 cfg_lyric_offset_map。
+    double LyricOffsetSec() const;
+
+    // 当前曲目的偏移增减 deltaSec（正 = 提前），夹在 ±30 秒内，并**记住**到该曲目。
+    // 名字叫 Nudge 而不是 Set 是有意的：用户入口是"再提前半秒"这种相对动作，
+    // 而绝对值他没法凭空知道。
+    void NudgeLyricOffset(double deltaSec);
+    void ResetLyricOffset();
+
     bool                 IsPlaying()  const { return m_isPlaying; }
     bool                 IsPaused()   const { return m_isPaused; }
     float                VolumeDb()   const { return m_volumeDb; }
@@ -131,6 +144,7 @@ private:
     bool                m_isMuted     = false;
     size_t              m_currentLine = LyricDocument::npos;
     size_t              m_displayLine = LyricDocument::npos;   // 见 DisplayLine()
+    double              m_lyricOffsetSec = 0.0;                // 见 LyricOffsetSec()
 
     // ---- 标签缓存 ----
     // ReloadLyrics() 取一次，歌词搜索和在线查询共用。

@@ -126,6 +126,27 @@ std::vector<MapEntry> ParseManualMap() {
     return out;
 }
 
+// 和 ParseManualMap 同一个格式，只是读的是偏移那张表。
+// 两处刻意不复用同一个函数：它们的**语义**不同（一个是路径、一个是毫秒），
+// 哪天格式要各自演进时不该互相牵制。
+std::vector<MapEntry> ParseOffsetMap() {
+    std::vector<MapEntry> out;
+    const pfc::string8 raw = cfg_lyric_offset_map.get();
+    const std::string s(raw.get_ptr(), raw.length());
+    size_t pos = 0;
+    while (pos < s.size()) {
+        size_t eol = s.find('\n', pos);
+        if (eol == std::string::npos) eol = s.size();
+        const std::string line = s.substr(pos, eol - pos);
+        const size_t tab = line.find('\t');
+        if (tab != std::string::npos) {
+            out.emplace_back(line.substr(0, tab), line.substr(tab + 1));
+        }
+        pos = eol + 1;
+    }
+    return out;
+}
+
 void SaveManualMap(const std::vector<MapEntry>& entries) {
     std::string s;
     const size_t begin = (entries.size() > kManualMapMaxEntries)
@@ -154,8 +175,52 @@ void ManualMapSet(const std::string& url, const std::string& path) {
     SaveManualMap(entries);
 }
 
-void ManualMapRemove(const std::string& url) {
-    auto entries = ParseManualMap();
+// ---- 逐曲目的歌词时间偏移（cfg_lyric_offset_map）----
+//
+// 格式和手动歌词映射一样：每条一行、TAB 分隔，只是右边存的是**毫秒整数**。
+// 正值 = **歌词提前**（同一时刻去歌词里更靠后的位置找），
+// 用来修「面板比声音慢」那种整首偏移。
+
+double OffsetMapLookup(const std::string& url) {
+    if (url.empty()) return 0.0;
+    for (const auto& e : ParseOffsetMap()) {
+        if (e.first != url) continue;
+        try {
+            return std::stoi(e.second) / 1000.0;
+        } catch (...) {
+            return 0.0;   // 配置被手改坏了就当没设过
+        }
+    }
+    return 0.0;
+}
+
+void OffsetMapSet(const std::string& url, double sec) {
+    if (url.empty()) return;
+
+    const int ms = static_cast<int>(sec * 1000.0 + (sec >= 0 ? 0.5 : -0.5));
+    auto entries = ParseOffsetMap();
+
+    bool replaced = false;
+    for (auto it = entries.begin(); it != entries.end(); ) {
+        if (it->first != url) { ++it; continue; }
+        if (ms == 0) it = entries.erase(it);        // 归零 = 删掉这条，别留垃圾
+        else         { it->second = std::to_string(ms); replaced = true; ++it; }
+        replaced = true;
+        break;
+    }
+    if (ms != 0 && !replaced) entries.emplace_back(url, std::to_string(ms));
+
+    // 容量上限和手动映射一致：超了就丢最旧的
+    std::string s;
+    const size_t begin = (entries.size() > kManualMapMaxEntries)
+                       ? entries.size() - kManualMapMaxEntries : 0;
+    for (size_t i = begin; i < entries.size(); ++i) {
+        s += entries[i].first; s += '\t'; s += entries[i].second; s += '\n';
+    }
+    cfg_lyric_offset_map = s.c_str();
+}
+
+void ManualMapRemove(const std::string& url) {    auto entries = ParseManualMap();
     entries.erase(std::remove_if(entries.begin(), entries.end(),
                                  [&url](const MapEntry& e) { return e.first == url; }),
                   entries.end());
@@ -224,6 +289,12 @@ void PlaybackState::OnNewTrack(metadb_handle_ptr track) {
         }
     }
     DebugLog("换曲: %s", WideToUtf8(m_trackPath).c_str());
+
+    // 这一首有没有存过歌词偏移（见 cfg_lyric_offset_map）。
+    m_lyricOffsetSec = OffsetMapLookup(m_trackUrl);
+    if (m_lyricOffsetSec != 0.0) {
+        DebugLog("歌词偏移: %+.1f 秒（这首歌记住的）", m_lyricOffsetSec);
+    }
 
     // 显示名：优先用标签。文件名里常带音轨号和版本后缀（"06 xxx [Remastered]"），
     // 标签里才是给人看的曲名。
@@ -645,8 +716,28 @@ TickChange PlaybackState::RefreshPosition() {
         StartOnlineLookup();
     }
 
-    const size_t idx = m_lyrics.LineIndexAt(m_positionSec);
+    // 逐曲目偏移：正值 = 歌词提前，所以查找用的是"位置 + 偏移"。
+    const double lookupSec = (m_positionSec + m_lyricOffsetSec > 0.0)
+                           ? (m_positionSec + m_lyricOffsetSec) : 0.0;
+    const size_t idx = m_lyrics.LineIndexAt(lookupSec);
     if (idx != m_currentLine) {
+        // ---- 换行滞后诊断 ----
+        //
+        // 用户 2026-09-25 报「声音唱到下一句了，面板还停在上一句」。
+        // 这句话有两种完全不同的成因，而光看现象分不出来：
+        //   * 切换本身慢   -> 滞后量恒为"定时器粒度"级（0~0.25s），且**每一行都一样**
+        //   * 歌词数据整体偏 -> 滞后量等于那个偏移量（几秒），而且**整首歌一致**
+        // 所以这里把"发现换行时，播放位置比这一行的时间戳晚了多少"记下来。
+        //
+        // ⚠️ 只在超过 0.4s 时才写：正常情况本来就有最多 250ms 的定时器粒度，
+        //    每行都记会把日志刷爆（一行歌词一条，一首歌上百条）。
+        const double lineTs = m_lyrics.At(idx).timeSec;
+        const double lagSec = m_positionSec - lineTs;
+        if (lagSec > 0.4) {
+            DebugLog("换行滞后: 行=%zu  行时间戳=%.3fs  检测位置=%.3fs  滞后=%.3fs",
+                     idx, lineTs, m_positionSec, lagSec);
+        }
+
         m_currentLine  = idx;
         m_displayLine  = m_lyrics.DisplayIndex(idx);
         return TickChange::Line;
@@ -656,6 +747,50 @@ TickChange PlaybackState::RefreshPosition() {
 
 size_t PlaybackState::DisplayLine() const {
     return m_displayLine;
+}
+
+double PlaybackState::LyricOffsetSec() const {
+    return m_lyricOffsetSec;
+}
+
+void PlaybackState::NudgeLyricOffset(double deltaSec) {
+    if (!m_hasTrack || m_trackUrl.empty()) {
+        popup_message::g_show("现在没有在播放，无法调整歌词偏移。", "Lyricus");
+        return;
+    }
+
+    double next = m_lyricOffsetSec + deltaSec;
+
+    // 夹到 ±30 秒：再大就不该用偏移解决了（那是"匹配到了别的歌"）。
+    if (next >  30.0) next =  30.0;
+    if (next < -30.0) next = -30.0;
+
+    m_lyricOffsetSec = next;
+    OffsetMapSet(m_trackUrl, next);
+
+    // 逼下一次 RefreshPosition 重算当前行。
+    //
+    // 【为什么不是直接算】当前行的查找在 RefreshPosition 里，而那要等下一拍
+    //（最多 250ms）。把行号置成 npos 就等于告诉它"你手上的行作废了"——
+    // 下一拍必然返回 TickChange::Line，三个宿主都会立刻重绘。
+    m_currentLine = LyricDocument::npos;
+    m_displayLine = LyricDocument::npos;
+
+    DebugLog("歌词偏移: %+.1f 秒（%s）", next, deltaSec > 0 ? "歌词提前" : "歌词延后");
+
+    char msg[128];
+    sprintf_s(msg, "当前曲目的歌词偏移 = %+.1f 秒%s", next,
+              next > 0 ? "（歌词提前）" : (next < 0 ? "（歌词延后）" : "（已复位）"));
+    popup_message::g_show(msg, "Lyricus");
+}
+
+void PlaybackState::ResetLyricOffset() {
+    if (m_trackUrl.empty()) return;
+    m_lyricOffsetSec = 0.0;
+    OffsetMapSet(m_trackUrl, 0.0);
+    m_currentLine = LyricDocument::npos;
+    m_displayLine = LyricDocument::npos;
+    DebugLog("歌词偏移: 已复位");
 }
 
 // ---------------------------------------------------------------------------

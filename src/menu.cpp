@@ -44,6 +44,15 @@ const GUID guid_cmd_shift = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,
 // 0x15：为文件夹指定歌词线索（无标签曲目用）
 const GUID guid_cmd_hint = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x15}};
 
+// 歌词时间偏移（0x16-0x18）。见 config.h 的 cfg_lyric_offset_map 和 D-048。
+const GUID guid_cmd_off_earlier = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x16}};
+const GUID guid_cmd_off_later   = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x17}};
+const GUID guid_cmd_off_reset   = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x18}};
+
+// 每次点半秒。0.5 秒是"听得出来"和"不用点十几次"之间的折中：
+// 整首偏移通常是几秒（剪辑版本不同），0.5 秒大概点 4~14 次到位。
+constexpr double kOffsetStepSec = 0.5;
+
 // 显示设置用「点一下换下一档」而不是弹子菜单：
 // 和已有的「切换背景材质」一个路子，代码少一截，而且改完立刻能在面板上看到效果 ——
 // 比在子菜单里先找到当前项再点，反馈直接得多。
@@ -104,6 +113,9 @@ public:
         cmd_span,
         cmd_shift,
         cmd_hint,
+        cmd_off_earlier,
+        cmd_off_later,
+        cmd_off_reset,
         cmd_total
     };
 
@@ -123,6 +135,9 @@ public:
         case cmd_span:         return guid_cmd_span;
         case cmd_shift:        return guid_cmd_shift;
         case cmd_hint:         return guid_cmd_hint;
+        case cmd_off_earlier:  return guid_cmd_off_earlier;
+        case cmd_off_later:    return guid_cmd_off_later;
+        case cmd_off_reset:    return guid_cmd_off_reset;
         default: uBugCheck();
         }
     }
@@ -165,6 +180,21 @@ public:
         }
         case cmd_hint:
             out = "指定歌词搜索线索...";
+            break;
+
+        // 偏移那三条也把当前值写进名字 —— 菜单每次展开都会重新调 get_name，
+        // 所以不用自己维护勾选状态，用户扫一眼就知道现在是几秒。
+        case cmd_off_earlier:
+        case cmd_off_later: {
+            char buf[64];
+            sprintf_s(buf, "%s（当前 %+.1f 秒）",
+                      index == cmd_off_earlier ? "歌词提前 0.5 秒" : "歌词延后 0.5 秒",
+                      lyricus::PlaybackState::Get().LyricOffsetSec());
+            out = buf;
+            break;
+        }
+        case cmd_off_reset:
+            out = "复位歌词偏移";
             break;
         default: uBugCheck();
         }
@@ -209,6 +239,17 @@ public:
             out = "给当前曲目**所在的文件夹**补一句搜索线索（歌手 / 专辑），专治没打标签的曲目。"
                   "实测「哀歌」不带歌手时正确答案连前 10 都进不去，"
                   "带上「阿良良木健」后第 1 条就是它。对整个文件夹生效，填一次管十几首。";
+            return true;
+
+        case cmd_off_earlier:
+            out = "把当前曲目的歌词提前半秒 —— 用在「声音已经唱到下一句、面板还停在上一句」"
+                  "这种**整首歌**的偏移上。设置按曲目记住，重启后仍然有效。";
+            return true;
+        case cmd_off_later:
+            out = "把当前曲目的歌词延后半秒 —— 用在「面板比声音快」的情况。按曲目记住。";
+            return true;
+        case cmd_off_reset:
+            out = "把当前曲目的歌词偏移清零，回到原始时间轴。";
             return true;
         default:
             return false;
@@ -352,6 +393,19 @@ public:
             }
             break;
         }
+
+        // 歌词偏移这三条**不需要**通知任何窗口：把行号置成 npos 之后，
+        // 下一次 RefreshPosition（最多 250ms）必然返回 TickChange::Line，
+        // 三个宿主都会立刻重绘 —— 和其他显示设置一样靠轮询。
+        case cmd_off_earlier:
+            lyricus::PlaybackState::Get().NudgeLyricOffset(+kOffsetStepSec);
+            break;
+        case cmd_off_later:
+            lyricus::PlaybackState::Get().NudgeLyricOffset(-kOffsetStepSec);
+            break;
+        case cmd_off_reset:
+            lyricus::PlaybackState::Get().ResetLyricOffset();
+            break;
 
         default:
             uBugCheck();
