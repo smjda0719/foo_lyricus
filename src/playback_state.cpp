@@ -763,13 +763,24 @@ TickChange PlaybackState::RefreshPosition() {
         //   * 歌词数据整体偏 -> 滞后量等于那个偏移量（几秒），而且**整首歌一致**
         // 所以这里把"发现换行时，播放位置比这一行的时间戳晚了多少"记下来。
         //
+        // ⚠️ **刚载入歌词的那一次不算** —— 否则必然误报。
+        //    词是播到一半才从网上回来的，载入时位置早就越过了当时的行，
+        //    "滞后"等于查询耗时。实测两个例子，数字都能算平：
+        //      7 苏州夏夜  查询 00:49:07.988 -> 载入 00:49:09.939（1.95s）
+        //                  载入时位置 2.122s 已越过行 1 的 0.592s -> 报滞后 1.53
+        //      4 左脑右脑  载入时位置 1.125s 已越过行 0 的 0.000s -> 报滞后 1.125
+        //    两条都不是切换慢，是**载入晚**。混在日志里会把真的滞后埋掉。
+        //
         // ⚠️ 只在超过 0.4s 时才写：正常情况本来就有最多 250ms 的定时器粒度，
         //    每行都记会把日志刷爆（一行歌词一条，一首歌上百条）。
-        const double lineTs = m_lyrics.At(idx).timeSec;
-        const double lagSec = m_positionSec - lineTs;
-        if (lagSec > 0.4) {
-            DebugLog("换行滞后: 行=%zu  行时间戳=%.3fs  检测位置=%.3fs  滞后=%.3fs",
-                     idx, lineTs, m_positionSec, lagSec);
+        const bool firstAfterLoad = (m_currentLine == LyricDocument::npos);
+        if (!firstAfterLoad) {
+            const double lineTs = m_lyrics.At(idx).timeSec;
+            const double lagSec = m_positionSec - lineTs;
+            if (lagSec > 0.4) {
+                DebugLog("换行滞后: 行=%zu  行时间戳=%.3fs  检测位置=%.3fs  滞后=%.3fs",
+                         idx, lineTs, m_positionSec, lagSec);
+            }
         }
 
         m_currentLine  = idx;
