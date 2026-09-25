@@ -468,10 +468,24 @@ bool ReadMissMarker(const std::wstring& path, MissMarker& out) {
     return true;
 }
 
-bool WriteMissMarker(const std::wstring& path, long httpStatus) {
-    char text[80];
-    sprintf_s(text, "%lld %ld %d\n", NowUnixSeconds(), httpStatus, kMissLogicVersion);
-    return WriteWholeFile(path, text, strlen(text));
+bool WriteMissMarker(const std::wstring& path, long httpStatus,
+                     const std::string& identity) {
+    // 【为什么要把曲目身份写进去】原先只存 `时间戳 HTTP码 逻辑版本`，
+    // 结果事后**完全没法追查**：用户说"这首没匹配到"，我打开 .miss 也看不出
+    // 是哪一首，于是分不清"在线源确实没有"还是"我们的匹配逻辑错了"。
+    // 而这两件事的处理方式完全相反（前者该收工，后者该改代码）。
+    //
+    // identity 放在**第一行之外**（换行分隔），这样解析时按下标取，
+    // 老格式（没有这一行）依然读得出来 —— 不用为它升逻辑版本。
+    char head[80];
+    sprintf_s(head, "%lld %ld %d\n", NowUnixSeconds(), httpStatus, kMissLogicVersion);
+
+    std::string text = head;
+    if (!identity.empty()) {
+        text += identity;
+        text += '\n';
+    }
+    return WriteWholeFile(path, text.c_str(), text.size());
 }
 
 // ===========================================================================
@@ -3146,11 +3160,20 @@ OnlineLyricResult FetchLyricOnline(const OnlineLyricRequest& req,
     // 早先只有一个源时「LRCLIB 没有」就等于「没有」，现在要是不等网易云，
     // 一次 LRCLIB 的未命中就会把网易云也一起挡在门外 7 天。
     result.error = L"各在线源上都没有找到这首歌的歌词";
-    if (cacheUsable && WriteMissMarker(paths.miss, lastHttpStatus)) {
-        OnlineLog("在线歌词：确定未命中，已写 7 天有效的标记（HTTP %lu）", lastHttpStatus);
+
+    // 把"我们当时拿什么去查的"一起记下来 —— 事后追查全靠它。
+    // 用 %s 而不是直接拼宽字符：.miss 是 UTF-8 文本，和其它缓存文件一致。
+    const std::string identity =
+        "artist=[" + WideToUtf8(req.artist) + "] title=[" + WideToUtf8(req.title) +
+        "] album=[" + WideToUtf8(req.album) + "] duration=" +
+        std::to_string(static_cast<long long>(req.durationSec + 0.5)) + "s";
+
+    if (cacheUsable && WriteMissMarker(paths.miss, lastHttpStatus, identity)) {
+        OnlineLog("在线歌词：确定未命中，已写 7 天有效的标记（HTTP %lu）：%s",
+                  lastHttpStatus, identity.c_str());
     } else {
-        OnlineLog("在线歌词：确定未命中（HTTP %lu），但标记写入失败，下次仍会重查",
-                  lastHttpStatus);
+        OnlineLog("在线歌词：确定未命中（HTTP %lu），但标记写入失败，下次仍会重查：%s",
+                  lastHttpStatus, identity.c_str());
     }
     return result;
 }

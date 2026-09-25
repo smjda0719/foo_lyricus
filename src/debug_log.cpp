@@ -37,6 +37,14 @@ pfc::string8 ResolveLogPath() {
 
 } // namespace
 
+// 日志上限。超了就把当前文件改名成 .1（覆盖上一个 .1）再重新开始。
+//
+// 【为什么需要】心跳每 10 秒一行，一天就是 8000 多行、约 700 KB；出问题时
+// 各种诊断日志还会更多。实测跑一天 540 KB，一周就是 4 MB —— 而这是个常驻组件，
+// 没上限的话它会一直涨。留一份上一代（.1）是为了"刚重启想看上次的日志"，
+// 再多就没意义了。
+constexpr long long kMaxLogBytes = 2 * 1024 * 1024;
+
 void DebugLog(const char* fmt, ...) {
     char body[1024];
     va_list args;
@@ -48,6 +56,25 @@ void DebugLog(const char* fmt, ...) {
     GetLocalTime(&st);
 
     static const pfc::string8 path = ResolveLogPath();
+
+    // 每 256 行查一次大小 —— 每条都去 GetFileAttributesEx 是白费 IO，
+    // 而 2MB 的阈值下晚 256 行（约 30KB）完全无所谓。
+    static unsigned sinceSizeCheck = 0;
+    if (++sinceSizeCheck >= 256) {
+        sinceSizeCheck = 0;
+
+        WIN32_FILE_ATTRIBUTE_DATA fad{};
+        if (GetFileAttributesExA(path.get_ptr(), GetFileExInfoStandard, &fad)) {
+            const long long size = (static_cast<long long>(fad.nFileSizeHigh) << 32) |
+                                    static_cast<long long>(fad.nFileSizeLow);
+            if (size > kMaxLogBytes) {
+                pfc::string8 rotated(path);
+                rotated += ".1";
+                DeleteFileA(rotated.get_ptr());
+                MoveFileA(path.get_ptr(), rotated.get_ptr());
+            }
+        }
+    }
 
     FILE* f = nullptr;
     if (fopen_s(&f, path.get_ptr(), "a") == 0 && f != nullptr) {

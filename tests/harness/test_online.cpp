@@ -797,6 +797,76 @@ void TestNetEaseSearchQuery() {
 // 出处：用户说「缓存到本地的歌词还没有第一行的分隔线」。
 // 原来这条逻辑写在 StripNetEaseCredits 里，只覆盖"本次从网易云新取到的词"；
 // 而缓存里的 .lrc 是**上一次写下的**，根本不会再走那段代码。
+// 未命中标记（.miss）的格式 —— 以及"加了身份行之后旧格式还读不读得出来"。
+//
+// 加身份行的起因：原先 .miss 里只有 `时间戳 HTTP码 逻辑版本`，
+// 事后**完全没法追查**是哪一首 —— 用户说"这首没匹配到"，打开标记也看不出，
+// 于是分不清"在线源确实没有"（该收工）还是"匹配逻辑错了"（该改代码）。
+//
+// ⚠️ 这里最该钉住的是**兼容性**：标记文件已经在用户磁盘上躺着了，
+//    新代码必须能读旧文件，否则负缓存全部作废、白跑一遍网络。
+//    所以旧格式那条断言是这一组里最重要的。
+void TestMissMarker() {
+    std::printf("\n== 未命中标记（.miss）格式 ==\n");
+
+    wchar_t tmp[MAX_PATH]{};
+    GetTempPathW(MAX_PATH, tmp);
+    const std::wstring dir = std::wstring(tmp) + L"lyricus-miss-test";
+    CreateDirectoryW(dir.c_str(), nullptr);
+
+    // ---- 新格式：写出来要能被读回去 ----
+    const std::wstring path = dir + L"\\probe.miss";
+    lyricus::WriteMissMarker(path, 200,
+                             "artist=[阿良良木健] title=[哀歌] album=[] duration=319s");
+
+    lyricus::MissMarker m;
+    Check(lyricus::ReadMissMarker(path, m), "新格式写得出来也读得回去");
+    Check(m.status == 200, "HTTP 码读回来了");
+    Check(m.logic == lyricus::kMissLogicVersion,
+          "★ 逻辑版本读回来了（读取方靠它判断这个否结果还算不算数）");
+    Check(m.stamp > 0, "时间戳是个正数");
+
+    // ---- 身份行不能干扰解析：读的是第一行的前三个 token ----
+    {
+        std::string raw;
+        Check(lyricus::ReadWholeFile(path, raw), "能读回原文以便检查格式");
+        Check(raw.find("artist=[阿良良木健]") != std::string::npos,
+              "★ 曲目身份真的写进去了（事后追查全靠它）");
+        Check(raw.find('\n') != std::string::npos &&
+              raw.find("artist=") > raw.find('\n'),
+              "★ 身份行在第二行 —— 老解析器（只扫前三个 token）照样读得出时间戳和版本");
+    }
+
+    // ---- 旧格式（没有身份行）必须仍然读得出来 ----
+    const std::wstring legacy = dir + L"\\legacy.miss";
+    const char legacyText[] = "1790261612 200 7\n";
+    lyricus::WriteWholeFile(legacy, legacyText, sizeof(legacyText) - 1);
+    lyricus::MissMarker lm;
+    Check(lyricus::ReadMissMarker(legacy, lm), "★ 旧格式（没有身份行）照样读得出来");
+    Check(lm.status == 200 && lm.logic == 7 && lm.stamp == 1790261612LL,
+          "旧格式的三个字段都对");
+
+    // ---- 空身份不该写出半行 ----
+    const std::wstring bare = dir + L"\\bare.miss";
+    lyricus::WriteMissMarker(bare, 0, "");
+    lyricus::MissMarker bm;
+    Check(lyricus::ReadMissMarker(bare, bm), "空身份也写得出、读得回");
+    Check(bm.logic == lyricus::kMissLogicVersion, "空身份时逻辑版本仍然对");
+
+    // ---- 垃圾输入不能当成有效标记 ----
+    const std::wstring junk = dir + L"\\junk.miss";
+    const char junkText[] = "这不是标记\n";
+    lyricus::WriteWholeFile(junk, junkText, sizeof(junkText) - 1);
+    lyricus::MissMarker jm;
+    Check(!lyricus::ReadMissMarker(junk, jm), "★ 垃圾内容 -> 读失败（宁可重查，别把垃圾当成「确实没有」）");
+
+    DeleteFileW(path.c_str());
+    DeleteFileW(legacy.c_str());
+    DeleteFileW(bare.c_str());
+    DeleteFileW(junk.c_str());
+    RemoveDirectoryW(dir.c_str());
+}
+
 void TestLeadInSeparator() {
     std::printf("\n== 前奏分隔线（新取的词 + 缓存里的词，同一个出口）==\n");
 
@@ -923,6 +993,7 @@ int wmain() {
     TestUntaggedTracks();
     TestNetEaseBizCode();
     TestNetEaseSearchQuery();
+    TestMissMarker();
     TestLeadInSeparator();
     TestTranslationMerge();
 
