@@ -966,9 +966,40 @@ bool ArtistNamesOverlap(const std::wstring& a, const std::wstring& b) {
         }
     }
 
+    // 「純白P」vs「Soda纯白」—— 同一个人的两种写法：
+    // 去掉拉丁字母和数字之后，汉字骨架都是「纯白」。
+    //
+    // 【为什么必须加这一条】2026-09-25 的候选诊断直接抓到了现场：
+    //   曲目 `純白P - 扁桃体`（专辑「再见，碳酸海」，本地 4:02）
+    //   候选第 1 条就是 `扁桃体 | Soda纯白/洛天依`（网易云 2:06）
+    //   曲名闸过了，演唱者闸过不了 -> 两道软闸全灭 -> 整首被拒。
+    // 同一个人的账号名带不带 Soda、带不带 P，本来就不该影响身份判定。
+    //
+    // ⚠️ 至少 2 个汉字才认：单个字太容易撞（「白」能匹配上一堆人）。
+    //    而且这条只在**汉字骨架完全相同或互相包含**时成立，不做模糊。
+    auto cjkCore = [](const std::wstring& s) {
+        std::wstring out;
+        for (wchar_t c : s) {
+            if ((c >= 0x4E00 && c <= 0x9FFF) ||    // 汉字
+                (c >= 0x3040 && c <= 0x30FF)) {    // 平假名 / 片假名
+                out.push_back(c);
+            }
+        }
+        return out;
+    };
+    auto coreMatches = [&cjkCore](const std::wstring& x, const std::wstring& y) {
+        const std::wstring cx = cjkCore(x), cy = cjkCore(y);
+        if (cx.size() < 2 || cy.size() < 2) return false;
+        return cx == cy || cx.find(cy) != std::wstring::npos ||
+                           cy.find(cx) != std::wstring::npos;
+    };
+
+    if (coreMatches(na, nb)) return true;
+
     for (const std::wstring& x : pa) {
         for (const std::wstring& y : pb) {
             if (x.find(y) != std::wstring::npos || y.find(x) != std::wstring::npos) return true;
+            if (coreMatches(x, y)) return true;
         }
     }
     return false;
