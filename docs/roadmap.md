@@ -22,9 +22,9 @@
 | | |
 |---|---|
 | 组件 | `foo_lyricus.dll`，foobar2000 2.x，x64 |
-| 源码 | 61 个文件 / **17132 行** |
-| 决策 | **100 条**（D-001 ~ D-102，`decisions.md`） |
-| 测试 | **11 组 843 项，全绿**（离线，`tests/harness/run.ps1`） |
+| 源码 | 61 个文件 / **17613 行** |
+| 决策 | **101 条**（D-001 ~ D-103，`decisions.md`） |
+| 测试 | **11 组 875 项，全绿**（离线，`tests/harness/run.ps1`） |
 | 工具 | **8 个脚本**（`tools/`），见第六章 |
 | 打包 | `bin\foo_lyricus.fb2k-component`（脚本 `tools/package.ps1`） |
 
@@ -138,6 +138,7 @@
 |---|---|
 | **外观预设系统** | ✅ **已完成**（D-088 / D-089）。纯逻辑层 `preset.h/.cpp`（文本表 / 增删改 / 单条导入导出）+ `cfg_appearance_presets` + 首选项页的「外观预设」区（下拉走系统菜单、保存 / 删除 / 导入 / 导出）。<br>**想加字段**：改 `AppearancePreset` + `FormatPresets` / `ParsePresets` 即可，**老预设文件照样能读**（未知 key 忽略、缺的用默认值）。<br>**改内置预设**：`preset.cpp` 的 `BuiltinPresets()`。<br>**改下拉样式**：目前用系统 `TrackPopupMenu`，没自绘。 |
 | **背景自定义（磨砂 / 贴图）** | ✅ **已完成**（D-096 ~ D-100）。首选项页最下面的「背景图」区：选图 / 清除 / 适配方式（填充·适应·拉伸·平铺，点击循环）/ 图片不透明度 / 磨砂强度 / 压暗。<br>**没有图时是纯色底**，也就是从前一直的行为。<br>**想加参数**：`AppearancePreset` + `PanelAppearance` + `FormatPresets`/`ParsePresets` + `bg_math.h` 的范围常量 + `prefs_layout` 的排布，五处要同步。<br>⚠️ **路径是机器相关的绝对路径**，分享预设给别人之后多半失效 —— 刻意不把图嵌进预设（见 D-098）。 |
+| **背景图手动构图（预览 + 拖动 + 缩放）** | ✅ **已完成**（D-103）。首选项页「背景图」区顶部的预览框：拖动平移、滚轮缩放，一动手自动切到「手动」适配（第 5 种）。<br>⚠️ 偏移和缩放存**百分比** —— 存像素的话用户拖一次窗口构图就整体偏掉（见 D-103）。<br>**想改参数范围**：`bg_math.h` 的 `kBgZoomMinPct` / `kBgOffsetMinPct` 那几个常量，实现和测试共用。 |
 | **32 位支持** | ❌ 未做。`foobar2000_SDK.lib` / `component_client.lib` / `pfc.lib` **都只有 x64**，要补得先构建它们的 32 位版 |
 | ~~`capture-ui.ps1` 的 `prefs` 目标找不到首选项窗口~~ | ✅ **已修（D-095）**。根因是它用 `AutomationElement.RootElement.FindAll(Children)`，而 **UIAutomation 的顶层列表不含 owned 窗口** —— 首选项（`#32770`）正是挂在主窗口下面的 owned window，**类名和标题都对也枚举不到**。改用 `EnumWindows` + PID 过滤后：`-List` 从 3 个窗口变 4 个，`-Target prefs` 从 0 张变成功。 |
 | **控件配色（自动 / 自定义）** | ✅ **已完成**（D-093）。首选项页「控件配色」区：模式开关 + 4 个基色（按钮 / 图标 / 滑块 / 文字）。<br>**自动** = 从面板底色推导（`color_util` 的 `DeriveControlColors`），任何预设下都看得见；**自定义** = 用预设里的基色，组内其余仍由基色推导。<br>**想加基色**：`preset.h` 的 `AppearancePreset` + `preset.cpp` 的读写 + `prefs_layout` 的排布 + `kCtrlSlots`，四处要同步。 |
