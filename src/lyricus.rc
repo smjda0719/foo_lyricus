@@ -162,3 +162,23 @@ BEGIN
     DEFPUSHBUTTON   "确定", IDOK, 133, 162, 52, 16
     PUSHBUTTON      "取消", IDCANCEL, 191, 162, 54, 16
 END
+
+// ---------------------------------------------------------------------------
+// 「色环取色器」
+//
+// 用户 2026-09-26 看过系统取色对话框之后说「虽然稍微好点，但我还是想要类似色环的」。
+// 和首选项页一样是**全自绘**：对话框里一个控件都没有，内容在 color_picker.cpp
+// 里画；坐标 <-> 颜色的换算在 color_wheel.cpp（纯函数，可离线单测）。
+//
+// ⚠️ 这个是**独立弹窗**，所以样式里有 WS_POPUP | WS_CAPTION，
+//    而且**不能**有 WS_CHILD —— 和上面首选项页那个正好相反（见它的说明）。
+//
+// 尺寸只是建议值，布局按实际客户区算（见 color_wheel.h）。
+// 280 x 173 dialog units ≈ 420 x 312 逻辑像素 @96dpi。
+// ---------------------------------------------------------------------------
+IDD_LYRICUS_COLORWHEEL DIALOGEX 0, 0, 280, 173
+STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "选择颜色"
+FONT 9, "MS Shell Dlg", 400, 0, 0x86
+BEGIN
+END

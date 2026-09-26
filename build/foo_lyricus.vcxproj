@@ -113,6 +113,10 @@
     <ClCompile Include="..\src\prefs_layout.cpp" />
     <!-- 色环取色器的纯逻辑：HSV 换算 + 几何 + 命中测试，进离线单测台（wheel 组）。 -->
     <ClCompile Include="..\src\color_wheel.cpp" />
+    <!-- 自绘界面共用的小工具（圆角矩形/文字/字体/宿主主题）：两个自绘页面都要用。 -->
+    <ClCompile Include="..\src\ui_draw.cpp" />
+    <!-- 色环取色器窗口：位图 + 绘制 + 鼠标。换算在 color_wheel.cpp。 -->
+    <ClCompile Include="..\src\color_picker.cpp" />
     <ClCompile Include="..\src\menu.cpp" />
     <ClCompile Include="..\src\initquit.cpp" />
     <ClCompile Include="..\src\svg_icon.cpp" />
@@ -152,6 +156,8 @@
     <ClInclude Include="..\src\prefs_page.h" />
     <ClInclude Include="..\src\dpi_util.h" />
     <ClInclude Include="..\src\color_wheel.h" />
+    <ClInclude Include="..\src\ui_draw.h" />
+    <ClInclude Include="..\src\color_picker.h" />
     <ClInclude Include="..\src\resource.h" />
   </ItemGroup>
 

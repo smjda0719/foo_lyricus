@@ -7,14 +7,13 @@
 #include "prefs_layout.h"
 #include "prefs_page.h"         // OpenPrefsPage（View 菜单的入口）
 #include "dpi_util.h"           // GetDpiForWindowSafe（与控制面板共用同一份）
+#include "ui_draw.h"            // 圆角矩形/文字/字体/宿主主题（与色环取色器共用）
+#include "color_picker.h"       // PromptColorWheel（取色走自绘色环）
 
 #include <SDK/preferences_page.h>
 #include <SDK/ui.h>             // ui_control::show_preferences（菜单"外观设置"要用）
 #include <SDK/ui_element.h>     // ui_config_manager：宿主主题色 + 暗色模式
 #include <helpers/atl-misc.h>   // preferences_page_impl
-// ⚠️ 刻意**不**包含 atldlgs.h、也不用 WTL 的 CColorDialog —— 原因写在 PickColor() 里。
-// 取色走纯 Win32 的 ChooseColorW，只需要 commdlg.h。
-#include <commdlg.h>
 
 #include <cstdio>
 
@@ -68,105 +67,6 @@ const ColorSlot kColorSlots[kPrefsColorCount] = {
 constexpr int kHitNone   = -1;
 constexpr int kHitSlider = -2;
 constexpr int kHitReset  = -3;
-
-// ---------------------------------------------------------------------------
-// 绘制辅助
-// ---------------------------------------------------------------------------
-
-// 圆角矩形填充。
-//
-// ⚠️ control_window.cpp 里有一份几乎一样的实现。这里没有再抽一层共享：
-//    两份都只有十几行，而抽出来要新建一对头/源文件并改动那边的包含关系 ——
-//    收益不抵风险。**哪天出现第三处，就该抽了。**
-void FillRoundRect(HDC dc, const RECT& r, int radius, COLORREF color) {
-    if (r.right <= r.left || r.bottom <= r.top) return;
-    if (radius < 1) radius = 1;
-    const int d = radius * 2;
-    if (d > r.right - r.left) radius = (r.right - r.left) / 2;
-    if (d > r.bottom - r.top) radius = (r.bottom - r.top) / 2;
-    if (radius < 1) {   // 太扁了，退化成直角
-        HBRUSH br = CreateSolidBrush(color);
-        FillRect(dc, &r, br);
-        DeleteObject(br);
-        return;
-    }
-
-    HBRUSH br = CreateSolidBrush(color);
-    HPEN   pn = CreatePen(PS_SOLID, 1, color);
-    const HGDIOBJ ob = SelectObject(dc, br);
-    const HGDIOBJ op = SelectObject(dc, pn);
-
-    RoundRect(dc, r.left, r.top, r.right, r.bottom, radius * 2, radius * 2);
-
-    SelectObject(dc, ob);
-    SelectObject(dc, op);
-    DeleteObject(br);
-    DeleteObject(pn);
-}
-
-// 圆角矩形**描边**（不填）。用于色块的边界 —— 色块可能和页面底色撞色，
-// 没有描边就看不出一张卡片的范围。
-void StrokeRoundRect(HDC dc, const RECT& r, int radius, int width, COLORREF color) {
-    if (r.right <= r.left || r.bottom <= r.top) return;
-    HBRUSH br = (HBRUSH)GetStockObject(NULL_BRUSH);
-    HPEN   pn = CreatePen(PS_SOLID, width, color);
-    const HGDIOBJ ob = SelectObject(dc, br);
-    const HGDIOBJ op = SelectObject(dc, pn);
-    RoundRect(dc, r.left, r.top, r.right, r.bottom, radius * 2, radius * 2);
-    SelectObject(dc, ob);
-    SelectObject(dc, op);
-    DeleteObject(pn);
-}
-
-void DrawTextIn(HDC dc, const RECT& r, const wchar_t* text, COLORREF color,
-                HFONT font, UINT flags) {
-    if (text == nullptr || *text == L'\0') return;
-    const HGDIOBJ old = SelectObject(dc, font);
-    SetTextColor(dc, color);
-    SetBkMode(dc, TRANSPARENT);
-    RECT rc = r;
-    DrawTextW(dc, text, -1, &rc, flags | DT_NOPREFIX);
-    SelectObject(dc, old);
-}
-
-// 按 dpi 造一个界面字体。跟随系统的消息字体（UI 字体），字号按 dpi 缩放 ——
-// 直接 CreateFontW 写死 9pt 的话，高 DPI 下会比周围控件小一圈。
-HFONT MakeUiFont(int dpi, int pt, bool semibold) {
-    NONCLIENTMETRICSW ncm{};
-    ncm.cbSize = sizeof(ncm);
-
-    LOGFONTW lf{};
-    if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0)) {
-        lf = ncm.lfMessageFont;
-    } else {
-        // 兜底：系统不给就自己拼一个，别让整页画不出字
-        lf.lfHeight = -MulDiv(9, dpi, 72);
-        wcscpy_s(lf.lfFaceName, L"Segoe UI");
-    }
-    lf.lfHeight  = -MulDiv(pt, dpi, 72);
-    lf.lfWeight  = semibold ? FW_SEMIBOLD : FW_NORMAL;
-    lf.lfQuality = CLEARTYPE_QUALITY;
-    return CreateFontIndirectW(&lf);
-}
-
-// ChooseColorW 要求调用方自带 16 个自定义颜色的存储，而且这块内存要**跨调用保留**
-// （用户上次调好的自定义色，下次打开还该在 —— 和通用对话框自己的行为一致）。
-// 所以用函数内静态。它只在 UI 线程被碰，不需要额外加锁。
-COLORREF* CustomColors() {
-    static COLORREF rgb[16] = {
-        RGB(255, 255, 255), RGB(255, 255, 255),
-        RGB(255, 255, 255), RGB(255, 255, 255),
-        RGB(255, 255, 255), RGB(255, 255, 255),
-        RGB(255, 255, 255), RGB(255, 255, 255),
-        RGB(255, 255, 255), RGB(255, 255, 255),
-        RGB(255, 255, 255), RGB(255, 255, 255),
-        RGB(255, 255, 255), RGB(255, 255, 255),
-        RGB(255, 255, 255), RGB(255, 255, 255),
-    };
-    return rgb;
-}
-
-// ---------------------------------------------------------------------------
 
 class CLyricusPrefsDlg : public CDialogImpl<CLyricusPrefsDlg>,
                          public preferences_page_instance {
@@ -272,19 +172,11 @@ PrefsLayout CLyricusPrefsDlg::CurrentLayout() const {
 }
 
 PrefsTheme CLyricusPrefsDlg::CurrentTheme() const {
-    // 底色与文字直接问宿主。getSysColor 内部先查 foobar2000 的主题配置，
-    // 查不到才回退系统色 —— 顺带把暗色模式也一并处理了。
-    COLORREF bg = GetSysColor(COLOR_WINDOW);
-    COLORREF fg = GetSysColor(COLOR_WINDOWTEXT);
-    bool dark = false;
-
-    ui_config_manager::ptr cm = ui_config_manager::tryGet();
-    if (cm.is_valid()) {
-        bg   = cm->getSysColor(COLOR_WINDOW);
-        fg   = cm->getSysColor(COLOR_WINDOWTEXT);
-        dark = cm->is_dark_mode();
-    }
-    return MakePrefsTheme(dark, bg, fg);
+    // 底色与文字问宿主要 —— 走 ui_draw 里的公共实现。
+    // 它和色环取色器用的是同一份：两边各取各的，会出现"一个跟着 foobar2000
+    // 的暗色主题走、另一个还是系统亮色"，两个窗口并排打开时非常刺眼。
+    const HostTheme h = QueryHostTheme();
+    return MakePrefsTheme(h.dark, h.bg, h.fg);
 }
 
 int CLyricusPrefsDlg::HitTest(POINT pt) const {
@@ -638,44 +530,26 @@ bool CLyricusPrefsDlg::PickColor(COLORREF& inOut) {
     // 见声明处的说明：先把自己钉住，防模态期间被释放
     service_ptr_t<preferences_page_instance> self = this;
 
-    // ⚠️ 刻意**不用** WTL/ATL 的 CColorDialog，直接调 Win32 的 ChooseColorW。
+    // 取色走**自绘的色环取色器**（color_picker.cpp）。
     //
-    // 【为什么】2026-09-26 用户报「preference 里的颜色选项，点击之后会崩溃」。
-    // foobar2000 的崩溃报告（crash reports\failure_00000001.txt）里写着：
-    //     Access violation, operation: write, address: 0x20
-    //     Crash location: ntdll!RtlEnterCriticalSection   (RCX = 0x18)
-    // RCX 是第一个参数 —— 0x18 显然不是有效指针。这正是"在**空对象**上访问
-    // 偏移 0x18 的临界区"的特征（this == NULL 时的成员访问）。
-    //
-    // 而 WTL 的 CColorDialogImpl 里**只有它**碰临界区：
-    //     _GetSetRGBMessage() / _GetColorOKMessage()
-    //         -> CStaticDataInitCriticalSectionLock
-    // 那条路吃的是 ATL 的全局模块状态，而本组件从来没创建过 ATL 模块对象
-    // （全工程 grep 不到 CAtlDllModuleT / _pAtlModule 的初始化），所以那状态是空的。
-    // 组里其它对话框（hint / adjust / source）走的是 CDialogImpl，不经过这个锁 ——
-    // 这与"只有颜色选择器崩"的现象吻合。
-    //
-    // ChooseColorW 是纯 Win32，不依赖任何 ATL 全局状态，整条路直接没了。
-    // CC_RGBINIT 让 inOut 作为初始色（CColorDialog 内部也是这么做的）。
-    CHOOSECOLORW cc{};
-    cc.lStructSize  = sizeof(cc);
-    cc.hwndOwner    = m_hWnd;
-    cc.rgbResult    = inOut;
-    cc.lpCustColors = CustomColors();
-    cc.Flags        = CC_FULLOPEN | CC_ANYCOLOR | CC_RGBINIT;
-
-    if (!::ChooseColorW(&cc)) {
-        DebugLog("首选项页：取色被取消");
-        return false;
-    }
+    // 【这一路是怎么走到色环的】
+    //   1. 最早用的是 WTL 的 CColorDialog。它**会崩**：2026-09-26 用户报
+    //      「preference 里的颜色选项，点击之后会崩溃」，崩溃报告写着
+    //          Access violation, write, address 0x20
+    //          Crash location: ntdll!RtlEnterCriticalSection  (RCX = 0x18)
+    //      —— 在空对象上访问偏移 0x18 的临界区。根因是 WTL 的
+    //      CStaticDataInitCriticalSectionLock 在构造函数里直接解引用
+    //      ATL::_pAtlModule->m_csStaticDataInitAndTypeInfo，一个空指针检查都没有；
+    //      而本组件从没创建过 ATL 模块对象，那个指针一直是空的。
+    //   2. 换成纯 Win32 的 ChooseColorW，崩是不崩了。但用户看过之后说
+    //      「虽然稍微好点，但我还是想要类似色环的」。
+    //   3. 于是有了现在的自绘色环：坐标 <-> 颜色的换算在 color_wheel.cpp
+    //      （纯函数、离线可测），窗口与绘制在 color_picker.cpp。
+    if (!PromptColorWheel(m_hWnd, inOut, L"选择颜色")) return false;
 
     // 模态期间页面可能已经被销毁（窗口没了）。self 保证对象还在，
     // 但窗口没了就不该再碰控件。
     if (!::IsWindow(m_hWnd)) return false;
-
-    inOut = cc.rgbResult;
-    DebugLog("首选项页：取色 -> #%02X%02X%02X",
-             GetRValue(inOut), GetGValue(inOut), GetBValue(inOut));
     return true;
 }
 

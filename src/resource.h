@@ -87,6 +87,13 @@
 
 #define IDD_LYRICUS_SOURCES  104
 
+// 「色环取色器」—— 独立弹窗。
+//
+// 用户 2026-09-26 看过系统取色对话框之后说「虽然稍微好点，但我还是想要类似色环的」。
+// 和首选项页一样是全自绘的，所以里面**没有任何控件 ID**：
+// 色环、SV 方块、预览、两个按钮全是画出来的，命中靠 color_wheel.cpp 那套纯函数。
+#define IDD_LYRICUS_COLORWHEEL 105
+
 #define IDC_LIST_SOURCES     1301
 #define IDC_BTN_SRC_UP       1302
 #define IDC_BTN_SRC_DOWN     1303
