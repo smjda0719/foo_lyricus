@@ -97,9 +97,13 @@ Add-Type -Namespace LyricusShot -Name Native -MemberDefinition @'
 [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
 [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, IntPtr extra);
 [DllImport("user32.dll")] public static extern IntPtr SendMessageW(IntPtr h, uint msg, IntPtr wp, IntPtr lp);
+[DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr parent, EnumProc cb, IntPtr p);
+[DllImport("user32.dll")] public static extern bool GetScrollInfo(IntPtr h, int bar, ref SCROLLINFO si);
 [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr v);
 public delegate bool EnumProc(IntPtr h, IntPtr p);
 [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
+[StructLayout(LayoutKind.Sequential)] public struct SCROLLINFO {
+    public uint cbSize, fMask; public int nMin, nMax; public uint nPage; public int nPos, nTrackPos; }
 '@
 
 # DPI 感知必须在**任何窗口查询之前**声明。
@@ -152,6 +156,37 @@ function Find-Window([string]$titlePattern, [string]$classPattern) {
         return $w
     }
     return $null
+}
+
+# ★ 找**真正那个带滚动条的页窗口**。
+#
+# 【为什么必须单独找】标题是 `Preferences: Lyricus` 的那个 #32770 是**外层框架**，
+#   而 Lyricus 这一页是它的一个子窗口（同样是 #32770）。
+#   两者都叫 #32770、外层还没有标题之外的任何区分特征 ——
+#   于是 `SendMessage(WM_VSCROLL)` 发给外层时会被**静默丢弃**
+#   （那个窗口根本没有滚动条），表现为"滚动消息发了但画面纹丝不动"。
+#
+#   ⚠️ 这个坑让我误判过一次：以为滚动没实现，其实是发给了一个不处理它的窗口。
+#   而**滚轮一直是好的** —— 它由 Windows 按鼠标位置路由，本来就发给了正确的那个。
+#
+# 认法：外层没有滚动条，页有（GetScrollInfo 成功）。所以按"谁有滚动条"找。
+function Find-ScrollablePage([IntPtr]$parent) {
+    $script:page = [IntPtr]::Zero
+    $cb = [LyricusShot.Native+EnumProc] {
+        param($h, $p)
+        $si = New-Object LyricusShot.Native+SCROLLINFO
+        $si.cbSize = [System.Runtime.InteropServices.Marshal]::SizeOf($si)
+        $si.fMask  = 0x17   # SIF_ALL
+        if ([LyricusShot.Native]::GetScrollInfo($h, 1, [ref]$si)) {   # SB_VERT
+            $script:page = $h
+            $script:pageInfo = $si
+            return $false
+        }
+        return $true
+    }
+    $script:pageInfo = $null
+    [void][LyricusShot.Native]::EnumChildWindows($parent, $cb, [IntPtr]::Zero)
+    return $script:page
 }
 
 # ---------------------------------------------------------------------------
@@ -212,8 +247,9 @@ function Save-WindowShot($win, [string]$path) {
     return [pscustomobject]@{ Path = $path; Pct = $pct }
 }
 
-function Invoke-Scroll($win, [int]$sbCode) {
-    [void][LyricusShot.Native]::SendMessageW($win.Hwnd, $WM_VSCROLL, [IntPtr]$sbCode, [IntPtr]::Zero)
+function Invoke-Scroll([IntPtr]$target, [int]$sbCode) {
+    # ⚠️ 这里的 target 必须是**页窗口**，不是外层框架 —— 见 Find-ScrollablePage。
+    [void][LyricusShot.Native]::SendMessageW($target, $WM_VSCROLL, [IntPtr]$sbCode, [IntPtr]::Zero)
     Start-Sleep -Milliseconds 700
 }
 
@@ -252,14 +288,26 @@ $cr = New-Object LyricusShot.Native+RECT
 [void][LyricusShot.Native]::GetClientRect($prefs.Hwnd, [ref]$cr)
 Write-Host ("  窗口 $($prefs.W)x$($prefs.H)   客户区 $($cr.R-$cr.L)x$($cr.B-$cr.T)")
 
+# 滚动要发给**页窗口**而不是外层框架（见 Find-ScrollablePage 的说明）
+$page = Find-ScrollablePage $prefs.Hwnd
+if ($page -ne [IntPtr]::Zero) {
+    Write-Host ("  页 hwnd=$page  滚动条 nMax=$($script:pageInfo.nMax) nPage=$($script:pageInfo.nPage)")
+} else {
+    Write-Host '  （没找到带滚动条的页窗口）' -ForegroundColor DarkGray
+}
+
 $shots = @()
 $shots += Save-WindowShot $prefs (Join-Path $OutDir 'prefs.png')
 
 if ($Scroll) {
-    Invoke-Scroll $prefs $SB_BOTTOM
-    $shots += Save-WindowShot $prefs (Join-Path $OutDir 'prefs-bottom.png')
-    Invoke-Scroll $prefs $SB_TOP
-    $shots += Save-WindowShot $prefs (Join-Path $OutDir 'prefs-top.png')
+    if ($page -eq [IntPtr]::Zero) {
+        Write-Host '  ⚠️ 找不到页窗口，跳过滚动截图' -ForegroundColor Yellow
+    } else {
+        Invoke-Scroll $page $SB_BOTTOM
+        $shots += Save-WindowShot $prefs (Join-Path $OutDir 'prefs-bottom.png')
+        Invoke-Scroll $page $SB_TOP
+        $shots += Save-WindowShot $prefs (Join-Path $OutDir 'prefs-top.png')
+    }
 }
 
 Write-Host ''

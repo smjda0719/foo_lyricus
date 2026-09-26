@@ -194,6 +194,7 @@ private:
     BOOL OnMouseWheel(UINT nFlags, short zDelta, CPoint pt);
     int  ContentHeightPx() const;   // 内容总高度（物理像素）
     void UpdateScrollBar();         // 按客户区与内容高度设置滚动条
+    bool EnsureVScrollStyle();      // 确保样式里有 WS_VSCROLL（宿主动态抹过它）
     void ScrollTo(int y);           // 夹取后设置并重绘
     void OnSize(UINT nType, CSize size);
     void OnMouseMove(UINT flags, CPoint pt);
@@ -334,7 +335,39 @@ int CLyricusPrefsDlg::ContentHeightPx() const {
     return MulDiv(kPrefsHeight96, (dpi > 0) ? dpi : 96, 96);
 }
 
+// 确保窗口样式里有 WS_VSCROLL。返回"这次是不是补了"。
+//
+// 【为什么需要一个能反复调用的函数】这个页的 style 会被**宿主动态重设**：
+// 资源模板里写了、OnInitDialog 里也读得到（所以那次检查会认为"不用补"），
+// 但 foobar2000 之后布局容器时又把它抹掉了。实测时间线就是这样 ——
+// 初始化日志正常，而事后 GetWindowLongW(GWL_STYLE) 是 0x00010501。
+//
+// 所以"做一次就完"是不够的，得在每次绘制前顺手确认一下。
+// 代价可以忽略：GetWindowLongPtr 极便宜，而 SWP_FRAMECHANGED 只在
+// 真缺那一位时才发（正常情况一次都不会发）。
+//
+// ⚠️ 不补的后果**完全静默**：SetScrollInfo / SetScrollPos 会对一个不存在的
+//    滚动条说话、统统失败，表现成"滚轮和拖动都没反应、页面下半截永远
+//    看不到"，而代码逐行看都对。这个坑是靠 GetScrollInfo 返回 false 定位的。
+bool CLyricusPrefsDlg::EnsureVScrollStyle() {
+    const LONG_PTR style = ::GetWindowLongPtrW(m_hWnd, GWL_STYLE);
+    if ((style & WS_VSCROLL) != 0) return false;
+
+    ::SetWindowLongPtrW(m_hWnd, GWL_STYLE,
+                        static_cast<LONG_PTR>(style | WS_VSCROLL));
+    // ⚠️ 改 GWL_STYLE 之后必须 SWP_FRAMECHANGED 重算非客户区，
+    //    否则滚动条不会真的出现（SetWindowLongPtr 只改记录的值）。
+    ::SetWindowPos(m_hWnd, nullptr, 0, 0, 0, 0,
+                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
+                   SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    DebugLog("首选项页：补上 WS_VSCROLL（原 style=0x%08lX）",
+             static_cast<unsigned long>(style));
+    return true;
+}
+
 void CLyricusPrefsDlg::UpdateScrollBar() {
+    EnsureVScrollStyle();
+
     RECT rc{};
     if (!::GetClientRect(m_hWnd, &rc)) return;
 
@@ -474,7 +507,7 @@ BOOL CLyricusPrefsDlg::OnInitDialog(HWND, LPARAM) {
     m_fontSmall = MakeUiFont(dpi, 8,  false);
 
     DebugLog("首选项页：已初始化（全自绘，alpha=%d）", m_edited.alpha);
-    UpdateScrollBar();      // 页面比容器高时把滚动条摆出来（D-094）
+    UpdateScrollBar();      // 内部会先确保 WS_VSCROLL 在位（见那边的说明）
     return TRUE;
 }
 
@@ -489,6 +522,11 @@ BOOL CLyricusPrefsDlg::OnEraseBkgnd(CDCHandle) {
 }
 
 void CLyricusPrefsDlg::OnPaint(CDCHandle) {
+    // 宿主会在布局时把这个页的 WS_VSCROLL 抹掉，而滚动条不在位时
+    // SetScrollInfo 全部静默失败。绘制是每帧都走的路径，在这里确认一次
+    // 兜得住（真缺的时候还会顺手 UpdateScrollBar 把范围重新报上去）。
+    if (EnsureVScrollStyle()) UpdateScrollBar();
+
     PAINTSTRUCT ps{};
     const HDC dc = BeginPaint(&ps);
     if (dc == nullptr) return;
