@@ -341,6 +341,66 @@ void DrawVerticalSlider(HDC dc, const RECT& r, double ratio, int thickness,
     DeleteObject(kp);
 }
 
+// 标签挂在锚点的哪一侧。
+enum class LabelSide {
+    Above,    // 水平居中于锚点、底边贴着锚点往上长 —— 给横向滑块用
+    LeftOf,   // 右边缘贴着锚点、垂直居中 —— 给贴着面板右沿的垂直浮层用
+};
+
+// 拖拽时浮在滑块旁边的**数值标签**。
+//
+// 【为什么必须有】用户 2026-09-26：「拖拽的时候出现一个数值标签，这样方便调节，
+// 更何况 foobar2000 用的是 dB，这样更不容易调节」。
+// 音量在 playback_control 里的单位是 dB（-40..0），那是对数刻度 ——
+// 光看滑块停在哪，根本分不出当前是 -3 还是 -12；进度条同理，
+// 拖到哪儿了不给秒数就只能凭感觉。
+//
+// 它是**拖拽期间才出现**的临时提示，松手即消失（调用方按 m_draggingXxx 判断）。
+void DrawValueLabel(HDC dc, POINT anchor, LabelSide side, const wchar_t* text,
+                    int dpi, const RECT& bounds) {
+    auto S = [dpi](int v) { return MulDiv(v, dpi, 96); };
+
+    const HFONT font = GetCachedUiFont(dpi, 9, false);
+
+    // 先量文字，标签尺寸由它决定
+    SIZE sz{};
+    {
+        const HGDIOBJ of = SelectObject(dc, font);
+        GetTextExtentPoint32W(dc, text, static_cast<int>(wcsnlen(text, 63)), &sz);
+        SelectObject(dc, of);
+    }
+
+    const int padX = S(8);
+    const int padY = S(4);
+    const int w    = sz.cx + padX * 2;
+    const int h    = sz.cy + padY * 2;
+
+    int left, top;
+    if (side == LabelSide::Above) {
+        left = anchor.x - w / 2;
+        top  = anchor.y - h;
+    } else {
+        left = anchor.x - w;
+        top  = anchor.y - h / 2;
+    }
+
+    // 贴住面板边界 —— 拖到两端时标签最容易探出去
+    if (left < bounds.left)             left = bounds.left;
+    if (left + w > bounds.right)        left = bounds.right - w;
+    if (top  < bounds.top)              top  = bounds.top;
+    if (top + h > bounds.bottom)        top  = bounds.bottom - h;
+
+    const RECT box{ left, top, left + w, top + h };
+    FillRoundRect(dc, box, S(6), RGB(26, 28, 34));
+
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, RGB(240, 240, 246));
+    const HGDIOBJ of = SelectObject(dc, font);
+    RECT tr = box;
+    DrawTextW(dc, text, -1, &tr, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    SelectObject(dc, of);
+}
+
 std::wstring FormatTime(double sec) {
     if (!(sec > 0.0)) sec = 0.0;          // 同时挡住 NaN
     const int total = static_cast<int>(sec);
@@ -1564,6 +1624,49 @@ void ControlWindow::DrawControls(HDC dc, int dpi) {
         if (v < 0.0) v = 0.0;
         if (v > 1.0) v = 1.0;
         DrawVerticalSlider(dc, track, v, S(4), RGB(74, 74, 82), RGB(206, 210, 220));
+    }
+
+    // ---- 拖拽数值标签 ----
+    //
+    // 【为什么只有拖拽时出现】用户 2026-09-26：「拖拽的时候出现一个数值标签，
+    // 这样方便调节，更何况 foobar2000 用的是 dB，这样更不容易调节」。
+    // 平时不显示是刻意的 —— 常驻的数值会和进度条右侧那个时间重复。
+    //
+    // 画在**最后**：它要浮在所有东西之上（含音量浮层）。
+    if (m_draggingProgress || m_draggingVolume) {
+        RECT client{};
+        if (GetClientRect(m_hwnd, &client)) {
+            if (m_draggingProgress) {
+                const RECT& bar = m_rcProgress;
+                const std::wstring label = FormatTime(st.LengthSec() * m_dragRatio);
+                const int cx = bar.left +
+                    static_cast<int>((bar.right - bar.left) * m_dragRatio);
+                DrawValueLabel(dc, POINT{ cx, bar.top - S(6) }, LabelSide::Above,
+                               label.c_str(), dpi, client);
+            } else {
+                // 显示的是**将要设置成**的那个 dB 值，不是播放器当前值 ——
+                // 拖动期间并没有真去改播放器（松手才落，见 WM_LBUTTONUP），
+                // 显示当前值会和滑块位置对不上。
+                const double db = -40.0 * (1.0 - m_dragRatio);
+                wchar_t buf[32];
+                swprintf_s(buf, L"%.1f dB", db);
+
+                if (m_dragFromPopup) {
+                    // 浮层贴着面板右沿，标签只能往**左**让
+                    const RECT& bar = m_rcVolumePopup;
+                    const int cy = bar.bottom -
+                        static_cast<int>((bar.bottom - bar.top) * m_dragRatio);
+                    DrawValueLabel(dc, POINT{ bar.left - S(8), cy }, LabelSide::LeftOf,
+                                   buf, dpi, client);
+                } else {
+                    const RECT& bar = m_rcVolumeBar;
+                    const int cx = bar.left +
+                        static_cast<int>((bar.right - bar.left) * m_dragRatio);
+                    DrawValueLabel(dc, POINT{ cx, bar.top - S(6) }, LabelSide::Above,
+                                   buf, dpi, client);
+                }
+            }
+        }
     }
 
     // fSmall 归字体缓存所有，这里不删 —— 见 GetCachedUiFont 的说明。
