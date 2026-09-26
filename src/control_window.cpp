@@ -6,6 +6,7 @@
 #include "debug_log.h"
 #include "control_bar_layout.h"   // 控制条的布局数学（纯函数，可离线单测）
 #include "dpi_util.h"             // GetDpiForWindowSafe（与首选项页共用）
+#include "color_util.h"           // BlendColor / ColorLuminance（控制条配色从底色推导）
 
 #include <algorithm>
 #include <dwmapi.h>
@@ -57,7 +58,19 @@ constexpr UINT     kRefreshInterval = 250;
 //   * 动画拍除了"把下一帧画出来"什么都不做，而且只在真的在动时才存在
 // id 取 3：1 是逻辑拍，2 留给 DUI/CUI（见 dui_element.cpp 的说明）。
 constexpr UINT_PTR kAnimTimerId  = 3;
-constexpr UINT     kAnimInterval = 40;   // 25fps
+// 动画定时器的周期。
+//
+// 40 -> 20（2026-09-26）：用户报「歌词滚动的帧率还是偏低」。
+// 根因是**上滑动画只有 200ms**（`kSlideMs`），而 40ms 一拍意味着整个上滑
+// 只有 **5 帧** —— 再好的缓动也看不出连贯来。20ms 之后是 10 帧，
+// 横滚那条（60px/s、持续几秒）也顺带翻倍。
+//
+// ⚠️ 代价只落在**动画进行中**：定时器跟着 `animating` 开关
+//（见 AdvanceAnimation），静止时它根本不存在。所以这次翻倍不影响平时的占用。
+// 一次重绘 6~8ms，20ms 间隔下动画期间约占 30~40% 单核 —— 短时、可接受。
+// **真要再往上提，瓶颈在重绘成本而不在定时器精度**，得先做脏区重绘
+//（只重画真正变了的那一行），否则间隔再小也只是把 CPU 烧在重复画同一块上。
+constexpr UINT     kAnimInterval = 20;   // 50fps
 // 位置变化的节流间隔 kPositionRepaintMs 定义在 playback_state.h ——
 // 三个宿主共用同一个值。
 
@@ -1642,9 +1655,37 @@ void ControlWindow::DrawControls(HDC dc, int dpi) {
     auto S = [dpi](int v) { return MulDiv(v, dpi, 96); };
     const auto& st = PlaybackState::Get();
 
+    // ★ 控制条的所有颜色**从面板底色推导**，不写死。
+    //
+    // 【为什么必须这样】这些值从前是硬编码的浅灰/白 —— 那是配默认那套深底色
+    //（28,28,30）挑的。切到「亮色」预设（bg = 250,250,250）之后，浅色控件压在
+    // 浅底上**整条控制条都看不见**（用户 2026-09-26 报的「对亮色预设控件不能是
+    // 亮色的」）。
+    //
+    // 这和 D-075「白底白字」是同一类错误：**自绘界面里，颜色永远该由它要压在
+    // 上面的那个颜色决定**，而不是由"当前是什么主题"去猜。
+    //
+    // 做法和 prefs_layout 的 MakePrefsTheme 同一套：先取一个"远离底色"的方向
+    //（深底就往白走、浅底就往黑走），再让各控件按不同强度混过去。
+    // 深底那几个 t 值是**照着原来的硬编码值反推**的，所以默认预设下观感不变。
+    const COLORREF bg     = m_appearance.bg;
+    const bool     bgDark = (ColorLuminance(bg) < 128);
+    const COLORREF toward = bgDark ? RGB(255, 255, 255) : RGB(0, 0, 0);
+    auto T = [&](double t) { return BlendColor(bg, toward, t); };
+
+    const COLORREF cBtnDown  = T(bgDark ? 0.24 : 0.18);
+    const COLORREF cBtnHot   = T(bgDark ? 0.14 : 0.10);
+    const COLORREF cGlyph    = T(bgDark ? 0.82 : 0.78);   // 上一首 / 下一首
+    const COLORREF cGlyphHi  = T(bgDark ? 1.00 : 0.92);   // 播放 / 暂停（最亮的一个）
+    const COLORREF cTrack    = T(bgDark ? 0.21 : 0.16);   // 滑块未填充部分
+    const COLORREF cFill     = T(bgDark ? 0.80 : 0.76);   // 滑块已填充部分
+    const COLORREF cTimeText = T(bgDark ? 0.72 : 0.68);
+    const COLORREF cVolIcon  = T(bgDark ? 0.77 : 0.72);
+    const COLORREF cPopupBg  = T(bgDark ? 0.09 : 0.07);   // 音量浮层底板
+
     auto buttonBg = [&](CtrlId id, const RECT& r, bool forceHot = false) {
-        if (m_active == id)                        FillRoundRect(dc, r, S(8), RGB(72, 82, 96));
-        else if (m_hot == id || forceHot)          FillRoundRect(dc, r, S(8), RGB(58, 62, 72));
+        if (m_active == id)                        FillRoundRect(dc, r, S(8), cBtnDown);
+        else if (m_hot == id || forceHot)          FillRoundRect(dc, r, S(8), cBtnHot);
     };
 
     buttonBg(CtrlId::Prev, m_rcPrev);
@@ -1658,10 +1699,10 @@ void ControlWindow::DrawControls(HDC dc, int dpi) {
         (static_cast<BackdropMode>(cfg_backdrop_mode.get()) == BackdropMode::Translucent);
 
     if (!layered) {
-        DrawTransportGlyph(dc, m_rcPrev, 0, RGB(212, 212, 220));
+        DrawTransportGlyph(dc, m_rcPrev, 0, cGlyph);
         DrawTransportGlyph(dc, m_rcPlayPause, (st.IsPlaying() && !st.IsPaused()) ? 2 : 1,
-                           RGB(255, 255, 255));
-        DrawTransportGlyph(dc, m_rcNext, 3, RGB(212, 212, 220));
+                           cGlyphHi);
+        DrawTransportGlyph(dc, m_rcNext, 3, cGlyph);
     }
 
     // 进度条
@@ -1671,7 +1712,7 @@ void ControlWindow::DrawControls(HDC dc, int dpi) {
         if (m_draggingProgress) ratio = m_dragRatio;
         if (ratio < 0.0) ratio = 0.0;
         if (ratio > 1.0) ratio = 1.0;
-        DrawSlider(dc, m_rcProgress, ratio, S(4), RGB(74, 74, 82), RGB(206, 210, 220));
+        DrawSlider(dc, m_rcProgress, ratio, S(4), cTrack, cFill);
     }
 
     // 时间
@@ -1683,7 +1724,7 @@ void ControlWindow::DrawControls(HDC dc, int dpi) {
     if (m_rcTime.right > m_rcTime.left) {
         const std::wstring text = FormatTime(st.PositionSec()) + L" / " + FormatTime(st.LengthSec());
         const HGDIOBJ oldFont = SelectObject(dc, fSmall);
-        SetTextColor(dc, RGB(190, 190, 198));
+        SetTextColor(dc, cTimeText);
         RECT tr = m_rcTime;
         DrawTextW(dc, text.c_str(), -1, &tr,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
@@ -1697,8 +1738,8 @@ void ControlWindow::DrawControls(HDC dc, int dpi) {
         const RECT& r = m_rcVolumeIcon;
         const int cy = (r.top + r.bottom) / 2;
         RECT body{ r.left + S(3), cy - S(3), r.left + S(3) + S(5), cy + S(3) };
-        HBRUSH b = CreateSolidBrush(RGB(200, 200, 208));
-        HPEN   p = CreatePen(PS_SOLID, 1, RGB(200, 200, 208));
+        HBRUSH b = CreateSolidBrush(cVolIcon);
+        HPEN   p = CreatePen(PS_SOLID, 1, cVolIcon);
         const HGDIOBJ ob = SelectObject(dc, b);
         const HGDIOBJ op = SelectObject(dc, p);
         FillRect(dc, &body, b);
@@ -1720,7 +1761,7 @@ void ControlWindow::DrawControls(HDC dc, int dpi) {
         if (m_draggingVolume) v = m_dragRatio;
         if (v < 0.0) v = 0.0;
         if (v > 1.0) v = 1.0;
-        DrawSlider(dc, m_rcVolumeBar, v, S(4), RGB(74, 74, 82), RGB(206, 210, 220));
+        DrawSlider(dc, m_rcVolumeBar, v, S(4), cTrack, cFill);
     }
 
     // ---- 音量浮层（悬停展开的垂直滑块）----
@@ -1731,7 +1772,7 @@ void ControlWindow::DrawControls(HDC dc, int dpi) {
     // 所以用户在任何一个宽度下都恰好有一个音量控件可用。
     if (m_volumePopupOpen && m_rcVolumePopup.right > m_rcVolumePopup.left) {
         // 底板：比面板深一档的圆角块，让它从歌词背景里浮出来
-        FillRoundRect(dc, m_rcVolumePopup, S(10), RGB(44, 46, 54));
+        FillRoundRect(dc, m_rcVolumePopup, S(10), cPopupBg);
 
         // 轨道两侧留内边距，别贴着底板边缘
         RECT track = m_rcVolumePopup;
@@ -1741,7 +1782,7 @@ void ControlWindow::DrawControls(HDC dc, int dpi) {
         if (m_draggingVolume && m_dragFromPopup) v = m_dragRatio;
         if (v < 0.0) v = 0.0;
         if (v > 1.0) v = 1.0;
-        DrawVerticalSlider(dc, track, v, S(4), RGB(74, 74, 82), RGB(206, 210, 220));
+        DrawVerticalSlider(dc, track, v, S(4), cTrack, cFill);
     }
 
     // ---- 数值标签（悬停**或**拖拽时显示）----
@@ -1824,16 +1865,41 @@ void ControlWindow::DrawIconOverlay(unsigned char* dst, int w, int h, int stride
     const int iconH = MulDiv(14, dpi, 96);   // 图标高度，按 DPI 缩放
     const auto& st = PlaybackState::Get();
 
+    // ★ 图标着色同样从面板底色推导。
+    //
+    // 这里从前写死了 0xC8C8D2 / 0xF2F2F8 / 0xFFFFFF —— 全是配默认深底色的
+    // 浅灰白。切到「亮色」预设（bg = 250,250,250）之后，浅色图标压在浅底上
+    // **什么都看不见**（和 DrawControls 那边是同一个问题）。
+    //
+    // ⚠️ 这里的格式是 0xRRGGBB，**不是** COLORREF 的 0x00BBGGRR ——
+    //    所以不能把 RGB() 的结果直接传进来，得换一次字节序。
+    const COLORREF bg     = m_appearance.bg;
+    const bool     bgDark = (ColorLuminance(bg) < 128);
+    const COLORREF toward = bgDark ? RGB(255, 255, 255) : RGB(0, 0, 0);
+    auto T = [&](double t) { return BlendColor(bg, toward, t); };
+    auto ToRgb = [](COLORREF c) -> unsigned {
+        return (static_cast<unsigned>(GetRValue(c)) << 16) |
+               (static_cast<unsigned>(GetGValue(c)) << 8)  |
+                static_cast<unsigned>(GetBValue(c));
+    };
+
+    const unsigned cNormal = ToRgb(T(bgDark ? 0.78 : 0.74));   // 上一首 / 下一首 / 音量
+    const unsigned cMain   = ToRgb(T(bgDark ? 0.94 : 0.86));   // 播放 / 暂停（主操作，常态就给亮）
+    const unsigned cHot    = ToRgb(T(bgDark ? 1.00 : 0.92));
+    // 按下态保留"蓝色"这个语义（它是这组控件里唯一的彩色），但亮度跟着底色走：
+    // 深底用亮蓝，浅底用深蓝 —— 把 0x9CCBFF 直接放到浅底上会糊成一片。
+    const unsigned cActive = ToRgb(bgDark ? RGB(0x9C, 0xCB, 0xFF) : RGB(0x00, 0x5A, 0xB4));
+
     // 悬停/按下的反馈 = 底板（DrawControls 里画）+ 图标变亮，两者一起给。
     // active 优先于 hot —— 按住时鼠标必然还在上面，不能只显示悬停态。
     //
     // 音量图标额外判一条 m_volumePopupOpen：浮层是从它身上展开的，
     // 鼠标移进浮层之后 m_hot 就变成 VolumePopup 了（这是**必须**的，
     // 悬停标签靠它认人），但图标不该因此熄掉 —— 那样看着像浮层和它没关系。
-    auto tintFor = [this](CtrlId id, unsigned normal) -> unsigned {
-        if (m_active == id) return 0x9CCBFFu;   // 按下：淡蓝
-        if (m_hot == id)    return 0xFFFFFFu;   // 悬停：纯白
-        if (id == CtrlId::VolumeIcon && m_volumePopupOpen) return 0xFFFFFFu;
+    auto tintFor = [this, cHot, cActive](CtrlId id, unsigned normal) -> unsigned {
+        if (m_active == id) return cActive;
+        if (m_hot == id)    return cHot;
+        if (id == CtrlId::VolumeIcon && m_volumePopupOpen) return cHot;
         return normal;
     };
 
@@ -1848,12 +1914,12 @@ void ControlWindow::DrawIconOverlay(unsigned char* dst, int w, int h, int stride
         BlendIcon(dst, w, h, stride, x, y, *icon, rgb);
     };
 
-    drawIn(L"prev",   m_rcPrev,       tintFor(CtrlId::Prev, 0xC8C8D2u));
-    // 播放/暂停是主操作，常态就给亮色；悬停再提到纯白
+    drawIn(L"prev",   m_rcPrev,       tintFor(CtrlId::Prev, cNormal));
+    // 播放/暂停是主操作，常态就给亮色；悬停再提一档
     drawIn((st.IsPlaying() && !st.IsPaused()) ? L"pause" : L"play",
-           m_rcPlayPause, tintFor(CtrlId::PlayPause, 0xF2F2F8u));
-    drawIn(L"next",   m_rcNext,       tintFor(CtrlId::Next, 0xC8C8D2u));
-    drawIn(L"volume", m_rcVolumeIcon, tintFor(CtrlId::VolumeIcon, 0xC8C8D2u));
+           m_rcPlayPause, tintFor(CtrlId::PlayPause, cMain));
+    drawIn(L"next",   m_rcNext,       tintFor(CtrlId::Next, cNormal));
+    drawIn(L"volume", m_rcVolumeIcon, tintFor(CtrlId::VolumeIcon, cNormal));
 }
 
 } // namespace lyricus
