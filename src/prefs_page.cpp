@@ -109,8 +109,11 @@ constexpr int kHitBgFit     = -13;   // 适配方式（点击循环，不是下�
 constexpr int kHitBgOpacity = -14;   // 下面三个是滑块
 constexpr int kHitBgBlur    = -15;
 constexpr int kHitBgDim     = -16;
-// 预览区（D-103）
+// 预览区（D-103）/ 四角手柄（D-107）
 constexpr int kHitBgPreview = -17;
+// 角手柄用**连续的一段**（-20..-17），这样"这是第几个角"减基准就得到。
+// 四个各写一个常量的话，HitTest 和拖动里都要写四遍 if。
+constexpr int kHitBgHandleBase = -20;
 
 // 控件基色块用**独立的索引区**，不和上面那 6 个配色色块（0..5）混。
 // 混在一起的话 HitTest 的 `hit < kPrefsColorCount` 判断会把它们误当成配色色块，
@@ -268,8 +271,10 @@ private:
     BgManual CurrentManual() const;
     // 拖动预览：dx/dy 是本次鼠标位移（像素）
     void OnBgPreviewDrag(int dx, int dy);
-    // 滚轮缩放。delta > 0 = 放大
-    void OnBgPreviewZoom(int delta);
+    // 拖角缩放（D-107）。pt 是当前鼠标的客户区坐标。
+    void OnBgHandleDrag(CPoint pt);
+    // 开始拖角：记下起点状态
+    void BeginBgHandleDrag(int hit, CPoint pt, const PrefsLayout& L);
     // 切到"手动"适配模式（拖动/缩放时自动调）
     void EnsureManualFit();
 
@@ -305,10 +310,18 @@ private:
     // 正在拖哪个滑块（kHitNone = 没有）。用**哪个**而不是布尔，
     // 是因为现在有四个滑块；布尔的话每加一个就要多一个标志，
     // 而漏掉"松开时清哪一个"就是滑块粘住鼠标。
-    int  m_dragSlider = kHitNone;
-    // 正在拖预览里的图（D-103）。和 m_dragSlider 分开：预览拖的是"图的位置"，
-    // 滑块拖的是"某个参数的值"，两者的位移语义完全不同。
-    bool m_dragPreview = false;
+    int    m_dragSlider = kHitNone;
+    // 拖角缩放（D-107）要记三个量：按下时的缩放、鼠标到预览中心的距离、
+    // 以及中心本身的客户区坐标（拖动过程中反复用，不重算）。
+    //
+    // ⚠️ 用「到中心的距离之比」而不是「某一轴的位移之比」：四个角方向不同，
+    //    但"离中心越远 = 放得越大"对四个角都成立 —— 一套公式服务四个角，
+    //    而不是四份各自带符号判断的实现。
+    int    m_dragHandle      = kHitNone;
+    int    m_dragStartZoom   = 100;
+    double m_dragStartDist   = 0.0;
+    CPoint m_dragCenter{};
+    bool   m_dragPreview = false;
     CPoint m_dragPreviewLast{};
     bool m_tracking  = false;      // 已登记 TME_LEAVE
 
@@ -449,17 +462,13 @@ void CLyricusPrefsDlg::OnVScroll(UINT nSBCode, UINT nPos, CScrollBar) {
     ScrollTo(target);
 }
 
-BOOL CLyricusPrefsDlg::OnMouseWheel(UINT, short zDelta, CPoint pt) {
-    // 鼠标在预览区上 -> 缩放构图，**不滚动页面**。
+BOOL CLyricusPrefsDlg::OnMouseWheel(UINT, short zDelta, CPoint) {
+    // ⚠️ 滚轮**只滚页面**，不再管预览区的缩放（D-107）。
     //
-    // ⚠️ 必须判位置：不判的话用户在预览上滚一下就同时缩放了图、又滚了页面，
-    //    而页面一动预览就跑掉了 —— 想微调的人会一直对不准。
-    if (!m_edited.bgImage.empty() && HitTest(pt) == kHitBgPreview) {
-        OnBgPreviewZoom(zDelta);
-        return TRUE;
-    }
-
-    // 一格滚轮 = 3 行，和系统别的滚动面板一致
+    // 之前预览区上的滚轮会缩放构图，但那和"滚轮在这个页面上该做的事"冲突 ——
+    // 用户想上下看看、结果图被缩放了。而且预览区占了大半个页面宽，
+    // 想滚过它几乎必然经过它。
+    // 缩放改用**拖四角**（图片编辑器的标准交互），滚轮交还给页面。
     const int dpi = static_cast<int>(GetDpiForWindowSafe(m_hWnd));
     const int step = MulDiv(24 * 3, (dpi > 0) ? dpi : 96, 96);
     ScrollTo(m_scrollY - (static_cast<int>(zDelta) * step) / WHEEL_DELTA);
@@ -514,6 +523,24 @@ int CLyricusPrefsDlg::HitTest(POINT pt) const {
     if (inside(L.bgOpacitySlider)) return kHitBgOpacity;
     if (inside(L.bgBlurSlider))    return kHitBgBlur;
     if (inside(L.bgDimSlider))     return kHitBgDim;
+
+    // ⚠️ 角手柄要**先于**预览区判 —— 手柄画在预览框的四个角上，
+    //    顺序反了的话它们永远会被预览区先吃掉，拖角就变成了平移。
+    //    这类"优先级"错误的表现是"功能没反应"，很难联想到是判断顺序。
+    if (!m_edited.bgImage.empty()) {
+        const int dpi = static_cast<int>(GetDpiForWindowSafe(m_hWnd));
+        const int visSize = MulDiv(12, dpi, 96);
+        const int hitSize = BgPreviewHandleHitSize(visSize);
+        for (int i = 0; i < kBgHandleCount; ++i) {
+            // 命中框比视觉框大一圈，并且**以角为中心**向外扩 ——
+            // 不然用户得把鼠标完全压在框内那半个手柄上才点得中。
+            const int grow = (hitSize - visSize) / 2;
+            RECT h = BgPreviewHandle(L.bgPreview, i, visSize);
+            InflateRect(&h, grow, grow);
+            if (inside(h)) return kHitBgHandleBase + i;
+        }
+    }
+
     if (inside(L.bgPreview))       return kHitBgPreview;
     // ---- 控件配色（D-093）----
     if (inside(L.ctrlModeBtn))  return kHitCtrlMode;
@@ -1120,6 +1147,23 @@ void CLyricusPrefsDlg::DrawBgPreview(HDC dc, const PrefsLayout& L) {
     // 边框画在最后（先画会被图盖住）
     StrokeRoundRect(dc, L.bgPreview, rad, 1, T.border);
 
+    // 四角手柄（D-107）。**画在图之上** —— 它们是能抓的东西，
+    // 被图盖住的话用户根本不知道可以拖。
+    if (!m_edited.bgImage.empty()) {
+        const int visSize = MulDiv(12, dpi, 96);
+        const int hRad    = MulDiv(3, dpi, 96);
+        for (int i = 0; i < kBgHandleCount; ++i) {
+            RECT h = BgPreviewHandle(L.bgPreview, i, visSize);
+            if (empty(h)) continue;
+            const bool hot = (m_hot == kHitBgHandleBase + i) ||
+                             (m_dragHandle == kHitBgHandleBase + i);
+            // 白块 + 深色描边：这个组合在**任何**底图上都看得见 ——
+            // 纯白会在浅色图上消失，纯深色会在暗图上消失，只有带描边的能两头兼顾。
+            FillRoundRect(dc, h, hRad, hot ? T.accent : RGB(255, 255, 255));
+            StrokeRoundRect(dc, h, hRad, MulDiv(1, dpi, 96), RGB(70, 70, 75));
+        }
+    }
+
     if (!empty(L.bgPreviewHint)) {
         const wchar_t* hint = m_edited.bgImage.empty()
             ? L""
@@ -1171,26 +1215,52 @@ void CLyricusPrefsDlg::OnBgPreviewDrag(int dx, int dy) {
     Repaint();
 }
 
-void CLyricusPrefsDlg::OnBgPreviewZoom(int delta) {
-    if (m_edited.bgImage.empty() || delta == 0) return;
+void CLyricusPrefsDlg::BeginBgHandleDrag(int hit, CPoint pt, const PrefsLayout& L) {
+    m_dragHandle = hit;
+
+    const BgManual m = CurrentManual();
+    m_dragStartZoom = m.zoomPct;
+
+    // 中心取预览框的中心（客户区坐标）—— 拖动过程中要反复用它算距离，
+    // 每次重算没必要，而且布局万一在拖动中途变了（几乎不会），
+    // 用同一个中心至少保证这一趟拖动是自洽的。
+    m_dragCenter.x = (L.bgPreview.left + L.bgPreview.right) / 2;
+    m_dragCenter.y = (L.bgPreview.top + L.bgPreview.bottom) / 2;
+
+    const double dx = pt.x - m_dragCenter.x;
+    const double dy = pt.y - m_dragCenter.y;
+    m_dragStartDist = std::sqrt(dx * dx + dy * dy);
+
+    // ⚠️ 起点距离太小时比例会炸（除以一个接近 0 的数）——
+    //    四个角离中心都有半个对角线，正常不会触发；
+    //    但窗口被压得极小时可能。给一个下限，让它退化成"不动"。
+    if (m_dragStartDist < 8.0) m_dragStartDist = 8.0;
+
+    EnsureManualFit();
+}
+
+void CLyricusPrefsDlg::OnBgHandleDrag(CPoint pt) {
+    if (m_dragHandle == kHitNone || m_dragStartDist <= 0.0) return;
+
+    const double dx = pt.x - m_dragCenter.x;
+    const double dy = pt.y - m_dragCenter.y;
+    const double dist = std::sqrt(dx * dx + dy * dy);
+
+    // 缩放 = 按下时的缩放 × (现在到中心的距离 / 按下时的距离)。
+    // 往外拖 = 离中心更远 = 放大，四个角都成立。
+    const double ratio = dist / m_dragStartDist;
 
     BgManual m = CurrentManual();
-    // 每格 10%。用乘除而不是加减是为了"从 100 到 400 感觉一样快" ——
-    // 加减的话在 100% 附近一格跳得很明显，到 400% 附近就几乎不动了。
-    const int step = (delta > 0) ? 10 : -10;
-    m.zoomPct += step;
+    m.zoomPct = static_cast<int>(std::lround(m_dragStartZoom * ratio));
 
     const BgManual c = ClampBgManual(m);
     if (c.zoomPct == m_edited.bgZoomPct) return;   // 已经到上下限
 
-    EnsureManualFit();
     m_edited.bgZoomPct = c.zoomPct;
-    // ⚠️ 缩放会让"可移动范围"变大，原来的偏移可能已经越界；
-    //    当场夹一次，否则图会在一瞬间被画到区域外（露出一条底色边）。
-    //    下一次拖动也会经过 ClampBgManual，但那一帧已经画出去了。
+    // ⚠️ 缩放会改变"可移动范围"，原来的偏移可能已经越界；
+    //    当场夹一次，否则那一帧图会被画到区域外、露出一条底色边。
     {
-        BgManual m2 = CurrentManual();
-        const BgManual c2 = ClampBgManual(m2);
+        const BgManual c2 = ClampBgManual(CurrentManual());
         m_edited.bgOffsetXPct = c2.offsetXPct;
         m_edited.bgOffsetYPct = c2.offsetYPct;
     }
@@ -1252,6 +1322,12 @@ void CLyricusPrefsDlg::DrawPresetArea(HDC dc, const PrefsLayout& L) {
 // ---------------------------------------------------------------------------
 
 void CLyricusPrefsDlg::OnMouseMove(UINT /*flags*/, CPoint pt) {
+    // 拖角缩放（D-107）
+    if (m_dragHandle != kHitNone) {
+        OnBgHandleDrag(pt);
+        return;
+    }
+
     // 拖动预览里的图：按**本次位移**算，不是按"鼠标到哪" ——
     // 后者会在按下的一瞬间把图跳到鼠标位置（那看着像图"弹"了一下）。
     if (m_dragPreview) {
@@ -1280,7 +1356,15 @@ void CLyricusPrefsDlg::OnMouseMove(UINT /*flags*/, CPoint pt) {
     }
 
     const int hit = HitTest(pt);
-    SetCursor(LoadCursorW(nullptr, hit == kHitNone ? IDC_ARROW : IDC_HAND));
+    // 角手柄用**斜向缩放箭头**（左上/右下是 ↖↘，右上/左下是 ↗↙）——
+    // 光标是唯一的"这里可以拖"的提示，用普通箭头的话没人会去试。
+    HCURSOR cur = LoadCursorW(nullptr, hit == kHitNone ? IDC_ARROW : IDC_HAND);
+    if (hit >= kHitBgHandleBase && hit < kHitBgHandleBase + kBgHandleCount) {
+        const int corner = hit - kHitBgHandleBase;
+        const bool nwse = (corner == 0 || corner == 2);   // 左上 / 右下
+        cur = LoadCursorW(nullptr, nwse ? IDC_SIZENWSE : IDC_SIZENESW);
+    }
+    SetCursor(cur);
     if (hit != m_hot) { m_hot = hit; Repaint(); }
 }
 
@@ -1303,6 +1387,11 @@ void CLyricusPrefsDlg::OnLButtonDown(UINT /*flags*/, CPoint pt) {
         EnsureManualFit();
     }
 
+    // 角手柄：开始拖角缩放（D-107）
+    if (hit >= kHitBgHandleBase && hit < kHitBgHandleBase + kBgHandleCount) {
+        BeginBgHandleDrag(hit, pt, CurrentLayout());
+    }
+
     // 四个滑块都用同一个起点处理：点哪儿跳到哪儿，而不是只响应拖动。
     if (hit == kHitSlider || hit == kHitBgOpacity || hit == kHitBgBlur || hit == kHitBgDim) {
         m_dragSlider = hit;
@@ -1315,11 +1404,13 @@ void CLyricusPrefsDlg::OnLButtonUp(UINT /*flags*/, CPoint pt) {
     const int hit  = m_active;
     // 松开之前记一下"刚才是不是在拖" —— 拖拽结束时不该再当成一次点击
     // （否则松手会顺带触发按钮动作，滑块拖到一半就把图清了那种）。
-    const bool wasDrag = (m_dragSlider != kHitNone) || m_dragPreview;
+    const bool wasDrag = (m_dragSlider != kHitNone) || m_dragPreview ||
+                         (m_dragHandle != kHitNone);
 
-    m_active     = kHitNone;
-    m_dragSlider = kHitNone;
+    m_active      = kHitNone;
+    m_dragSlider  = kHitNone;
     m_dragPreview = false;
+    m_dragHandle  = kHitNone;
     if (::GetCapture() == m_hWnd) ::ReleaseCapture();
 
     if (hit == kHitReset) {

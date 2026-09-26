@@ -107,7 +107,7 @@ struct PrefsLayout {
     //     压暗     [|=========] 0
     RECT titleBg{};              // 小标题：背景图
     RECT bgClear{};              // 「清除」（标题行右侧）
-    RECT bgPreview{};            // 预览区（同浮动面板的长宽比，可拖动/滚轮缩放）
+    RECT bgPreview{};            // 预览区（同浮动面板的长宽比，可拖动平移/拖角缩放）
     RECT bgPreviewHint{};        // 预览下方的操作提示
     RECT bgPick{};               // 「选择图片…」（也显示当前路径）
     RECT bgFit{};                // 适配方式（点击循环，不是下拉）
@@ -143,5 +143,21 @@ struct PrefsTheme {
 // dark = true 走深色一套。bg / fg 由调用方从 ui_config_manager 取，
 // 这样页面底色能和首选项窗口严丝合缝地接上。
 PrefsTheme MakePrefsTheme(bool dark, COLORREF bg, COLORREF fg);
+
+// ---- 预览区四角手柄（D-107）----
+//
+// 【为什么从 preview 算而不是单独存四个 RECT】手柄的位置**完全由预览区决定** ——
+// 单独存的话就有了两份真相，预览区一改（以后面板比例变了、或者换个窗口尺寸）
+// 就可能手柄留在原地、和框对不上。算出来的东西不会不同步。
+//
+// corner：0=左上 1=右上 2=右下 3=左下。手柄**以内边缘贴角**（画在框内），
+// 这样它不会越出客户区被裁掉半个。
+constexpr int kBgHandleCount = 4;
+RECT BgPreviewHandle(const RECT& preview, int corner, int size);
+
+// 手柄的命中范围（比画出来的大一圈）。
+// 拖动目标太小会很难点中，而"点不中"在用户那边看起来像"这个功能不好用"，
+// 不像"目标太小"。
+int  BgPreviewHandleHitSize(int size);
 
 } // namespace lyricus

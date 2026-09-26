@@ -81,6 +81,36 @@ void TestDefaultLayout() {
     Check(!IsEmpty(L.bgFit),        "适配方式有位置");
     Check(!IsEmpty(L.bgPreview),    "★ 预览区有位置（拖动/缩放靠它）");
     Check(!IsEmpty(L.bgPreviewHint),"预览提示有位置");
+    // ---- 四角手柄（D-107）----
+    {
+        const int hs = 12;
+        const RECT tl = lyricus::BgPreviewHandle(L.bgPreview, 0, hs);
+        const RECT tr = lyricus::BgPreviewHandle(L.bgPreview, 1, hs);
+        const RECT br = lyricus::BgPreviewHandle(L.bgPreview, 2, hs);
+        const RECT bl = lyricus::BgPreviewHandle(L.bgPreview, 3, hs);
+        Check(!IsEmpty(tl) && !IsEmpty(tr) && !IsEmpty(br) && !IsEmpty(bl),
+              "★ 四个角的手柄都有位置");
+        Check(tl.left == L.bgPreview.left && tl.top == L.bgPreview.top,
+              "★ 左上角贴住预览框左上");
+        Check(br.right == L.bgPreview.right && br.bottom == L.bgPreview.bottom,
+              "★ 右下角贴住预览框右下");
+        Check(tr.left > L.bgPreview.left + 100 && tr.top == L.bgPreview.top,
+              "★ 右上角在右边、且贴顶");
+        // 手柄**必须在框内** —— 越出去会被客户区裁掉半个，看着像画错了
+        const RECT all[4] = { tl, tr, br, bl };
+        int outside = 0;
+        for (const RECT& h : all) {
+            if (h.left < L.bgPreview.left || h.top < L.bgPreview.top ||
+                h.right > L.bgPreview.right || h.bottom > L.bgPreview.bottom) ++outside;
+        }
+        Check(outside == 0, "★ 四个手柄都完整落在预览框内（不会被裁掉一半）");
+        Check(lyricus::BgPreviewHandle(L.bgPreview, 9, hs).right == 0,
+              "★ 越界的 corner 返回空矩形（不崩）");
+        Check(!IsEmpty(lyricus::BgPreviewHandle(L.bgPreview, 0, hs)),
+              "（合法 corner 正常返回）");
+        Check(lyricus::BgPreviewHandleHitSize(hs) > hs,
+              "★ 手柄的命中范围比视觉大（不然很难点中）");
+    }
     {
         int miss = 0;
         for (int i = 0; i < lyricus::kPrefsCtrlColorCount; ++i) {

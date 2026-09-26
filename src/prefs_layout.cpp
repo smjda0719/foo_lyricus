@@ -10,7 +10,6 @@
 //
 // 所有尺寸都先按 **96 dpi 的逻辑像素**写，再用 S() 缩放。这样高 DPI 下
 // 整套比例一致，不用给每个数字各写一份。
-// ---------------------------------------------------------------------------
 
 namespace lyricus {
 namespace {
@@ -259,6 +258,27 @@ PrefsTheme MakePrefsTheme(bool dark, COLORREF bg, COLORREF fg) {
         t.accent  = RGB(0, 120, 212);
     }
     return t;
+}
+
+// ---- 预览区四角手柄（D-107）----
+
+RECT BgPreviewHandle(const RECT& preview, int corner, int size) {
+    if (size <= 0 || preview.right <= preview.left || preview.bottom <= preview.top) {
+        return RECT{ 0, 0, 0, 0 };
+    }
+    if (corner < 0 || corner >= kBgHandleCount) return RECT{ 0, 0, 0, 0 };
+
+    // 手柄**以内边缘贴角**：画在框内，不会因为越出客户区被裁掉一半。
+    // 越界的那半个手柄视觉上很难看，而且 HitTest 也得跟着放宽。
+    const bool left = (corner == 0 || corner == 3);
+    const int x = left ? preview.left : (preview.right - size);
+    const int y = (corner == 0 || corner == 1) ? preview.top : (preview.bottom - size);
+    return RECT{ x, y, x + size, y + size };
+}
+
+int BgPreviewHandleHitSize(int size) {
+    // 视觉尺寸的 1.6 倍。太小的话点不中，而那会被当成"功能不好用"。
+    return (size * 8) / 5;
 }
 
 } // namespace lyricus
