@@ -1447,15 +1447,26 @@ void CLyricusPrefsDlg::OnMouseMove(UINT /*flags*/, CPoint pt) {
     // 角手柄用**斜向缩放箭头** —— 光标是唯一的"这里可以拖"的提示，
     // 用普通箭头没人会去试。
     //
-    // ⚠️ 两个光标名的映射**和我一开始以为的相反**（D-109）：
-    //    `IDC_SIZENWSE` 画出来是 ↗↙，`IDC_SIZENESW` 才是 ↖↘。
-    //    我按名字反着配的，结果四个角全反了。
-    //    所以这里按**实际图形**配：左上/右下（↖↘）用 NESW。
+    // ★ 配对规则（D-111）：**同一条对角线上的两个角用同一个光标**。
+    //
+    //   判据是"放大朝外"：
+    //     左上角的"外"是 ↖、右下角的是 ↘ -> 两个都要 ↖↘ = IDC_SIZENWSE
+    //     右上角的是 ↗、左下角的是 ↙       -> 两个都要 ↗↙ = IDC_SIZENESW
+    //
+    //   ⚠️ 这里我连着错了两次，值得记下来：
+    //     第一次配对了（就是下面这版），用户说"下面两个反了" ——
+    //     但那次**图比预览框高，上面两个手柄落在框外看不见**，
+    //     他只看到了下面两个，而那两个其实是对的。
+    //     我按"下面两个反了"把**四个全换**，于是四个全错。
+    //
+    //   教训：用户报"某几个不对"时，先确认**他是不是只看到了那几个** ——
+    //   可见性是解释"为什么只有一部分不对"的第一候选，
+    //   而不是"这两处的逻辑真的不同"。
     HCURSOR cur = LoadCursorW(nullptr, hit == kHitNone ? IDC_ARROW : IDC_HAND);
     if (hit >= kHitBgHandleBase && hit < kHitBgHandleBase + kBgHandleCount) {
         const int corner = hit - kHitBgHandleBase;
-        const bool slashNESW = (corner == 0 || corner == 2);   // 左上 / 右下 = ↖↘
-        cur = LoadCursorW(nullptr, slashNESW ? IDC_SIZENESW : IDC_SIZENWSE);
+        const bool diagNWSE = (corner == 0 || corner == 2);   // 左上 / 右下 = ↖↘
+        cur = LoadCursorW(nullptr, diagNWSE ? IDC_SIZENWSE : IDC_SIZENESW);
     }
     SetCursor(cur);
     if (hit != m_hot) { m_hot = hit; Repaint(); }
