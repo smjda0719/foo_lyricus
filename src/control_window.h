@@ -94,6 +94,18 @@ public:
     static void DrawControlsPreview(HDC dc, const RECT& rc,
                                     const PanelAppearance& ap, int dpi);
 
+    // 把**整块面板内容**（曲名 + 歌词 + 控制条）画到任意 DC 上（D-128）。
+    //
+    // 【和 DrawControlsPreview 的区别】那个只画控制条（用来单独看控件配色），
+    // 这个画全 —— 首选项的背景图预览用它，于是**排版和面板是同一份实现**，
+    // 不会出现"预览和真实排版差一点"。
+    //
+    // src 传一份替身歌词（见 LyricsSource）：预览不该依赖"现在有没有在播放"。
+    static void PaintPreview(HDC dc, const RECT& rc,
+                             const PanelAppearance& ap,
+                             const LyricDisplayConfig& cfg, int dpi,
+                             const LyricsSource* src);
+
 private:
     CtrlId HitTestControls(POINT clientPt, double* ratioOut) const;
     void   ActivateControl(CtrlId id, double ratio);
@@ -123,7 +135,7 @@ private:
     int    m_ctrlBarTop       = 0;    // 控制条上沿 = 歌词区的下界
 
     // 只负责把文字画到给定 DC 上（不碰背景），供普通绘制和分层渲染共用。
-    void DrawTextContent(HDC dc, const RECT& rc);
+    void DrawTextContent(HDC dc, const RECT& rc, const LyricsSource* src = nullptr);
 
     // 分层窗口渲染路径：自建 32bpp DIB，手工写 alpha，再 UpdateLayeredWindow 提交。
     // 「半透明」模式走这条路 —— 不依赖 DWM 材质，GDI 文字也不会出现黑底方块。

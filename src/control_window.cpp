@@ -1270,7 +1270,41 @@ void ControlWindow::PaintContent(HDC dc) {
     DeleteDC(mem);
 }
 
-void ControlWindow::DrawTextContent(HDC dc, const RECT& rc) {
+void ControlWindow::PaintPreview(HDC dc, const RECT& rc,
+                                 const PanelAppearance& ap,
+                                 const LyricDisplayConfig& cfg, int dpi,
+                                 const LyricsSource* src) {
+    // 只当状态容器用 —— 不 Create，所以没有窗口、没有窗口类注册。
+    ControlWindow tmp;
+
+    tmp.m_appearance = ap;
+    tmp.m_displayCfg = cfg;
+
+    // m_layout 的四个字段来自 displayCfg。面板那边是在 WM_TIMER 的轮询里
+    // 同步的（"用户改了高级首选项，那套配置没有变更通知"）；预览只画一次，
+    // 没有"下一次轮询"，所以这里直接设。
+    //
+    // clipBottom / panelScalePct 不在这里设 —— DrawTextContent 会按当前
+    // LayoutControls 的结果刷它们，那才是正确值。
+    tmp.m_layout = LyricsViewLayout{ cfg.fontPct, cfg.span, cfg.currentRatio, cfg.tlPrimary };
+
+    tmp.m_hwnd = nullptr;
+
+    // 交互态全默认：没有悬停、没有按下、没有拖动、音量浮层关着。
+    // 那正是预览该显示的样子。
+    tmp.m_hot    = CtrlId::None;
+    tmp.m_active = CtrlId::None;
+    tmp.m_draggingProgress = false;
+    tmp.m_draggingVolume   = false;
+    tmp.m_volumePopupOpen  = false;
+    tmp.m_dragFromPopup    = false;
+    tmp.m_dragRatio = 0.0;
+    tmp.m_hotRatio  = 0.0;
+
+    tmp.DrawTextContent(dc, rc, src);
+}
+
+void ControlWindow::DrawTextContent(HDC dc, const RECT& rc, const LyricsSource* src) {
     const int dpi = GetDeviceCaps(dc, LOGPIXELSY);
 
     // 先算出控制条位置。歌词区限定在「顶边到控制条上沿」，两者各占各的位置、
@@ -1328,7 +1362,7 @@ void ControlWindow::DrawTextContent(HDC dc, const RECT& rc) {
     }
 
     // 返回值存下来：宽出量和上滑步距要靠它，下一拍喂给动画时间线
-    m_lastResult = DrawLyricsView(dc, rc, theme, m_layout, m_animFrame);
+    m_lastResult = DrawLyricsView(dc, rc, theme, m_layout, m_animFrame, src);
     // 控制条
     DrawControls(dc, dpi);
 }

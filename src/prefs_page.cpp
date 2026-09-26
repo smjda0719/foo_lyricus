@@ -58,6 +58,30 @@ struct ColorSlot {
     const wchar_t*                    label;
 };
 
+// 首选项预览用的**替身歌词**（D-128）。
+//
+// 【为什么要有】预览要显示"有歌词时长什么样"，而真实歌词依赖播放状态 ——
+// 用户调色时未必在播放，那时面板上只有一句"没有播放"，配色根本看不出效果。
+//
+// 用 LRC 文本构造而不是自己拼 LyricLine：LyricDocument 的解析器是全工程
+// 共用的一份（D-038 记过"改它一次打挂 26 条断言"），走它最省事也最一致。
+const LyricsSource& PreviewLyrics() {
+    static const LyricsSource s = [] {
+        LyricsSource r;
+        r.hasTrack = true;
+        r.title    = L"测试曲目 — 测试歌手";
+        const std::string lrc =
+            "[00:00.00]上一行歌词\n"
+            "[00:05.00]这是测试歌词\n"
+            "[00:10.00]下一行歌词\n";
+        r.doc = LyricDocument::Parse(
+            std::vector<unsigned char>(lrc.begin(), lrc.end()));
+        r.current = 1;   // 第 2 行（"这是测试歌词"）当当前行
+        return r;
+    }();
+    return s;
+}
+
 const ColorSlot kColorSlots[kPrefsColorCount] = {
     { &PanelAppearance::header,  L"曲名"       },
     { &PanelAppearance::current, L"当前歌词行" },
@@ -1275,60 +1299,20 @@ void CLyricusPrefsDlg::DrawBgPreview(HDC dc, const PrefsLayout& L) {
         }
     }
 
-    // ★ 歌词示意（D-123 / D-126）。
+    // ★ 整块面板内容交给**面板自己的那份实现**（D-128）。
     //
-    // 【为什么必须有】预览里只画底板和控件的话，"歌词文字"那一整组颜色
-    //（曲名 / 当前行 / 其它行 / 次要 / 警告）改了在预览里**毫无反应** ——
-    //    而那恰恰是用户最常调的一组。
+    // 【为什么不再手写】我先后手写过两版"近似排版"（五行平铺、按高度自适应），
+    //    用户两次都说"和真实排版不一样"。那是对的 —— 位置、行距、字号、
+    //    曲名的位置、当前行的垂直基准，每一样都有自己的规则，
+    //    手写的近似**必然**在某处偏一点，而"差一点"正是这类预览最没价值的状态：
+    //    用户会照着它调，然后发现面板上是另一个样子。
     //
-    // 【为什么按面板的布局摆】上一版是五行从上往下平铺，曲名和歌词挤在一起、
-    //    当前行还被挤出框外。预览的意义就是"看起来和面板一样"，
-    //    所以位置要照面板来：**曲名在顶、歌词当前行垂直居中、控制条在底**。
-    //    摆错了不如不摆 —— 用户会以为面板上也是那样。
-    if (L.bgPreview.bottom - L.bgPreview.top > MulDiv(70, dpi, 96)) {
-        const int lineH = MulDiv(19, dpi, 96);
-        const int cx0 = L.bgPreview.left;
-        const int cx1 = L.bgPreview.right;
-        const int ctrlH = MulDiv(30, dpi, 96);   // 底部控制条大致占这么高
-        const int headerH = MulDiv(26, dpi, 96); // 曲名占掉的那一条
-
-        auto line = [&](int cy, const wchar_t* text, COLORREF color, bool bold) {
-            RECT r{ cx0, cy - lineH / 2, cx1, cy + lineH / 2 };
-            DrawTextIn(dc, r, text, color, bold ? m_fontBold : m_fontBody,
-                       DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-        };
-
-        // 曲名：贴着预览框顶部（面板上也是顶部一行）
-        line(L.bgPreview.top + headerH / 2, L"曲名 — 歌手", m_edited.header, true);
-
-        // 歌词区：曲名之下、控制条之上
-        const int lyrTop = L.bgPreview.top + headerH;
-        const int lyrBot = L.bgPreview.bottom - ctrlH;
-        const int midY   = (lyrTop + lyrBot) / 2;
-        const int avail  = lyrBot - lyrTop;
-
-        // ⚠️ 预览框矮的时候**少画几行**（D-127）。
-        //
-        // 上一版固定画三行（上一行/当前行/下一行）+ 警告，而 preview 只有
-        // 约 143 逻辑像素高 —— 曲名在 y≈21、上一行在 y≈28，直接叠在一起。
-        // 预览的框高随窗口宽度变（按面板长宽比算），所以这里必须自适应：
-        // **挤在一起比少画几行更糟** —— 叠字看起来像渲染坏了。
-        const bool wide = (avail >= lineH * 4);      // 放得下上下各一行 + 警告
-        const bool mid  = (avail >= lineH * 3);
-
-        if (wide) {
-            line(midY - lineH, L"上一行歌词", m_edited.dim, false);
-        }
-        line(midY, L"当前这一行歌词", m_edited.current, true);
-        if (mid) {
-            line(midY + lineH, L"下一行歌词", m_edited.normal, false);
-        }
-        // 警告色平时不出现，但用户调色时要能看到自己挑的是什么。
-        // 只在真的放得下时才画 —— 它是这五行里最不重要的一条。
-        if (wide) {
-            line(lyrBot - lineH / 2, L"歌词未找到", m_edited.warn, false);
-        }
-    }
+    //    现在直接调 PaintPreview —— 它内部走的是 DrawTextContent，
+    //    和浮动面板**同一份代码**，所以排版一定一致。
+    //
+    // 歌词用一份固定的替身（不是真歌词）：预览不该依赖"现在有没有在播放"。
+    ControlWindow::PaintPreview(dc, L.bgPreview, m_edited,
+                                GetLyricDisplayConfig(), dpi, &PreviewLyrics());
 
     // 边框画在最后（先画会被图盖住）
     StrokeRoundRect(dc, L.bgPreview, rad, 1, T.border);

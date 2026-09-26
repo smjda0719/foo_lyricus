@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "scroll_anim.h"   // LyricAnimFrame
+#include "lyric.h"         // LyricDocument（LyricsSource 要按值存一份文档）
 
 // ---------------------------------------------------------------------------
 // 歌词面板的公共渲染层。
@@ -114,6 +115,29 @@ struct LyricsViewLayout {
     int panelScalePct = 100;
 };
 
+// DrawLyricsView 的**数据来源**（D-128）。
+//
+// 【为什么要有它】首选项的背景图预览要显示"有歌词时长什么样"，但真实歌词
+// 依赖**播放状态** —— 用户调色时未必在播放，那时面板上只有一句"没有播放"，
+// 预览就完全看不出配色效果。而手写一份"近似排版"又永远和真实排版差一点
+//（实测：位置、行距、字号都会偏）。
+//
+// 所以允许调用方塞一份**固定的替身内容**进来，排版仍然走这一份实现。
+// 传 nullptr（默认）时走真实的 PlaybackState —— 三种宿主的正常路径
+// 一行都不用改。
+//
+// 【为什么是"塞数据"而不是"塞文本"】渲染层要的不只是几行字：曲名、当前行
+// 序号、是否有歌词、是不是纯音乐…… 全都要。塞文本的话调用方还得自己拼出
+// 其余那些，等于把 PlaybackState 的接口在两边各维护一份。
+struct LyricsSource {
+    bool          hasTrack     = false;
+    std::wstring  title;
+    LyricDocument doc;
+    bool          instrumental = false;
+    std::wstring  lyricPath;
+    size_t        current      = LyricDocument::npos;
+};
+
 // 画「曲名 + 歌词」的返回值。
 //
 // 【为什么不再是裸 int】宿主需要知道两件只有渲染层才知道的事，
@@ -142,9 +166,13 @@ struct LyricsViewResult {
 //
 // anim 是这一帧的动画状态（横滚偏移 / 上滑位移）。默认值 = 都不动，
 // 所以宿主不接动画时行为和不传一样。
+//
+// src 是数据来源，nullptr（默认）= 用真实的 PlaybackState。
+// 首选项预览传一份替身进去（见 LyricsSource），排版仍然走这里。
 LyricsViewResult DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& theme,
                                 const LyricsViewLayout& layout = LyricsViewLayout{},
-                                const LyricAnimFrame& anim = LyricAnimFrame{});
+                                const LyricAnimFrame& anim = LyricAnimFrame{},
+                                const LyricsSource* src = nullptr);
 
 // 取一个**进程内缓存的** UI 字体。
 //

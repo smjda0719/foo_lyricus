@@ -315,7 +315,8 @@ std::wstring DescribeHostFont(const LyricsViewTheme& theme) {
 
 LyricsViewResult DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& theme,
                                 const LyricsViewLayout& layout,
-                                const LyricAnimFrame& anim) {
+                                const LyricAnimFrame& anim,
+                                const LyricsSource* srcOverride) {
     LyricsViewResult result;
     if (dc == nullptr) { result.bottom = rc.top; return result; }
 
@@ -350,14 +351,30 @@ LyricsViewResult DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& t
     HFONT fBody    = MakeFont(dpi, ScalePt(11, pct, layout.panelScalePct, hostPct), false, face);   // 其它歌词行
     HFONT fSub     = MakeFont(dpi, ScalePt(9,  pct, layout.panelScalePct, hostPct), false, face);   // 当前行的翻译（参照行）
 
+    // ★ 数据来源：真实播放状态，或者调用方塞进来的替身（D-128）。
+    //
+    // 只在开头分一次流，后面统一读 src —— 而不是在六个用到的地方各判一次
+    // "是不是预览"。后者改一处漏一处，而漏掉的表现是"预览里某一项不对"，
+    // 很难看出是漏判。
     const auto& st = PlaybackState::Get();
+    LyricsSource srcStorage;
+    const LyricsSource& src = [&]() -> const LyricsSource& {
+        if (srcOverride != nullptr) return *srcOverride;
+        srcStorage.hasTrack     = st.HasTrack();
+        srcStorage.title        = st.DisplayName();
+        srcStorage.doc          = st.Lyrics();
+        srcStorage.instrumental = st.IsInstrumental();
+        srcStorage.lyricPath    = st.LyricPath();
+        srcStorage.current      = st.CurrentLine();
+        return srcStorage;
+    }();
     int y = top;
 
     // ---- 曲名 ----
     // 曲名也在遮罩**外面**画：它是这一屏唯一允许出现在歌词区上方的文字，
     // 所以先把遮罩的范围定在它下方，再开遮罩。
-    if (st.HasTrack()) {
-        y += DrawLine(dc, st.DisplayName().c_str(), left, y, maxW,
+    if (src.hasTrack) {
+        y += DrawLine(dc, src.title.c_str(), left, y, maxW,
                       fHeader, theme.headerText, S(8));
     } else {
         y += S(8);
@@ -383,9 +400,9 @@ LyricsViewResult DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& t
     IntersectClipRect(dc, left, y, left + maxW, limit);
 
     // ---- 歌词 ----
-    const LyricDocument& doc = st.Lyrics();
+    const LyricDocument& doc = src.doc;
     if (doc.IsEmpty()) {
-        if (!st.HasTrack()) {
+        if (!src.hasTrack) {
             // 没在播放：什么都不说，留白
         } else {
             // 有源明确说过"这是纯音乐"（它返回的是「纯音乐，请欣赏」占位文本）
@@ -395,10 +412,10 @@ LyricsViewResult DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& t
             // 它是有用的信息 —— 比笼统的「（无歌词）」精确。
             // 所以那句话不作为歌词收下（不写歌词缓存，见 IsPlaceholderLyric），
             // 但结论留了下来，由**本地**在这里显示。
-            const wchar_t* msg = st.IsInstrumental() ? L"（纯音乐，请欣赏）"
+            const wchar_t* msg = src.instrumental ? L"（纯音乐，请欣赏）"
                                                      : L"（无歌词）";
-            std::wstring sub = st.LyricPath().empty() ? std::wstring()
-                                                      : FileNameOf(st.LyricPath());
+            std::wstring sub = src.lyricPath.empty() ? std::wstring()
+                                                      : FileNameOf(src.lyricPath);
             const int gap = S(4);
             const int h1 = MeasureLine(dc, msg, fBody, maxW);
             const int h2 = sub.empty() ? 0 : MeasureLine(dc, sub.c_str(), fBody, maxW);
@@ -414,7 +431,7 @@ LyricsViewResult DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& t
             y = limit;
         }
     } else {
-        const size_t cur   = st.CurrentLine();
+        const size_t cur   = src.current;
         const size_t total = doc.Count();
 
         const int gapCurrent = S(10);
