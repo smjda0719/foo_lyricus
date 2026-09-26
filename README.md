@@ -48,7 +48,7 @@
 需要 Visual Studio（C++20）和 foobar2000 SDK。
 
 ```powershell
-# 一次性：把 SDK、WTL 和依赖放到 3rdparty/ 下（体积大，不进版本库）
+# 一次性：自动下载 SDK、WTL、lunasvg、columns_ui-sdk 到 3rdparty/
 .\tools\setup.ps1
 
 # 构建
