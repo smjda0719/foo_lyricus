@@ -1,11 +1,13 @@
 #pragma once
 
+#include "folder_hint_table.h"   // FolderHint / FolderKeyOf / Parse / Format / Lookup / Apply
+
 #include <string>
 #include <vector>
 #include <utility>
 
 // ---------------------------------------------------------------------------
-// 按文件夹指定的歌词线索
+// 按文件夹指定的歌词线索 —— **SDK 这一层**
 //
 // 【为什么需要它】无标签的曲目里 %artist% 是占位符「?」、专辑是空的，
 // 于是我们只剩曲名一个词去搜 —— 而实测这会被彻底带偏：
@@ -18,43 +20,23 @@
 //     `奇爱人生·终焉版 哀歌` -> 寻爱一生 / 众人划桨开大船 …    ✗ 反而是垃圾
 // 用户的文件夹命名没有规矩，所以必须给一个人工入口。
 //
-// 【为什么按文件夹而不是按曲目】失败模式是**整张专辑没标签** ——
-// 一次指定能救十几首；按曲目指定太累。
+// 【这一层只剩什么】文本表 <-> 内存表、增删查改**全在 folder_hint_table.h**，
+// 那是纯函数、能进离线单测台（hint 组）。这里只有"读 cfg_var -> 调用它 ->
+// 写回 + 作废未命中缓存"这一圈 SDK 交互，以及一个对话框。
 // ---------------------------------------------------------------------------
 
 namespace lyricus {
-
-struct FolderHint {
-    std::wstring artist;   // 歌手：进主查询词，**并且**参与演唱者闸门
-    std::wstring album;    // 专辑：只作为搜索的兜底词（它经常猜错，不能挤掉主查询）
-
-    bool Empty() const { return artist.empty() && album.empty(); }
-    bool operator==(const FolderHint& o) const {
-        return artist == o.artist && album == o.album;
-    }
-};
-
-// 音频路径 -> 查表用的"文件夹键"。查不出返回空串。
-//
-// 归一化规则：统一小写（Windows 路径大小写不敏感）、去掉结尾的斜杠。
-// 不做更激进的归一化（比如解析 ../）—— 那属于"猜用户意图"，
-// 而这个表本来就是用户自己写进去的，原样比对上就好。
-std::wstring FolderKeyOf(const std::wstring& audioPath);
-
-// 表 <=> 文本。**纯函数，离线可测。**
-//
-// 格式：每条一行，`文件夹键 \t 歌手 \t 专辑`。
-// 歌手或专辑可以为空（用户只想填一个），所以**不能**用"非空"来判断字段有没有 ——
-// 靠 TAB 的个数。
-std::string FormatFolderHints(const std::vector<std::pair<std::wstring, FolderHint>>& entries);
-std::vector<std::pair<std::wstring, FolderHint>> ParseFolderHints(const std::string& text);
 
 // 读写全局表（内部走 cfg_var）。folderKey 传 FolderKeyOf() 的结果。
 FolderHint GetFolderHint(const std::wstring& folderKey);
 
 // 写入一条。hint 为空 = 删除这一条。
+//
 // 写完之后会**作废所有"没有歌词"的缓存结论** —— 那些是用旧查询算出来的，
-// 见下面 InvalidateMissMarkers 的说明。
+// 见 folder_hint.cpp 里 InvalidateMissMarkers 的说明。
+//
+// ★ 但如果这次编辑**没有真的改动表**（重复填同样的歌手），就什么都不做：
+//   不写盘，也不作废缓存。否则用户点两次确定，那首歌会白白多查一轮网络。
 void SetFolderHint(const std::wstring& folderKey, const FolderHint& hint);
 
 // 表里现在有多少条（首选项/日志用）。

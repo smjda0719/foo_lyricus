@@ -238,6 +238,38 @@ LanguageStandard            = stdcpp20
   **缓冲区越界，不是编译错误**，而且只在特定字体回调路径下触发，极难排查。
 - **结论**：这个设置**不能动**。改它之前先看这条。
 
+## D-078 歌词线索的存储层进离线单测台（补完 plan 第 10 项的待办）
+
+- **起因**：plan 第 10 项一直挂着「**待办**：存储层还没进离线单测台
+  （依赖 SDK 的 cfg_var）」。用户 2026-09-26 在几个内部质量项里选了这个。
+- **卡在哪**：整个 `folder_hint.cpp` include 了 `config.h` / `online_lyric.h`，
+  于是**一行都测不了** —— 而它里面真正容易出错的恰恰是纯逻辑：
+  文本格式容错、空字段、重复键、512 上限、UTF-8 往返。
+- **切法**：新建 `folder_hint_table.h/.cpp`（**只要 `lyric.h` 的 UTF-8 转换**，
+  不碰 SDK）：
+  - `FolderKeyOf` / `FormatFolderHints` / `ParseFolderHints` 原样搬过去；
+  - **新增 `LookupFolderHint` / `ApplyFolderHintEdit`** —— 从 `GetFolderHint` /
+    `SetFolderHint` 里抽出来的两段纯逻辑；
+  - `folder_hint.h` 变成「include table + 只剩 SDK 交互」。
+    **外部调用方一个字没改**（`hint_dialog.cpp` / `playback_state.cpp` 仍然
+    从 `folder_hint.h` 拿到 `FolderKeyOf`）。
+- **★ 顺带修掉两个真问题**（都是抽出来之后才看得清的）：
+  1. **`SetFolderHint` 原先无论有没有改动都作废未命中缓存。**
+     用户重复填同一个歌手（或点了确定但没改内容）会白白作废一次，
+     那首歌下次换回来要重新联网查一轮 —— 而且完全看不出原因。
+     现在 `ApplyFolderHintEdit` 通过 `changed` 回报，没变就早退：不写盘、不作废。
+  2. **`entries.erase(std::remove(begin, end, e), end)` 里的 `e` 是引用**，
+     而 `remove` 的签名是 `const T& value` —— 它在搬移元素的过程中会覆盖
+     `e` 指的那块内存，属于「读了正在被移动的对象」。
+     既然循环里已经有下标，直接 `erase(begin() + i)` 又简单又没这个隐患。
+- **测试覆盖**（`hint` 组，48 项）：文件夹键归一化（大小写 / 正反斜杠 / 结尾多余
+  斜杠 / 中文 / 裸文件名 / 盘根）、文本容错（缺 TAB、空键、**最后一行无换行**、
+  专辑里多余的 TAB）、UTF-8 往返、**空字段不被下一个字段顶位**、增删改、
+  **`changed` 的判定**（写入相同内容 -> false；删不存在的键 -> false；
+  空键 -> 原样返回）、字段里的 TAB/换行被换成空格、512 上限**丢最旧留最新**、
+  删中间一条不碰坏前后两条。
+- **验证**：主程序编译零错误无警告；全量 **672 项通过**（新增 48）。
+
 ## D-077 把 `BlendColor` / `Luminance` 合并进 `color_util.h`（四份 → 一份）
 
 - **起因**：plan.md 的「已知小问题」里一直记着「`BlendColor` 在 `dui_element.cpp`

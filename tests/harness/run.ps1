@@ -26,7 +26,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('all', 'search', 'lyric', 'order', 'online', 'view', 'cbar', 'prefs', 'wheel', 'bench')] [string]$Suite = 'all'
+    [ValidateSet('all', 'search', 'lyric', 'order', 'online', 'view', 'cbar', 'prefs', 'wheel', 'hint', 'bench')] [string]$Suite = 'all'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -72,6 +72,10 @@ $suites = @(
     # 色环取色器：HSV 换算 + 几何 + 命中测试，全是纯数学。
     # 最要紧的是"坐标 <-> 颜色"两个方向必须互逆 —— 点红色就该选中红色。
     @{ key='wheel';  name='色环取色器';    compile=@('test_color_wheel.cpp','color_wheel.cpp');         extra=@('color_wheel.h');        shims=@(); libs='' },
+    # 歌词线索表：文本表 <-> 内存表、增删查改、512 上限。原先整个 folder_hint.cpp
+    # 因为 include 了 config.h / online_lyric.h 一行都测不了，2026-09-26 把纯逻辑
+    # 切进 folder_hint_table.cpp。要 lyric.cpp 是为了 WideToUtf8 / Utf8ToWide。
+    @{ key='hint';   name='歌词线索表';    compile=@('test_folder_hint.cpp','folder_hint_table.cpp','lyric.cpp'); extra=@('folder_hint_table.h'); shims=@(); libs='' },
     # bench 不是测试，是**基准**：它只打印耗时，不判通过与否。
     # 所以默认的 all 会跳过它（不能让"性能数字"影响单测的通过/失败），
     # 要用就显式 -Suite bench。
