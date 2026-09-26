@@ -1313,22 +1313,25 @@ void CLyricusPrefsDlg::BeginBgHandleDrag(int hit, CPoint pt, const PrefsLayout& 
     const BgManual m = CurrentManual();
     m_dragStartZoom = m.zoomPct;
 
-    // ⚠️ 中心取**图片矩形的中心**，不是预览框的中心（D-108）。
-    //    手柄贴在图的四角上，配对的中心自然也该是图的中心 ——
-    //    用框心的话，图不居中时（手动构图之后很常见）拖角会让图
-    //    一边缩放一边漂移，用起来像"抓不住这个角"。
-    RECT imgRect{};
-    if (!PreviewImageRect(L, imgRect)) return;
-    m_dragCenter.x = (imgRect.left + imgRect.right) / 2;
-    m_dragCenter.y = (imgRect.top + imgRect.bottom) / 2;
+    // ⚠️ 中心取**预览框的中心**，不是图片矩形的中心（D-114）。
+    //
+    // 【为什么不能用图心】图心**会随缩放变化** —— 图一放大，它的中心就移了，
+    //    于是下一次算距离时参考点已经不同，缩放的同时还在"挪"，
+    //    看起来像图一边变大一边跑。
+    //    框心是固定的：缩放只改大小、不改位置，那才是"缩放"该有的样子。
+    //
+    // 【为什么两边必须同一个中心】起点距离和过程中距离都按它算 ——
+    //    换中心等于换尺子，比例就没有意义了。
+    m_dragCenter.x = (L.bgPreview.left + L.bgPreview.right) / 2;
+    m_dragCenter.y = (L.bgPreview.top + L.bgPreview.bottom) / 2;
 
     const double dx = pt.x - m_dragCenter.x;
     const double dy = pt.y - m_dragCenter.y;
     m_dragStartDist = std::sqrt(dx * dx + dy * dy);
 
-    // ⚠️ 起点距离太小时比例会炸（除以一个接近 0 的数）——
-    //    四个角离中心都有半个对角线，正常不会触发；
-    //    但窗口被压得极小时可能。给一个下限，让它退化成"不动"。
+    // ⚠️ 起点距离太小时比例会炸（除以一个接近 0 的数）。
+    //    窗口被压得极小、或者**图被缩得很小**（手柄靠近框心）时会碰到，
+    //    所以这个下限不是防御性的摆设，D-114 放开缩放下限之后它更容易触发。
     if (m_dragStartDist < 8.0) m_dragStartDist = 8.0;
 
     EnsureManualFit();

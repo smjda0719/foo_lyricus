@@ -547,15 +547,27 @@ void TestManual() {
         Check(ry == 0, "（但上下正好铺满）");
     }
 
-    // 越界的参数（手改配置）也要被夹住而不是画出空白
+    // 越界的参数（手改配置）也要被夹住
     {
         BgManual m;
-        m.zoomPct = -50; m.offsetXPct = 9999; m.offsetYPct = -9999;
+        m.zoomPct = -50;               // 夹到下限 10%
+        m.offsetXPct = 9999;           // 夹到 +100
+        m.offsetYPct = -9999;          // 夹到 -100
         const auto p = ComputeBgPlacement(300, 200, 150, 150, BgFit::Manual, m);
         Check(p.valid, "越界参数仍能算出布局");
-        Check(p.dst.left <= 0 && p.dst.top <= 0 &&
-              p.dst.right >= 150 && p.dst.bottom >= 150,
-              "★ 越界参数被夹住后仍然完全覆盖");
+
+        // 下限放开到 10% 之后图会明显变小 —— 那是允许的
+        Check(RectW(p.dst) < 150 && RectH(p.dst) < 150,
+              "★ 缩放被夹到下限后确实缩小了（下限已放开到 10%）");
+
+        // offset 的语义（D-114）：**增大 = 图往左**
+        //   +100 -> 图往左推到底 -> 左边贴住区域左边
+        //   -100 -> 图往右推到底 -> 右边贴住区域右边
+        Check(p.dst.left == 0, "★ offsetX 夹到 +100 -> 图左边贴住区域左边");
+        // 纵向同理：-100 -> 图往下推到底 -> 底边贴住区域底边
+        //（允许 1 像素取整误差）
+        Check(p.dst.bottom >= 149 && p.dst.bottom <= 150,
+              "★ offsetY 夹到 -100 -> 图底边贴住区域底边");
     }
 }
 

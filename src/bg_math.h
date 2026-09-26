@@ -50,7 +50,15 @@ struct BgManual {
     int offsetYPct = 0;     // 同上，纵向。0 = 居中
 };
 
-constexpr int kBgZoomMinPct    = 100;   // 100 = 刚好铺满。小于它会露出没图盖住的边
+// ⚠️ 下限**不是 100**（D-114）。
+//
+// 早期这里是 100，理由是"再小就露边" —— 而**那个约束已经取消了**
+//（D-112：图比区域小时照样居中露边，是允许的）。
+// 卡在 100 的话用户想把图缩小、让它作为一角的小装饰都做不到。
+//
+// 10% 而不是 0：0 会让图彻底消失，而"图不见了"和"图很小"在用户那边
+// 是两件事；留一个下限至少保证还看得见、还能拖回来。
+constexpr int kBgZoomMinPct    = 10;
 constexpr int kBgZoomMaxPct    = 400;   // 再往上就是一块纯色了，没有意义
 constexpr int kBgOffsetMinPct  = -100;
 constexpr int kBgOffsetMaxPct  = 100;

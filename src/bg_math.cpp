@@ -135,29 +135,30 @@ BgPlacement ComputeBgPlacement(int imgW, int imgH, int dstW, int dstH, BgFit fit
         //   = 0：正好一样大，那个方向拖不动（几何上确实没余地）。
         //
         // ⚠️ 之前这里只认 > 0 的情形（`range = max(0, half)`），于是
-        //    **图比区域小时那个方向的余量算成 0、拖动直接没有反应** ——
-        //    而"高度铺满"下纵向恰好等于区域高、竖图横向又比区域窄，
-        //    两个方向同时为 0，用户报的"没办法拖动图片"就是这个。
-        //    那种情况下用户本来就该能拖（把图挪到区域里的任意位置），
-        //    只是"挪到头"的含义从"不露边"变成"图还在区域里"。
+        //    **图比区域小时那个方向的余量算成 0、拖动直接没有反应**。
         const int halfW = (drawW - dstW) / 2;
         const int halfH = (drawH - dstH) / 2;
         const int rangeX = (halfW >= 0) ? halfW : -halfW;
         const int rangeY = (halfH >= 0) ? halfH : -halfH;
-        // 符号决定 offset 往哪边推：图大时 offset 增大 = 图往左移，
-        // 图小时反过来。少了这个符号，图小的时候拖动方向是反的。
-        const int signX = (halfW >= 0) ? 1 : -1;
-        const int signY = (halfH >= 0) ? 1 : -1;
 
         // 三个锚点（横向，纵向同理）：
-        //   offset = -100 -> 图的一边贴住区域的一边
+        //   offset = -100 -> 图往右推到底
         //   offset =    0 -> 居中
-        //   offset = +100 -> 图的另一边贴住区域的另一边
+        //   offset = +100 -> 图往左推到底
+        //
+        // ⚠️ **不要**再按 halfW 的正负加符号（D-114）。
+        //    加过一版，结果是"图比区域小时拖动方向相反" ——
+        //    因为拖动那边（OnBgPreviewDrag）的符号是写死的 `offset -= dx`，
+        //    这里再翻一次就和它对不上了。
+        //    现在两边都只认一个方向：**offset 增大 = 图往左**。
+        //    图宽时含义是"往里挪到头仍盖满"，图小时是"往外挪到头仍全在区域里"，
+        //    两种情形下"往右推到底"都是同一个动作，语义是连续的。
+        //
         // 用 long long 算中间量：rangeX 在极端 dpi 下可能到几万，乘 100 之后再
         // 叠加仍在 int 内，但留点余量更稳妥。
-        const int dstX = -halfW - signX * static_cast<int>(
+        const int dstX = -halfW - static_cast<int>(
                              static_cast<long long>(rangeX) * m.offsetXPct / 100);
-        const int dstY = -halfH - signY * static_cast<int>(
+        const int dstY = -halfH - static_cast<int>(
                              static_cast<long long>(rangeY) * m.offsetYPct / 100);
 
         // 源**不裁**（整图都参与）：手动模式下"看到图的哪一块"完全由
