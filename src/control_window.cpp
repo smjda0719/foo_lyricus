@@ -1002,6 +1002,34 @@ LRESULT ControlWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                          ap.alpha);
             }
 
+            // ---- 通透度模式也必须轮询 ----
+            //
+            // ★ 这是一条 bug 修（用户 2026-09-26 报「导入高对比时浮动面板卡死」）。
+            //
+            // 「高对比」预设的 backdrop 是 None，而另外三套都是 Translucent ——
+            // 切过去等于**换了一整条渲染管线**。但 ApplyBackdrop() 从前
+            // **只在 EnsureCreated() 里被调一次**，于是配置改了之后：
+            //   窗口还带着 WS_EX_LAYERED（画面由 UpdateLayeredWindow 提供）
+            //   而 WM_PAINT 已经按新配置改走 PaintContent(dc)
+            // 而**画在分层窗口上的东西是不可见的** —— 面板就此冻住。
+            //
+            // ⚠️ 从现象上极难猜到原因：**重启一下就"好了"**（EnsureCreated 重跑
+            //    一遍把状态对齐了），所以它看起来像"偶发"而不是"配置切换"。
+            const int backdropNow = static_cast<int>(cfg_backdrop_mode.get());
+            if (backdropNow != m_lastBackdropMode) {
+                DebugLog("通透度变更 -> %d(%s)，重新应用",
+                         backdropNow,
+                         BackdropModeName(static_cast<BackdropMode>(backdropNow)));
+                ApplyBackdrop();
+
+                // ⚠️ 以**它执行完之后**的实际值为准，不是我们刚读到的那个 ——
+                //    ApplyBackdrop 里有迁移逻辑会改写 cfg_backdrop_mode
+                //    （Mica / Acrylic / MicaAlt 与 GDI 绘制不兼容，一律被改回
+                //    Translucent，见 D-009）。不重读的话下一拍又会判"变了"，
+                //    变成每 250ms 重新应用一次背景。
+                m_lastBackdropMode = static_cast<int>(cfg_backdrop_mode.get());
+            }
+
             // 换曲 / 改显示设置 -> 动画状态清零。
             //
             // 不清的话，上一首滚到一半的横向偏移会**带到新歌上**
@@ -1103,10 +1131,10 @@ LRESULT ControlWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-void ControlWindow::PaintContent(HDC dc) {
-    RECT rc{};
-    GetClientRect(m_hwnd, &rc);
-
+// 把内容画到**给定的 DC** 上。真正的绘制都在这里。
+//
+// 外面那层 PaintContent 负责给它套一个内存 DC —— 见那边的说明。
+void ControlWindow::PaintContentRaw(HDC dc, const RECT& rc) {
     const BackdropMode mode = static_cast<BackdropMode>(cfg_backdrop_mode.get());
 
     // 只有靠 DWM 材质提供背景的模式才「什么都不画」。
@@ -1124,6 +1152,43 @@ void ControlWindow::PaintContent(HDC dc) {
     }
 
     DrawTextContent(dc, rc);
+}
+
+void ControlWindow::PaintContent(HDC dc) {
+    RECT rc{};
+    GetClientRect(m_hwnd, &rc);
+    const int w = rc.right - rc.left;
+    const int h = rc.bottom - rc.top;
+    if (w <= 0 || h <= 0) return;
+
+    // ★ 双缓冲 —— 用户 2026-09-26 报的「字体和整个面板在播放/悬停时抖动」。
+    //
+    // 【为什么 Translucent 时代不抖、切成 None 之后才抖】
+    //   * Translucent 走分层窗口：整帧交给 UpdateLayeredWindow **原子提交**，
+    //     屏幕上看不到"画到一半"的状态；
+    //   * None 模式下这个函数直接把内容画到**窗口 DC**，而一次重绘要 6~8ms ——
+    //     那段时间里窗口上显示的就是半成品。
+    // 播放（每 250ms 一拍）和鼠标悬停（RequestRepaint）都会触发重绘，于是每次都抖。
+    //
+    // ⚠️ 用户那句「**不只是字，还有整个面板**」是关键线索：一起抖说明问题在
+    //    "整帧不是原子出现的"，而不是某一处绘制算错了。按后者去查会一直查不到。
+    HDC     mem = CreateCompatibleDC(dc);
+    HBITMAP bmp = (mem != nullptr) ? CreateCompatibleBitmap(dc, w, h) : nullptr;
+
+    // 建不出内存 DC 就退回直画：画面会抖，但**总比什么都不画强**。
+    if (mem == nullptr || bmp == nullptr) {
+        if (bmp != nullptr) DeleteObject(bmp);
+        if (mem != nullptr) DeleteDC(mem);
+        PaintContentRaw(dc, rc);
+        return;
+    }
+
+    HGDIOBJ oldBmp = SelectObject(mem, bmp);
+    PaintContentRaw(mem, rc);
+    BitBlt(dc, 0, 0, w, h, mem, 0, 0, SRCCOPY);
+    SelectObject(mem, oldBmp);
+    DeleteObject(bmp);
+    DeleteDC(mem);
 }
 
 void ControlWindow::DrawTextContent(HDC dc, const RECT& rc) {

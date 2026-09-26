@@ -55,6 +55,8 @@ private:
 
     bool EnsureCreated();
     void PaintContent(HDC dc);
+    // 真正落笔的那个（PaintContent 只负责给它套一层内存 DC 做双缓冲）
+    void PaintContentRaw(HDC dc, const RECT& rc);
 
     // 触发一次重绘（分层模式下走 RenderLayered，否则走 WM_PAINT）
     void RequestRepaint();
@@ -125,6 +127,17 @@ private:
     // 高级首选项的改动**没有任何通知机制**，只能在定时器里轮询比对 ——
     // 三个 int 的比较，代价可以忽略。详见 settings.cpp 的说明。
     LyricDisplayConfig m_displayCfg;   // 上一次看到的原始设置，用来判断"变了没"
+
+    // 上一次应用过的通透度模式。
+    //
+    // ★ 这个成员是 bug 修的一部分（2026-09-26）：ApplyBackdrop() 从前**只在
+    //   EnsureCreated() 里调一次**，于是切预设把 backdrop 从 Translucent 改成
+    //   None 之后，窗口还带着 WS_EX_LAYERED 而 WM_PAINT 已经改走 PaintContent ——
+    //   画面就此冻住（用户报的「导入高对比时浮动面板卡死」）。
+    //   现在定时器里轮询它，变了就重新应用。
+    //
+    // 初值 -1：和任何合法模式都不同，保证第一拍一定会走一次同步。
+    int m_lastBackdropMode = -1;
     LyricsViewLayout   m_layout;       // m_displayCfg 的渲染视图，跟着它一起更新
 
     // 浮动面板外观（配色 + 不透明度），来自首选项页「显示 → Lyricus」。
