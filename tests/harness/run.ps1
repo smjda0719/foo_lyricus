@@ -26,7 +26,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('all', 'search', 'lyric', 'order', 'online', 'view', 'cbar', 'prefs', 'bench')] [string]$Suite = 'all'
+    [ValidateSet('all', 'search', 'lyric', 'order', 'online', 'view', 'cbar', 'prefs', 'wheel', 'bench')] [string]$Suite = 'all'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -69,6 +69,9 @@ $suites = @(
     # 2026-09-26 重做该页时加的 —— 自绘最典型的 bug 是元素叠在一起，
     # 而那恰好是"给定尺寸 -> 一组矩形"能精确钉住的东西。
     @{ key='prefs';  name='首选项页布局';  compile=@('test_prefs_layout.cpp','prefs_layout.cpp');       extra=@('prefs_layout.h');       shims=@(); libs='' },
+    # 色环取色器：HSV 换算 + 几何 + 命中测试，全是纯数学。
+    # 最要紧的是"坐标 <-> 颜色"两个方向必须互逆 —— 点红色就该选中红色。
+    @{ key='wheel';  name='色环取色器';    compile=@('test_color_wheel.cpp','color_wheel.cpp');         extra=@('color_wheel.h');        shims=@(); libs='' },
     # bench 不是测试，是**基准**：它只打印耗时，不判通过与否。
     # 所以默认的 all 会跳过它（不能让"性能数字"影响单测的通过/失败），
     # 要用就显式 -Suite bench。

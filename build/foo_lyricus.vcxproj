@@ -111,6 +111,8 @@
     <ClCompile Include="..\src\control_bar_layout.cpp" />
     <!-- 首选项页的布局与配色：同样是纯函数，进离线单测台（run.ps1 的 prefs 组）。 -->
     <ClCompile Include="..\src\prefs_layout.cpp" />
+    <!-- 色环取色器的纯逻辑：HSV 换算 + 几何 + 命中测试，进离线单测台（wheel 组）。 -->
+    <ClCompile Include="..\src\color_wheel.cpp" />
     <ClCompile Include="..\src\menu.cpp" />
     <ClCompile Include="..\src\initquit.cpp" />
     <ClCompile Include="..\src\svg_icon.cpp" />
@@ -149,6 +151,7 @@
     <ClInclude Include="..\src\prefs_layout.h" />
     <ClInclude Include="..\src\prefs_page.h" />
     <ClInclude Include="..\src\dpi_util.h" />
+    <ClInclude Include="..\src\color_wheel.h" />
     <ClInclude Include="..\src\resource.h" />
   </ItemGroup>
 
