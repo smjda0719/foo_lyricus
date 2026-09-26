@@ -468,8 +468,15 @@ void CLyricusPrefsDlg::OnPaint(CDCHandle) {
     //   都不用管滚动** —— 它们本来就在内容坐标系里写，和布局共用同一套坐标。
     //   比在每一处调用上加偏移可靠得多：后者漏一处就是"某个控件不跟着滚"，
     //   而这种漏很难发现（要滚到那个位置才看得见）。
+    //
+    // ⚠️ 符号是 **+m_scrollY**，不是负的。
+    //    SetWindowOrgEx 设的是"窗口原点在逻辑坐标里的位置"，而
+    //    **设备坐标 = 逻辑坐标 − 窗口原点**。要让内容坐标 y=scrollY 的点
+    //    落在客户区 y=0 上（也就是内容往上走），需要 0 = scrollY − 原点y，
+    //    即原点y = +scrollY。
+    //    写成负号的话滚下去内容反而往下跑 —— 表现就是"滚了但看不到下面的东西"。
     POINT oldOrg{};
-    ::SetWindowOrgEx(mem, 0, -m_scrollY, &oldOrg);
+    ::SetWindowOrgEx(mem, 0, m_scrollY, &oldOrg);
 
     // ⚠️ 传给 DrawPage 的 rc 也要换成**内容坐标**下的客户区矩形 ——
     //    它第一件事就是拿这个矩形铺底。传未偏移的那个的话，
@@ -720,8 +727,12 @@ void CLyricusPrefsDlg::DrawCtrlColorArea(HDC dc, const PrefsLayout& L) {
                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
         if (!empty(L.ctrlCardLabels[i])) {
+            // ⚠️ 标签用 T.textDim，**不要用 T.cardHot**。
+            //    cardHot 是"卡片悬停底色"，浅色主题下几乎和页面底色一样白 ——
+            //    拿它当文字色等于把标签藏起来（实测截图里「按钮」「图标」
+            //    四个字基本看不见）。文字色只能用 textDim / text 这一类。
             DrawTextIn(dc, L.ctrlCardLabels[i], kCtrlSlots[i].label,
-                       custom ? T.textDim : T.cardHot, m_fontBody,
+                       T.textDim, m_fontBody,
                        DT_CENTER | DT_TOP | DT_SINGLELINE);
         }
     }
