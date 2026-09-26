@@ -23,8 +23,8 @@
 |---|---|
 | 组件 | `foo_lyricus.dll`，foobar2000 2.x，x64 |
 | 源码 | 61 个文件 / **17132 行** |
-| 决策 | **99 条**（D-001 ~ D-101，`decisions.md`） |
-| 测试 | **11 组 838 项，全绿**（离线，`tests/harness/run.ps1`） |
+| 决策 | **100 条**（D-001 ~ D-102，`decisions.md`） |
+| 测试 | **11 组 843 项，全绿**（离线，`tests/harness/run.ps1`） |
 | 工具 | **8 个脚本**（`tools/`），见第六章 |
 | 打包 | `bin\foo_lyricus.fb2k-component`（脚本 `tools/package.ps1`） |
 
