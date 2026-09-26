@@ -101,6 +101,8 @@
     <ClCompile Include="..\src\folder_hint.cpp" />
     <!-- 歌词线索表的纯逻辑：文本表 <-> 内存表、增删查改、512 上限（hint 组）。 -->
     <ClCompile Include="..\src\folder_hint_table.cpp" />
+    <!-- 外观预设的纯逻辑：文本表解析、增删改、单条导入导出（preset 组）。 -->
+    <ClCompile Include="..\src\preset.cpp" />
     <ClCompile Include="..\src\hint_dialog.cpp" />
     <ClCompile Include="..\src\adjust_dialog.cpp" />
     <ClCompile Include="..\src\source_order.cpp" />
@@ -162,6 +164,7 @@
     <ClInclude Include="..\src\color_wheel.h" />
     <ClInclude Include="..\src\color_util.h" />
     <ClInclude Include="..\src\folder_hint_table.h" />
+    <ClInclude Include="..\src\preset.h" />
     <ClInclude Include="..\src\ui_draw.h" />
     <ClInclude Include="..\src\color_picker.h" />
     <ClInclude Include="..\src\resource.h" />

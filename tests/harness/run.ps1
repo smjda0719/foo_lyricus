@@ -26,7 +26,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('all', 'search', 'lyric', 'order', 'online', 'view', 'cbar', 'prefs', 'wheel', 'hint', 'bench')] [string]$Suite = 'all'
+    [ValidateSet('all', 'search', 'lyric', 'order', 'online', 'view', 'cbar', 'prefs', 'wheel', 'hint', 'preset', 'bench')] [string]$Suite = 'all'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -76,6 +76,9 @@ $suites = @(
     # 因为 include 了 config.h / online_lyric.h 一行都测不了，2026-09-26 把纯逻辑
     # 切进 folder_hint_table.cpp。要 lyric.cpp 是为了 WideToUtf8 / Utf8ToWide。
     @{ key='hint';   name='歌词线索表';    compile=@('test_folder_hint.cpp','folder_hint_table.cpp','lyric.cpp'); extra=@('folder_hint_table.h'); shims=@(); libs='' },
+    # 外观预设：文本表解析、增删改、单条导入导出。难点全在**容错**上 ——
+    # 缺字段、多字段、坏值、BOM、CRLF、前后空行，这些在界面上试不出来。
+    @{ key='preset'; name='外观预设';      compile=@('test_preset.cpp','preset.cpp','lyric.cpp'); extra=@('preset.h'); shims=@(); libs='' },
     # bench 不是测试，是**基准**：它只打印耗时，不判通过与否。
     # 所以默认的 all 会跳过它（不能让"性能数字"影响单测的通过/失败），
     # 要用就显式 -Suite bench。
