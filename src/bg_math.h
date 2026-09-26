@@ -81,19 +81,28 @@ void BoxBlurBgra(unsigned char* bgra, int w, int h, int radiusPx);
 // 在这里一次做完，"每帧"只剩一次内存拷贝。
 void ApplyDimAndOpacity(unsigned char* bgra, int w, int h, int dimPct, int opacityPct);
 
-// 把背景图 source-over 混合到**已经铺好底色的** BGRA 缓冲上（原地改 dst）。
+// 把背景图按 **source-over** 合成到已经铺好底色的 BGRA 缓冲上（原地改 dst）。
 //
-// 【为什么要"叠"而不是"替"】背景图带自己的 alpha（由 bgOpacity 决定），
+// outMask 可选：非 0 表示"这个像素被图盖过"。调用方需要它来区分
+// "图"和"后来画上去的文字"（见 BlendBgOver 的调用点）。
+//
+// 【为什么是"叠"而不是"替"】背景图带自己的 alpha（由 bgOpacity 决定），
 // 半透明的图下面必须有底色兜着 —— 直接替换的话面板会变成"图有多透明、
-// 面板就有多透明"，直接透出桌面。而用户要的是"面板底色上有一张图"。
+// 面板就有多透明"，透出桌面。而用户要的是"面板底色上有一张图"。
 //
-// ⚠️ **dst 的 alpha 通道一个像素都不动。**
-//    面板整体的不透明度（cfg 里的 alpha）和图的不透明度是两件独立的事：
-//    前者决定面板有多透明，后者决定图有多显眼。混在一起的话，
-//    用户调"图片不透明度"会连带把整个面板弄透明 —— 那不是他要的。
+// ⚠️ **alpha 也要合成**，公式是标准的 source-over：
+//        A_out = A_src + A_dst * (1 - A_src)
+//        RGB_out = (src*RGB_src + dst*RGB_dst*(1-A_src)) / A_out
 //
-// 两条渲染路径（分层的 m_layeredBits、非分层的 GDI）都调这一份，
-// 两处各写一遍的话迟早会出现"分层模式下图偏亮"这种诡异差异。
-void BlendBgOver(unsigned char* dst, const unsigned char* src, size_t pixelCount);
+//    这里曾经刻意"不动 alpha"，理由是"面板整体不透明度和图的不透明度
+//    是两件独立的事"。**那个理由是错的** —— 不动 alpha 的话，下游那段
+//    "和底色不同就算文字、把 alpha 拉到 255" 的修正会把整片图变成
+//    完全不透明，用户调「图片不透明度」就完全看不出来，
+//    表现成"图贴上去很硬、没有透明的感觉"（用户 2026-09-26 报的正是这个）。
+//
+//    两者确实独立，但独立的是**参数**，不是**合成结果** ——
+//    图盖在底色上，那一块的最终不透明度本来就应该由两者共同决定。
+void BlendBgOver(unsigned char* dst, const unsigned char* src, size_t pixelCount,
+                 unsigned char* outMask = nullptr);
 
 } // namespace lyricus

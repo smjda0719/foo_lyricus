@@ -1453,14 +1453,18 @@ void ControlWindow::RenderLayered() {
     // "图有多透明、面板就有多透明"，透出桌面，而用户要的是
     // "面板底色上有一张图"。
     //
-    // ⚠️ 混合函数**不动 alpha 通道**：面板整体不透明度（cfg 的 alpha）
-    //    和图的不透明度是两件独立的事，混在一起的话用户调"图片不透明度"
-    //    会连带把整个面板弄透明。
+    // ⚠️ 这里记一份**掩码**（哪些像素被图盖过），下一步的 alpha 修正要用。
+    //    那段修正靠"和底色不同 = 文字"认人，而**图本来就和底色不同** ——
+    //    不排除它的话，整片图会被拉到完全不透明，用户调的
+    //    「图片不透明度」就完全看不出来（用户 2026-09-26 报的
+    //    "不会显现出透明的感觉"正是这个）。
     //
     // 这一趟只在**参数或尺寸变化时**才会真的重算 —— CurrentBackground
     // 返回的是缓存好的位图，所以这里每帧的代价就是一次内存混合。
+    std::vector<unsigned char> bgMask;
     if (const BgBitmap* bgImg = CurrentBackground(w, h)) {
-        BlendBgOver(static_cast<BYTE*>(bits), bgImg->bgra.data(), pixelCount);
+        bgMask.assign(pixelCount, 0);
+        BlendBgOver(static_cast<BYTE*>(bits), bgImg->bgra.data(), pixelCount, bgMask.data());
     }
 
     QueryPerformanceCounter(&qpc1);
@@ -1478,8 +1482,16 @@ void ControlWindow::RenderLayered() {
     //       即 RGB 必须已经乘过 alpha/255，否则文字会偏暗偏糊。
     {
         BYTE* p = static_cast<BYTE*>(bits);
+        const bool haveBg = !bgMask.empty();
         for (size_t i = 0; i < pixelCount; ++i, p += 4) {
-            if (p[0] != bgB || p[1] != bgG || p[2] != bgR) {
+            // ⚠️ **被背景图盖过的像素不能走 (a)**。
+            //    它们的 RGB 和图不同、alpha 也已经由 BlendBgOver 合成好了
+            //    （反映了「图片不透明度」）；把它们拉到 255 的话，
+            //    图那一块会比周围更"实"，用户调的透明度完全看不出来。
+            //    这类像素只需要走 (b) 预乘。
+            const bool fromBgImage = haveBg && bgMask[i] != 0;
+            if (!fromBgImage &&
+                (p[0] != bgB || p[1] != bgG || p[2] != bgR)) {
                 p[3] = 255;
             }
             p[0] = static_cast<BYTE>(p[0] * p[3] / 255);

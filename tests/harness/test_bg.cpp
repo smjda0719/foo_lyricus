@@ -297,38 +297,59 @@ void TestDimOpacity() {
 namespace {
 
 void TestBlend() {
-    std::printf("\n== 背景图混合（BlendBgOver）==\n");
+    std::printf("\n== 背景图混合（BlendBgOver —— source-over）==\n");
 
-    // 全不透明的图 -> 完全盖住底色。底色是"面板底色"，图不透明时就该看不见它。
+    // ★ 手算验证的基准例：黑白各半。
+    //   aOut = 128 + 255*(255-128)/255 = 128 + 127 = 255
+    //   num  = 255*128*255 + 0        = 8323200
+    //   v    = 8323200 / (255*255)    = 128
+    {
+        auto dst = MakeSolid(1, 1, 0, 0, 0, 255);          // 底色：黑，不透明
+        auto src = MakeSolid(1, 1, 255, 255, 255, 128);    // 图：白，半透明
+        unsigned char mask = 0;
+        lyricus::BlendBgOver(dst.data(), src.data(), 1, &mask);
+        Check(dst[0] > 125 && dst[0] < 131, "★ 黑白各半 -> 约 128（这条是手算对过的）");
+        Check(dst[3] == 255, "★ 合成 alpha = 128 + 255*127/255 = 255");
+        Check(mask == 1, "★ 掩码标出这个像素被图盖过");
+    }
+
+    // 全不透明的图 -> 完全盖住，alpha 也是 255
     {
         auto dst = MakeSolid(2, 2, 10, 20, 30, 200);
         auto src = MakeSolid(2, 2, 100, 110, 120, 255);
-        lyricus::BlendBgOver(dst.data(), src.data(), 4);
+        std::vector<unsigned char> mask(4, 0);
+        lyricus::BlendBgOver(dst.data(), src.data(), 4, mask.data());
         Check(dst[0] == 100 && dst[1] == 110 && dst[2] == 120, "★ 图全不透明 -> 盖住底色");
-        // ★ 这条是设计意图：面板整体不透明度（cfg 的 alpha）和图的不透明度
-        //   是两件独立的事。混在一起的话用户调"图片不透明度"会连带把整个
-        //   面板弄透明 —— 那不是他要的。
-        Check(dst[3] == 200, "★ 底色的 alpha 一个像素都不动");
+        Check(dst[3] == 255, "★ 图全不透明 -> 合成 alpha = 255");
+        Check(mask[0] == 1 && mask[3] == 1, "★ 掩码全 1");
     }
 
-    // 全透明的图 -> 底色完全不变。
+    // 全透明的图 -> 底色和 alpha 都完全不变。
     // ⚠️ 这条挡的是"透明区被慢慢拉黑"：不早退的话那三次除法会把底色
     //    一点点拉向 src 的黑色（透明区 RGB = 0），面板边角会越来越暗。
     {
         auto dst = MakeSolid(2, 2, 10, 20, 30, 200);
         auto src = MakeSolid(2, 2, 0, 0, 0, 0);
+        std::vector<unsigned char> mask(4, 9);
         const auto before = dst;
-        lyricus::BlendBgOver(dst.data(), src.data(), 4);
-        Check(dst == before, "★ 图全透明 -> 底色完全不变（没被拉黑）");
+        lyricus::BlendBgOver(dst.data(), src.data(), 4, mask.data());
+        Check(dst == before, "★ 图全透明 -> 底色和 alpha 都完全不变（没被拉黑）");
+        Check(mask[0] == 0 && mask[1] == 0 && mask[2] == 0 && mask[3] == 0,
+              "★ 全透明处的掩码是 0（下游据此判定这里没有图）");
     }
 
-    // 半透明 -> 两边各取一半
+    // ★★ 用户报的那个：图盖过的地方，alpha 必须反映**图的不透明度**，
+    //     而不是被下游的"和底色不同就算文字"修正拉到 255。
+    //     拉到 255 的话图那一块会比周围更"实"，
+    //     用户调的「图片不透明度」完全看不出来 ——
+    //     表现就是"不会显现出透明的感觉"。
     {
-        auto dst = MakeSolid(1, 1, 0, 0, 0, 128);
-        auto src = MakeSolid(1, 1, 255, 255, 255, 128);
-        lyricus::BlendBgOver(dst.data(), src.data(), 1);
-        Check(dst[0] > 120 && dst[0] < 136, "★ 半透明 -> 黑白各半（约 127）");
-        Check(dst[3] == 128, "★ 半透明时底色的 alpha 同样不动");
+        auto dst = MakeSolid(1, 1, 28, 28, 30, 215);       // 面板底色 + 面板 alpha
+        auto src = MakeSolid(1, 1, 200, 100, 50, 100);     // 图，alpha = 100
+        unsigned char mask = 0;
+        lyricus::BlendBgOver(dst.data(), src.data(), 1, &mask);
+        // aOut = 100 + 215*(255-100)/255 = 100 + 130 = 230
+        Check(dst[3] == 230, "★★ 图 alpha=100 叠在面板 alpha=215 上 -> 230（不是 255）");
     }
 
     // 逐像素独立：同一个缓冲里有的盖住、有的透出来
@@ -336,10 +357,20 @@ void TestBlend() {
         auto dst = MakeSolid(2, 1, 0, 0, 0, 255);
         auto src = MakeSolid(2, 1, 200, 200, 200, 255);
         src[7] = 0;   // 第二个像素的 alpha 改成 0
-        lyricus::BlendBgOver(dst.data(), src.data(), 2);
-        Check(dst[0] == 200, "★ 第一个像素被盖住");
-        Check(dst[4] == 0,   "★ 第二个像素（透明）保留底色");
-        Check(dst[7] == 255, "★ 两处的 alpha 都没动");
+        std::vector<unsigned char> mask(2, 0);
+        lyricus::BlendBgOver(dst.data(), src.data(), 2, mask.data());
+        Check(dst[0] == 200 && mask[0] == 1, "★ 第一个像素被盖住且标了掩码");
+        Check(dst[4] == 0 && mask[1] == 0,   "★ 第二个像素（透明）保留底色且掩码为 0");
+        Check(dst[3] == 255 && dst[7] == 255, "★ 两处的 alpha 各自正确");
+    }
+
+    // 掩码是可选参数：不传的时候行为要和以前一致
+    {
+        auto dst = MakeSolid(1, 1, 0, 0, 0, 255);
+        auto src = MakeSolid(1, 1, 255, 255, 255, 255);
+        lyricus::BlendBgOver(dst.data(), src.data(), 1);
+        Check(dst[0] == 255 && dst[1] == 255 && dst[2] == 255 && dst[3] == 255,
+              "★ 不传掩码时结果一样（默认参数）");
     }
 
     // 空指针不崩

@@ -185,28 +185,49 @@ void ApplyDimAndOpacity(unsigned char* bgra, int w, int h, int dimPct, int opaci
     }
 }
 
-void BlendBgOver(unsigned char* dst, const unsigned char* src, size_t pixelCount) {
+void BlendBgOver(unsigned char* dst, const unsigned char* src, size_t pixelCount,
+                 unsigned char* outMask) {
     if (dst == nullptr || src == nullptr) return;
 
     for (size_t i = 0; i < pixelCount; ++i) {
         const int sa = src[3];
+        const int da = dst[3];
+
         if (sa == 0) {
             // 全透明：底色原样保留。**必须早退** —— 不判的话下面的
             // 除法会把 dst 一点点拉向 src 的黑色（src 透明区的 RGB 是 0），
             // 面板边角会慢慢变黑。
-            dst += 4; src += 4;
-            continue;
-        }
-        if (sa == 255) {
-            // 全不透明：直接覆盖 RGB，省掉三次除法
-            dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2];
+            if (outMask) outMask[i] = 0;
         } else {
-            const int inv = 255 - sa;
-            dst[0] = static_cast<unsigned char>((src[0] * sa + dst[0] * inv) / 255);
-            dst[1] = static_cast<unsigned char>((src[1] * sa + dst[1] * inv) / 255);
-            dst[2] = static_cast<unsigned char>((src[2] * sa + dst[2] * inv) / 255);
+            // 标准 source-over。注意这里算的是**非预乘**的 RGB 和合成后的 alpha。
+            //   A_out = A_s + A_d*(1 - A_s)
+            const int aOut = sa + da * (255 - sa) / 255;
+            if (aOut <= 0) {
+                if (outMask) outMask[i] = 0;
+                dst += 4; src += 4;
+                continue;
+            }
+            // RGB_out = (src*sa/255 + dst*da/255*(255-sa)/255) / (aOut/255)
+            //         = (src*sa*255 + dst*da*(255-sa)) / (255 * aOut)
+            //
+            // ⚠️ 第二项**不要**在括号里先除 255 —— 那样会把 dst 那一半
+            //    算小 255 倍。这是配方子时最容易写错的一处：
+            //    先把三项各自化成同一分母（255*255），再一次性除。
+            //    手算验证：sa=128, da=255, src=255, dst=0 ->
+            //      aOut = 128 + 255*127/255 = 255
+            //      num  = 255*128*255 + 0 = 8323200
+            //      v    = 8323200 / (255*255) = 128   （黑白各半，对）
+            for (int c = 0; c < 3; ++c) {
+                const long long num = static_cast<long long>(src[c]) * sa * 255 +
+                                      static_cast<long long>(dst[c]) * da * (255 - sa);
+                int v = static_cast<int>(num / (static_cast<long long>(aOut) * 255));
+                if (v < 0) v = 0;
+                if (v > 255) v = 255;
+                dst[c] = static_cast<unsigned char>(v);
+            }
+            dst[3] = static_cast<unsigned char>(aOut);
+            if (outMask) outMask[i] = 1;
         }
-        // ⚠️ dst[3] 不动。见头文件里的说明。
         dst += 4; src += 4;
     }
 }
