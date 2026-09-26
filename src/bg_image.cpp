@@ -91,15 +91,31 @@ void BlitInto(std::vector<unsigned char>& dst, int dstW, int dstH,
         //    宏，`std::max(a,b)` 会被预处理器拆成 `std::(((a)>(b))?(a):(b))`，
         //    报 C2589（bg_math.cpp 里踩过一次，项目里也早有记录）。
         //    这两行逻辑本来就简单，写开反而更清楚。
+        //
+        // ★ 源侧和目的侧**都要查**（D-105）。
+        //   曾经只查了目的侧，以为"copyW 是按 dstW 截的、所以不会超源" ——
+        //   那只在 offsetX <= 0 时成立：offsetX > 0 时 srcX0 恒为 0、
+        //   copyW 初值就是 srcW，看似没问题；但 offsetX 是**手动构图算出来的**，
+        //   它可以是任何值（极端缩放下到几万），一旦 dstX0 + srcX0 这类
+        //   中间量和 int 边界擦肩，判断就会失效。
+        //   与其论证"不会发生"，不如每次乘法之前都确认一遍。
         for (int y = 0; y < srcH; ++y) {
             const int dy = offsetY + y;
             if (dy < 0 || dy >= dstH) continue;
 
             const int dstX0 = (offsetX > 0) ? offsetX : 0;
             const int srcX0 = (offsetX > 0) ? 0 : -offsetX;
-            int copyW = srcW - srcX0;
-            if (dstX0 + copyW > dstW) copyW = dstW - dstX0;
+
+            // 源侧：起点必须在图内
+            if (srcX0 < 0 || srcX0 >= srcW) continue;
+
+            int copyW = srcW - srcX0;                       // <= srcW，源侧安全
+            if (dstX0 < 0 || dstX0 >= dstW) continue;
+            if (copyW > dstW - dstX0) copyW = dstW - dstX0; // 再按目的侧收
             if (copyW <= 0) continue;
+
+            // 双保险：算完再核一次（上面任何一步溢出的话这里会拦住）
+            if (srcX0 + copyW > srcW || dstX0 + copyW > dstW) continue;
 
             std::memcpy(dst.data() + (static_cast<size_t>(dy) * dstW + dstX0) * 4,
                         src + (static_cast<size_t>(y) * srcW + srcX0) * 4,
@@ -287,7 +303,23 @@ const BgBitmap* GetPanelBackground(const std::wstring& path,
     }
 
     // ---- 取像素 ----
-    std::vector<unsigned char> pixels(static_cast<size_t>(drawW) * drawH * 4);
+    //
+    // ⚠️ 中间缓冲**封顶**（D-105）。手动缩放最大 400%，而 base 本身就可能
+    //    很大（一张小图铺满大面板），两者相乘能到几万像素见方 ——
+    //    那个缓冲要几百 MB。32 位进程直接分配失败，64 位也会把面板拖垮。
+    //    超了就当作"读不到图"并如实记原因，而不是硬着头皮分下去。
+    const size_t pixelBytes = static_cast<size_t>(drawW) * drawH * 4;
+    constexpr size_t kMaxPixelBytes = 512u * 1024u * 1024u;
+    if (pixelBytes > kMaxPixelBytes) {
+        g_lastError = L"图片缩放后过大，已跳过";
+        DebugLog("背景图：%ls —— %dx%d（%llu MB），上限 %llu MB",
+                 g_lastError.c_str(), drawW, drawH,
+                 static_cast<unsigned long long>(pixelBytes / (1024 * 1024)),
+                 static_cast<unsigned long long>(kMaxPixelBytes / (1024 * 1024)));
+        return nullptr;
+    }
+
+    std::vector<unsigned char> pixels(pixelBytes);
     const UINT stride = static_cast<UINT>(drawW) * 4;
     if (FAILED(scaled->CopyPixels(nullptr, stride, static_cast<UINT>(pixels.size()),
                                   pixels.data()))) {
@@ -308,6 +340,16 @@ const BgBitmap* GetPanelBackground(const std::wstring& path,
 
     const int offX = place.tile ? 0 : place.dst.left;
     const int offY = place.tile ? 0 : place.dst.top;
+
+    // ⚠️ 这一行是 D-105 那次崩溃的**取证点**。
+    //    崩在 BlitInto 里读越界，但崩溃报告连着两次只有几字节（二次崩溃）、
+    //    拿不到局部变量 —— 所以把实际数值打出来：
+    //    下一次真出问题，日志里直接能看到是哪个尺寸/偏移不对。
+    //    只在参数变化（也就是真的重算）时记一行，不会刷屏。
+    DebugLog("背景图 BlitInto: dst=%dx%d src=%dx%d off=(%d,%d) tile=%d fit=%d",
+             dstW, dstH, drawW, drawH, offX, offY,
+             place.tile ? 1 : 0, static_cast<int>(fit));
+
     BlitInto(bmp.bgra, dstW, dstH, pixels.data(), drawW, drawH, offX, offY, place.tile);
 
     // ---- 模糊 ----

@@ -85,6 +85,37 @@ BgPlacement ComputeBgPlacement(int imgW, int imgH, int dstW, int dstH, BgFit fit
         const int drawW = static_cast<int>(std::lround(imgW * s));
         const int drawH = static_cast<int>(std::lround(imgH * s));
 
+        // ⚠️ 给缩放结果**封顶**（D-105）。
+        //
+        // 手动缩放最大 400%，而 base 本身就可能很大（一张小图铺满大面板）——
+        // 两者相乘能让 drawW 到几万像素，那个中间缓冲要几百 MB，
+        // 而且下游按像素算偏移时在那种量级下更容易出纰漏。
+        // 封顶之后最坏是"图被放得没那么大"，而不是崩。
+        //
+        // 上限取 8192：超过这个尺寸的中间位图在内存和耗时上都不划算，
+        // 而 8192 已经远大于任何真实面板（4K 屏上也就 3840 宽）。
+        constexpr int kMaxDrawSide = 8192;
+        if (drawW > kMaxDrawSide || drawH > kMaxDrawSide) {
+            const double shrink = (std::min)(
+                static_cast<double>(kMaxDrawSide) / drawW,
+                static_cast<double>(kMaxDrawSide) / drawH);
+            const int cw = static_cast<int>(std::lround(drawW * shrink));
+            const int ch = static_cast<int>(std::lround(drawH * shrink));
+            int rx = 0, ry = 0;
+            BgManualRange(imgW, imgH, dstW, dstH, m, rx, ry);
+            const int x0 = rx;
+            const int y0 = ry;
+            // 按缩小后的尺寸重新算位置，保持同样的相对构图
+            const int nx = -x0 - static_cast<int>(
+                               static_cast<long long>(x0) * m.offsetXPct / 100);
+            const int ny = -y0 - static_cast<int>(
+                               static_cast<long long>(y0) * m.offsetYPct / 100);
+            p.src = RECT{ 0, 0, imgW, imgH };
+            p.dst = RECT{ nx, ny, nx + cw, ny + ch };
+            p.tile = false;
+            return p;
+        }
+
         int rangeX = 0, rangeY = 0;
         BgManualRange(imgW, imgH, dstW, dstH, m, rangeX, rangeY);
 
