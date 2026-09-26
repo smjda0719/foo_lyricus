@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "lyrics_view.h"
 #include "color_util.h"   // BlendColor（原先在本文件里有一份，已提到公共层）
+#include "dpi_util.h"     // GetDpiForWindowSafe（窗口所在显示器的 DPI）
 #include "config.h"
 #include "playback_state.h"
 #include "debug_log.h"
@@ -250,14 +251,25 @@ void LyricusDui::ApplyConfig(ui_element_config::ptr config) {
 }
 
 ui_element_min_max_info LyricusDui::get_min_max_info() {
-    // TODO(未验证): 两处存疑 ——
-    //  1. 这里选择重写 get_min_max_info()，而不是让基类回落去发 WM_GETMINMAXINFO
-    //   （ui_element.cpp:210-221 的默认实现）。两种做法都能用，但哪个更符合
-    //     宿主预期没验证过。
-    //  2. 首次绘制之前 m_theme.dpi 还是 96，这时报出去的最小高度在高 DPI 屏上
-    //     会偏小；等第一帧画完就准了。
+    // 【为什么重写而不是让基类回落】SDK 的默认实现（ui_element.cpp:210-221）
+    // 会给窗口发一条 WM_GETMINMAXINFO 再把结果读回来 —— 而我们的消息映射里
+    // **没有** 这个 handler，回落过去只会拿到 DefWindowProc 的默认值，
+    // 最小尺寸就不受控了。所以这里直接返回自己算的。
+    //
+    // （原地的 TODO 写着"两种做法都能用，哪个更符合宿主预期没验证过"。
+    //   2026-09-26 核过 SDK 源码：不是"都能用"，回落那条路在我们这儿是断的。）
+    //
+    // ⚠️ DPI 取**窗口的实际值**，不是 m_theme.dpi。
+    //
+    // m_theme.dpi 由重绘路径维护（见 OnPaint），而这个函数在构造完成之后
+    // 立刻就会被宿主调用 —— 那时它还是默认的 96。在 200% 缩放的屏上
+    // 报出去的最小高度只有应有的一半，表现是"面板能被拉到比一行还矮"。
+    // 窗口还没建时退回 m_theme.dpi（那种情况下也没有更好的来源）。
+    const int dpi = (m_hWnd != nullptr)
+                  ? static_cast<int>(GetDpiForWindowSafe(m_hWnd))
+                  : m_theme.dpi;
+
     ui_element_min_max_info info;
-    const int dpi = m_theme.dpi;
 
     // 高度按「上下留白 + 行高 × 行数」给：配置里的行数是面板承诺能显示的行数，
     // 不给够高度就会出现「配了 5 行、只看得见 2 行」。
@@ -377,10 +389,14 @@ LRESULT LyricusDui::OnEraseBkgnd(UINT, WPARAM, LPARAM, BOOL&) {
 LRESULT LyricusDui::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
     CPaintDC dc(m_hWnd);
 
-    // dpi 只能在重绘时拿：GetDpiForWindow 在本工程的 WINVER 下没有声明
-    //（control_window.cpp:108 已经踩过同一个坑），而 GetDeviceCaps 一直可用。
-    // 每帧读一次，窗口被拖到不同缩放的显示器上时自动跟上。
-    m_theme.dpi = ::GetDeviceCaps(dc.m_hDC, LOGPIXELSY);
+    // dpi 取**窗口所在显示器**的值。
+    //
+    // 从前这里用 GetDeviceCaps(dc, LOGPIXELSY) —— 那是**系统 DPI**，
+    // 单显示器下两者相同，多显示器不同缩放时就会用错（把窗口拖到另一块屏上，
+    // 字号不跟着变）。当时不用 GetDpiForWindow 是因为它在 WINVER 下没有声明
+    //（control_window.cpp 踩过同一个坑）；现在有 dpi_util.h 的运行时取地址版本了。
+    // 每帧读一次，拖到不同缩放的显示器上能自动跟上。
+    m_theme.dpi = static_cast<int>(GetDpiForWindowSafe(m_hWnd));
 
     RECT rc{};
     ::GetClientRect(m_hWnd, &rc);

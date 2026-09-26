@@ -2,6 +2,7 @@
 
 #include "lyrics_view.h"
 #include "color_util.h"   // BlendColor（原先在本文件里有一份，已提到公共层）
+#include "dpi_util.h"     // GetDpiForWindowSafe（窗口所在显示器的 DPI）
 #include "config.h"
 #include "playback_state.h"
 #include "debug_log.h"
@@ -536,10 +537,14 @@ LRESULT LyricusCuiPanel::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
         m_themeDirty = false;
     }
 
-    // dpi 只能在重绘时拿：GetDpiForWindow 在本工程的 WINVER 下没有声明
-    //（control_window.cpp 已经踩过同一个坑），而 GetDeviceCaps 一直可用。
-    // 每帧读一次，窗口被拖到不同缩放的显示器上时自动跟上。
-    m_theme.dpi = ::GetDeviceCaps(dc.m_hDC, LOGPIXELSY);
+    // dpi 取**窗口所在显示器**的值。
+    //
+    // 从前这里用 GetDeviceCaps(dc, LOGPIXELSY) —— 那是**系统 DPI**，
+    // 单显示器下两者相同，多显示器不同缩放时就会用错。当时不用 GetDpiForWindow
+    // 是因为它在 WINVER 下没有声明（control_window.cpp 踩过同一个坑）；
+    // 现在有 dpi_util.h 的运行时取地址版本了。
+    // 每帧读一次，拖到不同缩放的显示器上能自动跟上。
+    m_theme.dpi = static_cast<int>(GetDpiForWindowSafe(m_hWnd));
 
     RECT rc{};
     ::GetClientRect(m_hWnd, &rc);
@@ -676,9 +681,15 @@ LRESULT LyricusCuiPanel::OnGetMinMaxInfo(UINT, WPARAM, LPARAM lParam, BOOL&) {
     auto* mmi = reinterpret_cast<LPMINMAXINFO>(lParam);
     if (mmi == nullptr) return 0;
 
-    // TODO(未验证): 首帧之前 m_theme.dpi 还是 96，高 DPI 下这时报出去的最小尺寸
-    // 会偏小；等第一帧画完就准了（和 dui_element.cpp:232-237 的存疑点相同）。
-    const int dpi = m_theme.dpi;
+    // ⚠️ DPI 取**窗口的实际值**，不是 m_theme.dpi。
+    //
+    // 后者由重绘路径维护，而这条消息在首帧之前就会被问（uie 的 size_limits
+    // 与 CUI 自己都会问），那时它还是默认的 96 —— 高 DPI 屏上报出去的最小尺寸
+    // 会偏小，表现是"面板能被拉到比一行还矮"。
+    // 和 dui_element.cpp 的 get_min_max_info() 是同一个坑，一起修的。
+    const int dpi = (m_hWnd != nullptr)
+                  ? static_cast<int>(GetDpiForWindowSafe(m_hWnd))
+                  : m_theme.dpi;
     mmi->ptMinTrackSize.x = MulDiv(kMinWidth96, dpi, 96);
     mmi->ptMinTrackSize.y = MulDiv(kMinHeight96, dpi, 96);
     // ptMaxTrackSize 不动：歌词面板没有理由限制用户能拉多大。
