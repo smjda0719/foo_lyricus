@@ -48,20 +48,46 @@ ControlBarRects ComputeControlBarLayout(const RECT& rc, int dpi) {
     // 音量条**最先**牺牲：滚轮就能调音量（面板早就支持），而进度和时间
     // 没有替代品。
     const int iconW   = S(dpi, 20);
-    const int volW    = S(dpi, 70);
     const int timeW   = S(dpi, 96);
     const int minProg = S(dpi, 40);
+
+    // 音量条是**弹性**的：理想 70，能一路压到 40。
+    //
+    // 【为什么不是固定宽度】固定宽度时，面板窄到某个像素它就"啪"地整条消失、
+    // 改由悬停浮层接手 —— 用户 2026-09-26 说那个转化「太生硬」。
+    // 改成弹性之后它会像进度条那样**渐渐变短**，压到最小值才让位：
+    // 转换点因此从 415 逻辑像素推后到 377，中间那 38 像素是平滑过渡的。
+    const int volWMax = S(dpi, 70);
+    const int volWMin = S(dpi, 40);
 
     const int rightEdge = rc.right - pad;
     const int avail     = rightEdge - leftEnd;
 
+    // 右侧元素总共能占多少 —— 可用宽度扣掉进度条的最小宽度、以及它左边的 gap
+    const int budget = avail - gap - minProg;
+
+    const int iconPart = iconW + gap;        // 图标 + 紧挨它左边的 gap
+    const int timePart = timeW + gap * 2;    // 时间 + 紧挨它左边的 gap*2
+
     bool showVolBar = true;
     bool showTime   = true;
+    int  volW       = volWMax;
 
-    // 全都显示时，右侧一共要占多宽（含紧邻它左边的那个 gap）
-    int need = gap + volW + gap + iconW + gap * 2 + timeW + gap * 2;
-    if (avail - need < minProg) { showVolBar = false; need -= (gap + volW); }
-    if (avail - need < minProg) { showTime   = false; need -= (timeW + gap * 2); }
+    if (budget < iconPart + (volWMax + gap) + timePart) {
+        // 理想宽度放不下 —— 先压**音量条**（弹性就体现在这一步）
+        const int room = budget - iconPart - timePart - gap;
+        if (room >= volWMin) {
+            volW = room;
+        } else {
+            // 压到最小也不够 —— 音量条整个让位，改由悬停浮层提供。
+            // 这本来就是它作为最低优先级的归宿，只是现在推迟了 38 像素才轮到。
+            showVolBar = false;
+            volW       = 0;
+            // ⚠️ 时间够不够要按**没有音量条**重算。用上面那个 budget 判会偏保守，
+            //    把本来放得下的时间也一起牺牲掉。
+            if (budget < iconPart + timePart) showTime = false;
+        }
+    }
 
     // 按最终决定从右往左摆。
     // ⚠️ 被牺牲掉的项必须是**空矩形**（`RECT{}`）—— 这是头文件里写死的约定，

@@ -80,18 +80,37 @@ void TestDegradeOrder() {
     Check(!IsEmpty(wide.progress) && !IsEmpty(wide.time) && !IsEmpty(wide.volumeBar),
           "700 逻辑像素：进度条 / 时间 / 音量条 全在");
 
-    // 第一个临界点：416 逻辑像素。
-    // avail = w - pad(20) - leftEnd(122)；全部显示需要 need = 234，且进度条还要 minProg = 40
-    //   20 + 122 + 234 + 40 = 416
-    Check(!IsEmpty(Layout(416, 96).volumeBar), "416 逻辑像素：音量条**刚好**还在（边界内）");
-    Check(IsEmpty(Layout(415, 96).volumeBar),  "★ 415 逻辑像素：音量条掉了（差一个像素就降级）");
-    Check(!IsEmpty(Layout(415, 96).progress),  "★ 但进度条必须还在 —— 这才是这次修复的重点");
-    Check(!IsEmpty(Layout(415, 96).time),      "★ 时间也还在（它排在音量条前面）");
+    // ---- 音量条是**弹性**的：先变短，压到底才让位 ----
+    //
+    // 用户 2026-09-26：「现在的转化有点太生硬，音量条也改成像进度条一样变化」。
+    // 原先它固定 70 宽，面板窄到某个像素就"啪"地整条不见。现在理想 70 能撑到
+    // 408，再窄就一路压到 40（378），**377 才**让位给悬停浮层。
+    const int w408 = Width(Layout(408, 96).volumeBar);
+    const int w407 = Width(Layout(407, 96).volumeBar);
+    Check(w408 == 70, "408 逻辑像素：音量条还是理想宽度 70");
+    Check(w407 < w408, "★ 407 逻辑像素：音量条开始**变短**而不是消失 —— 这就是「转化太生硬」的修法");
+    Check(Width(Layout(390, 96).volumeBar) < w407, "★ 再窄一点它继续变短（继续压缩）");
+    Check(Width(Layout(378, 96).volumeBar) == 40, "378 逻辑像素：压到最小值 40");
+    Check(IsEmpty(Layout(377, 96).volumeBar), "★ 377 逻辑像素：压到底了才让位给悬停浮层");
+    Check(!IsEmpty(Layout(377, 96).progress), "★ 让位之后进度条当然还在");
+    Check(!IsEmpty(Layout(377, 96).time),     "★ 时间也还在（它排在音量条后面才轮到）");
 
-    // 第二个临界点：338 逻辑像素（= 160 + 122 + 156）
-    Check(!IsEmpty(Layout(338, 96).time),   "338 逻辑像素：时间**刚好**还在");
-    Check(IsEmpty(Layout(337, 96).time),    "★ 337 逻辑像素：时间也掉了（第二档降级）");
-    Check(!IsEmpty(Layout(337, 96).progress), "★ 到这一步进度条依然在");
+    // 平滑性的**量化判据**：逐像素缩窄时，音量条只能单调变短，且每步不超过 2 像素。
+    // 跳变（比如 70 -> 0）正是用户抱怨的那种"生硬"。
+    {
+        int prev = -1, bad = 0;
+        for (int w = 408; w >= 378; --w) {
+            const int cur = Width(Layout(w, 96).volumeBar);
+            if (prev >= 0 && (cur > prev || prev - cur > 2)) ++bad;
+            prev = cur;
+        }
+        Check(bad == 0, "★ 408->378 逐像素扫描：单调变短、无跳变（把「平不平滑」变成可判定的）");
+    }
+
+    // ---- 第二个临界点：时间 ----
+    Check(!IsEmpty(Layout(330, 96).time),   "330 逻辑像素：时间**刚好**还在");
+    Check(IsEmpty(Layout(329, 96).time),    "★ 329 逻辑像素：时间也掉了（最后一档降级）");
+    Check(!IsEmpty(Layout(329, 96).progress), "★ 到这一步进度条依然在");
 
     // 面板能被拖到的最小尺寸（kMinPanelW96 = 320）下，进度条仍要有像样的宽度
     const auto minPanel = Layout(320, 96);
