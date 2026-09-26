@@ -109,6 +109,8 @@
     <ClCompile Include="..\src\control_window.cpp" />
     <!-- 控制条的布局数学：抽成纯函数是为了能进离线单测台（见 tests/harness 的 cbar 组）。 -->
     <ClCompile Include="..\src\control_bar_layout.cpp" />
+    <!-- 首选项页的布局与配色：同样是纯函数，进离线单测台（run.ps1 的 prefs 组）。 -->
+    <ClCompile Include="..\src\prefs_layout.cpp" />
     <ClCompile Include="..\src\menu.cpp" />
     <ClCompile Include="..\src\initquit.cpp" />
     <ClCompile Include="..\src\svg_icon.cpp" />
@@ -144,6 +146,7 @@
     <ClInclude Include="..\src\playback_state.h" />
     <ClInclude Include="..\src\control_window.h" />
     <ClInclude Include="..\src\control_bar_layout.h" />
+    <ClInclude Include="..\src\prefs_layout.h" />
     <ClInclude Include="..\src\resource.h" />
   </ItemGroup>
 

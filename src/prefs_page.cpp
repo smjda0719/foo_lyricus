@@ -4,40 +4,35 @@
 #include "config.h"
 #include "control_window.h"
 #include "debug_log.h"
+#include "prefs_layout.h"
+#include "dpi_util.h"           // GetDpiForWindowSafe（与控制面板共用同一份）
 
 #include <SDK/preferences_page.h>
+#include <SDK/ui_element.h>     // ui_config_manager：宿主主题色 + 暗色模式
 #include <helpers/atl-misc.h>   // preferences_page_impl
 // ⚠️ 刻意**不**包含 atldlgs.h、也不用 WTL 的 CColorDialog —— 原因写在 PickColor() 里。
 // 取色走纯 Win32 的 ChooseColorW，只需要 commdlg.h。
 #include <commdlg.h>
 
+#include <cstdio>
+
 // ---------------------------------------------------------------------------
-// Lyricus 首选项页 —— 浮动面板的配色与不透明度
+// Lyricus 首选项页 —— **全自绘**
 //
-// 【为什么这一页只管浮动面板】
-// DUI 元素和 CUI 面板跟随宿主主题（用户在 foobar2000 / Columns UI 里改配色，
-// 面板就跟着变），那是嵌入面板该有的行为，不该另设一套。
-// 只有浮动面板没有宿主，所以给它自己的配置。
+// 【为什么要重做】用户 2026-09-26 说「这个界面有点老旧，在 lyricus 那个
+// 二级界面实现一个更现代化的面板」。旧版是 GROUPBOX 分组框 + 六个 62x14 的
+// 小色块按钮 + 系统 trackbar，控件长什么样完全由系统主题决定，改不动。
+// 所以这一版把控件**全部删掉**（见 lyricus.rc），内容全在这里画。
 //
-// 【为什么需要 .rc】
-// preferences_page_impl<TDialog> 要求 TDialog 能 Create(parent)，
-// 也就是必须基于对话框资源（helpers/atl-misc.h:271-280）。
-// 本工程原本没有 .rc，这是第一份。
+// 【布局与配色是纯函数】都在 prefs_layout.h/.cpp 里，能进离线单测台
+// （run.ps1 的 prefs 组）。这个文件只负责"把算好的矩形画出来"和"处理鼠标"。
+// 那条界线很重要：自绘界面最容易出的两类问题（算错位置、配色读不清）
+// 都是纯计算，放进单测比在截图里找强得多。
 //
-// 【TDialog 的契约】由 preferences_page_instance_impl 反推出来三条：
-//   1. 构造函数收 preferences_page_callback::ptr
-//   2. 有 IDD 和 Create(parent)（CDialogImpl 提供）
-//   3. 继承 preferences_page_instance 并实现 get_state / apply / reset
-//      —— 因为 preferences_page_instance_impl<TDialog> **只**继承 TDialog，
-//         它得从 TDialog 那里拿到 preferences_page_instance 这个基类。
-//
-// 【消息处理函数的签名不能凭印象写】
-// WTL 的宏会按固定参数表调用处理函数（atlcrack.h 里逐个核过）：
-//   MSG_WM_INITDIALOG  -> func((HWND)wParam, lParam)
-//   MSG_WM_DRAWITEM    -> func((UINT)wParam, (LPDRAWITEMSTRUCT)lParam)
-//   MSG_WM_HSCROLL     -> func((int)LOWORD(wParam), (short)HIWORD(wParam), (HWND)lParam)
-//   COMMAND_*_EX       -> func((UINT)HIWORD(wParam), (int)LOWORD(wParam), (HWND)lParam)
-// 第三参一律是裸 HWND，不是 CWindow；写成 CWindow 会报"函数不接受 N 个参数"。
+// 【页面底色必须问宿主要】自绘页面最怕颜色写死 —— 用户切暗色模式后一片惨白。
+// 这里用 ui_config_manager::getSysColor()：它先查 foobar2000 的主题配置，
+// 查不到才回退系统色（见 SDK/ui_element.cpp:259）。于是页面底色和首选项
+// 窗口是同一个来源，接缝处不会有色差。
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -47,29 +42,109 @@ using namespace lyricus;
 // GUID 段 0x37：首选项页。分配前已 grep 全工程（见 D-022）。
 const GUID guid_prefs_page = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x37}};
 
-// 颜色项的绑定表。
+// 颜色项的绑定表：结构体成员 + 显示名。
 //
-// 把「控件 ID / 结构体成员 / 显示名」绑在一起，避免 6 个颜色各写一遍
-// 几乎相同的代码 —— 那种写法「改一处漏五处」是经典事故。
+// ⚠️ **顺序必须和 prefs_layout 的卡片编号一致**（索引 0..5）。
+// 布局是按索引算矩形的（两行三列，从左到右、从上到下），这里换了顺序，
+// 界面上的位置就跟着换 —— 两边必须同步改。
 struct ColorSlot {
-    UINT        ctrlId;
-    COLORREF    PanelAppearance::*member;
-    const char* label;
+    COLORREF       PanelAppearance::*member;
+    const wchar_t*                    label;
 };
 
-const ColorSlot kColorSlots[] = {
-    { IDC_BTN_HEADER,  &PanelAppearance::header,  "曲名"       },
-    { IDC_BTN_CURRENT, &PanelAppearance::current, "当前歌词行" },
-    { IDC_BTN_NORMAL,  &PanelAppearance::normal,  "其它歌词行" },
-    { IDC_BTN_DIM,     &PanelAppearance::dim,     "次要文字"   },
-    { IDC_BTN_WARN,    &PanelAppearance::warn,    "警告文字"   },
-    { IDC_BTN_BG,      &PanelAppearance::bg,      "面板底色"   },
+const ColorSlot kColorSlots[kPrefsColorCount] = {
+    { &PanelAppearance::header,  L"曲名"       },
+    { &PanelAppearance::current, L"当前歌词行" },
+    { &PanelAppearance::normal,  L"其它歌词行" },
+    { &PanelAppearance::dim,     L"次要文字"   },
+    { &PanelAppearance::warn,    L"警告文字"   },
+    { &PanelAppearance::bg,      L"面板底色"   },
 };
 
-// 感知亮度：决定色块上的文字用黑还是白。
-// 用加权而不是简单平均 —— 纯蓝和纯黄的"平均"一样，人眼看上去差得远。
-int Luminance(COLORREF c) {
-    return (GetRValue(c) * 299 + GetGValue(c) * 587 + GetBValue(c) * 114) / 1000;
+// 命中目标。色块直接用数组下标（0..5），其余用负值区分 ——
+// 这样返回值能直接当数组下标用，少一层映射。
+constexpr int kHitNone   = -1;
+constexpr int kHitSlider = -2;
+constexpr int kHitReset  = -3;
+
+// ---------------------------------------------------------------------------
+// 绘制辅助
+// ---------------------------------------------------------------------------
+
+// 圆角矩形填充。
+//
+// ⚠️ control_window.cpp 里有一份几乎一样的实现。这里没有再抽一层共享：
+//    两份都只有十几行，而抽出来要新建一对头/源文件并改动那边的包含关系 ——
+//    收益不抵风险。**哪天出现第三处，就该抽了。**
+void FillRoundRect(HDC dc, const RECT& r, int radius, COLORREF color) {
+    if (r.right <= r.left || r.bottom <= r.top) return;
+    if (radius < 1) radius = 1;
+    const int d = radius * 2;
+    if (d > r.right - r.left) radius = (r.right - r.left) / 2;
+    if (d > r.bottom - r.top) radius = (r.bottom - r.top) / 2;
+    if (radius < 1) {   // 太扁了，退化成直角
+        HBRUSH br = CreateSolidBrush(color);
+        FillRect(dc, &r, br);
+        DeleteObject(br);
+        return;
+    }
+
+    HBRUSH br = CreateSolidBrush(color);
+    HPEN   pn = CreatePen(PS_SOLID, 1, color);
+    const HGDIOBJ ob = SelectObject(dc, br);
+    const HGDIOBJ op = SelectObject(dc, pn);
+
+    RoundRect(dc, r.left, r.top, r.right, r.bottom, radius * 2, radius * 2);
+
+    SelectObject(dc, ob);
+    SelectObject(dc, op);
+    DeleteObject(br);
+    DeleteObject(pn);
+}
+
+// 圆角矩形**描边**（不填）。用于色块的边界 —— 色块可能和页面底色撞色，
+// 没有描边就看不出一张卡片的范围。
+void StrokeRoundRect(HDC dc, const RECT& r, int radius, int width, COLORREF color) {
+    if (r.right <= r.left || r.bottom <= r.top) return;
+    HBRUSH br = (HBRUSH)GetStockObject(NULL_BRUSH);
+    HPEN   pn = CreatePen(PS_SOLID, width, color);
+    const HGDIOBJ ob = SelectObject(dc, br);
+    const HGDIOBJ op = SelectObject(dc, pn);
+    RoundRect(dc, r.left, r.top, r.right, r.bottom, radius * 2, radius * 2);
+    SelectObject(dc, ob);
+    SelectObject(dc, op);
+    DeleteObject(pn);
+}
+
+void DrawTextIn(HDC dc, const RECT& r, const wchar_t* text, COLORREF color,
+                HFONT font, UINT flags) {
+    if (text == nullptr || *text == L'\0') return;
+    const HGDIOBJ old = SelectObject(dc, font);
+    SetTextColor(dc, color);
+    SetBkMode(dc, TRANSPARENT);
+    RECT rc = r;
+    DrawTextW(dc, text, -1, &rc, flags | DT_NOPREFIX);
+    SelectObject(dc, old);
+}
+
+// 按 dpi 造一个界面字体。跟随系统的消息字体（UI 字体），字号按 dpi 缩放 ——
+// 直接 CreateFontW 写死 9pt 的话，高 DPI 下会比周围控件小一圈。
+HFONT MakeUiFont(int dpi, int pt, bool semibold) {
+    NONCLIENTMETRICSW ncm{};
+    ncm.cbSize = sizeof(ncm);
+
+    LOGFONTW lf{};
+    if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0)) {
+        lf = ncm.lfMessageFont;
+    } else {
+        // 兜底：系统不给就自己拼一个，别让整页画不出字
+        lf.lfHeight = -MulDiv(9, dpi, 72);
+        wcscpy_s(lf.lfFaceName, L"Segoe UI");
+    }
+    lf.lfHeight  = -MulDiv(pt, dpi, 72);
+    lf.lfWeight  = semibold ? FW_SEMIBOLD : FW_NORMAL;
+    lf.lfQuality = CLEARTYPE_QUALITY;
+    return CreateFontIndirectW(&lf);
 }
 
 // ChooseColorW 要求调用方自带 16 个自定义颜色的存储，而且这块内存要**跨调用保留**
@@ -89,6 +164,8 @@ COLORREF* CustomColors() {
     return rgb;
 }
 
+// ---------------------------------------------------------------------------
+
 class CLyricusPrefsDlg : public CDialogImpl<CLyricusPrefsDlg>,
                          public preferences_page_instance {
 public:
@@ -99,12 +176,31 @@ public:
           m_edited(GetPanelAppearance()),     // 界面上正在编辑的值
           m_applied(GetPanelAppearance()) {}  // 上次"应用"下去的值
 
+    ~CLyricusPrefsDlg() { FreeFonts(); }
+
+    // 字体在**两处**都释放：WM_DESTROY 和析构。两边都先把指针置空，
+    // 所以谁先来都不会重复 DeleteObject。
+    //
+    // ⚠️ 别写成 `for (HFONT& f : { m_fontBody, ... })` ——
+    //    initializer_list 的元素是 const，非 const 引用绑不上（编译不过）。
+    void FreeFonts() {
+        if (m_fontBody  != nullptr) { DeleteObject(m_fontBody);  m_fontBody  = nullptr; }
+        if (m_fontBold  != nullptr) { DeleteObject(m_fontBold);  m_fontBold  = nullptr; }
+        if (m_fontSmall != nullptr) { DeleteObject(m_fontSmall); m_fontSmall = nullptr; }
+    }
+
     BEGIN_MSG_MAP(CLyricusPrefsDlg)
         MSG_WM_INITDIALOG(OnInitDialog)
-        MSG_WM_DRAWITEM(OnDrawItem)
-        MSG_WM_HSCROLL(OnHScroll)
-        COMMAND_ID_HANDLER_EX(IDC_BTN_RESET, OnResetClicked)
-        COMMAND_RANGE_HANDLER_EX(IDC_BTN_HEADER, IDC_BTN_BG, OnColorClicked)
+        MSG_WM_DESTROY(OnDestroy)
+        MSG_WM_ERASEBKGND(OnEraseBkgnd)
+        MSG_WM_PAINT(OnPaint)
+        MSG_WM_MOUSEMOVE(OnMouseMove)
+        MSG_WM_LBUTTONDOWN(OnLButtonDown)
+        MSG_WM_LBUTTONUP(OnLButtonUp)
+        MSG_WM_MOUSELEAVE(OnMouseLeave)
+        MSG_WM_SETCURSOR(OnSetCursor)
+        MSG_WM_GETDLGCODE(OnGetDlgCode)
+        MSG_WM_KEYDOWN(OnKeyDown)
     END_MSG_MAP()
 
     // ---- preferences_page_instance 的契约 ----
@@ -113,91 +209,428 @@ public:
     void     reset()     override;
 
 private:
-    BOOL OnInitDialog(HWND hwndFocus, LPARAM lParam);
-    void OnDrawItem(UINT ctrlId, LPDRAWITEMSTRUCT dis);
-    void OnHScroll(int sbCode, short pos, HWND hwndCtl);
-    void OnColorClicked(UINT notify, int ctrlId, HWND ctl);
-    void OnResetClicked(UINT notify, int ctrlId, HWND ctl);
+    // 当前客户区对应的布局与配色。两者都是纯函数，按需重算即可（很便宜）。
+    PrefsLayout CurrentLayout() const;
+    PrefsTheme  CurrentTheme() const;
 
-    COLORREF* ColorForControl(UINT ctrlId);
-    void      SyncControls();
-    void      NotifyChanged();
+    int  HitTest(POINT pt) const;              // 返回 kHit* 或色块下标
+    void Repaint();
+    void NotifyChanged();
+
+    BOOL OnInitDialog(HWND hwndFocus, LPARAM lParam);
+    void OnDestroy();
+    BOOL OnEraseBkgnd(CDCHandle dc);
+    void OnPaint(CDCHandle dc);
+    void OnMouseMove(UINT flags, CPoint pt);
+    void OnLButtonDown(UINT flags, CPoint pt);
+    void OnLButtonUp(UINT flags, CPoint pt);
+    void OnMouseLeave();
+    BOOL OnSetCursor(CWindow wnd, UINT hitTest, UINT message);
+    UINT OnGetDlgCode(LPMSG msg);
+    void OnKeyDown(TCHAR key, UINT repeat, UINT flags);
+
+    void DrawPage(HDC dc, const RECT& rc, const PrefsLayout& L, const PrefsTheme& T);
+    void DrawColorCard(HDC dc, const RECT& card, int index);
+    void DrawSlider(HDC dc, const RECT& r, int value);
+    void DrawResetButton(HDC dc, const RECT& r);
+
+    void SetAlphaFromSliderX(int x);
 
     // 弹一个模态取色器。
     //
     // ⚠️ 模态对话框会泵消息，期间**首选项窗口可能被关掉、页面随之被释放**。
     //    SDK 在 preferences_page.h:133 专门警告过这种情况。
-    //    所以进来先拿一份自身引用把自己钉住，DoModal 返回后碰成员才安全；
+    //    所以进来先拿一份自身引用把自己钉住，返回后碰成员才安全；
     //    返回后还要再确认一次窗口还在。
     bool PickColor(COLORREF& inOut);
 
     preferences_page_callback::ptr m_callback;
     PanelAppearance m_edited;
     PanelAppearance m_applied;
+
+    // 交互状态
+    int  m_hot       = kHitNone;   // 鼠标悬停在谁身上
+    int  m_active    = kHitNone;   // 按下了谁
+    bool m_dragAlpha = false;      // 正在拖不透明度滑块
+    bool m_tracking  = false;      // 已登记 TME_LEAVE
+
+    // 字体按 dpi 建一次就够（对话框存续期间不会变 dpi）
+    HFONT m_fontBody  = nullptr;
+    HFONT m_fontBold  = nullptr;
+    HFONT m_fontSmall = nullptr;
 };
 
 // ---------------------------------------------------------------------------
 
-COLORREF* CLyricusPrefsDlg::ColorForControl(UINT ctrlId) {
-    for (const ColorSlot& s : kColorSlots) {
-        if (s.ctrlId == ctrlId) return &(m_edited.*(s.member));
+PrefsLayout CLyricusPrefsDlg::CurrentLayout() const {
+    RECT rc{};
+    ::GetClientRect(m_hWnd, &rc);
+    return ComputePrefsLayout(rc.right - rc.left, rc.bottom - rc.top,
+                              static_cast<int>(GetDpiForWindowSafe(m_hWnd)));
+}
+
+PrefsTheme CLyricusPrefsDlg::CurrentTheme() const {
+    // 底色与文字直接问宿主。getSysColor 内部先查 foobar2000 的主题配置，
+    // 查不到才回退系统色 —— 顺带把暗色模式也一并处理了。
+    COLORREF bg = GetSysColor(COLOR_WINDOW);
+    COLORREF fg = GetSysColor(COLOR_WINDOWTEXT);
+    bool dark = false;
+
+    ui_config_manager::ptr cm = ui_config_manager::tryGet();
+    if (cm.is_valid()) {
+        bg   = cm->getSysColor(COLOR_WINDOW);
+        fg   = cm->getSysColor(COLOR_WINDOWTEXT);
+        dark = cm->is_dark_mode();
     }
-    return nullptr;
+    return MakePrefsTheme(dark, bg, fg);
+}
+
+int CLyricusPrefsDlg::HitTest(POINT pt) const {
+    const PrefsLayout L = CurrentLayout();
+
+    auto inside = [&pt](const RECT& r) {
+        return r.right > r.left && r.bottom > r.top &&
+               pt.x >= r.left && pt.x < r.right &&
+               pt.y >= r.top  && pt.y < r.bottom;
+    };
+
+    for (int i = 0; i < kPrefsColorCount; ++i) {
+        // 名称也算命中区域 —— 它紧贴色块下方，只点色块的话手感很别扭。
+        if (inside(L.cards[i]) || inside(L.cardLabels[i])) return i;
+    }
+    if (inside(L.slider)) return kHitSlider;
+    if (inside(L.reset))  return kHitReset;
+    return kHitNone;
+}
+
+void CLyricusPrefsDlg::Repaint() {
+    if (::IsWindow(m_hWnd)) ::InvalidateRect(m_hWnd, nullptr, FALSE);
 }
 
 BOOL CLyricusPrefsDlg::OnInitDialog(HWND, LPARAM) {
-    const HWND slider = GetDlgItem(IDC_SLIDER_ALPHA);
-    if (slider != nullptr) {
-        // 必须用 ::SendMessage —— 不加 :: 会被 ATL 的 CWindow::SendMessageW 抢走，
-        // 而它不接受 HWND 作第一个参数。
-        ::SendMessage(slider, TBM_SETRANGE, TRUE, MAKELPARAM(kMinAlpha, kMaxAlpha));
-        ::SendMessage(slider, TBM_SETTICFREQ, 26, 0);
-    }
-    SyncControls();
-    DebugLog("首选项页：已初始化（alpha=%d）", m_edited.alpha);
+    const int dpi = static_cast<int>(GetDpiForWindowSafe(m_hWnd));
+    m_fontBody  = MakeUiFont(dpi, 9,  false);
+    m_fontBold  = MakeUiFont(dpi, 9,  true);
+    m_fontSmall = MakeUiFont(dpi, 8,  false);
+
+    DebugLog("首选项页：已初始化（全自绘，alpha=%d）", m_edited.alpha);
     return TRUE;
 }
 
-void CLyricusPrefsDlg::SyncControls() {
-    for (const ColorSlot& s : kColorSlots) {
-        // 色块内容由 WM_DRAWITEM 画，这里只要让它重画。
-        // 必须加 :: —— 不然会被 ATL 的 CWindow::InvalidateRect 抢走，
-        // 而那个成员只接受 (LPRECT, BOOL) 两个参数。
-        ::InvalidateRect(GetDlgItem(s.ctrlId), nullptr, TRUE);
-    }
+void CLyricusPrefsDlg::OnDestroy() {
+    FreeFonts();
+}
 
-    const HWND slider = GetDlgItem(IDC_SLIDER_ALPHA);
-    if (slider != nullptr) ::SendMessage(slider, TBM_SETPOS, TRUE, m_edited.alpha);
+BOOL CLyricusPrefsDlg::OnEraseBkgnd(CDCHandle) {
+    // 返回 TRUE = "我已经处理了" —— 不让系统擦背景。
+    // 配合 OnPaint 里的双缓冲，页面切换时不会闪白。
+    return TRUE;
+}
+
+void CLyricusPrefsDlg::OnPaint(CDCHandle) {
+    PAINTSTRUCT ps{};
+    const HDC dc = BeginPaint(&ps);
+    if (dc == nullptr) return;
+
+    RECT rc{};
+    ::GetClientRect(m_hWnd, &rc);
+    const int w = rc.right - rc.left;
+    const int h = rc.bottom - rc.top;
+
+    // 双缓冲：自绘页面直接在窗口 DC 上画会闪（尤其是拖滑块时每帧重绘）
+    const HDC mem = CreateCompatibleDC(dc);
+    const HBITMAP bmp = CreateCompatibleBitmap(dc, w, h);
+    const HGDIOBJ oldBmp = SelectObject(mem, bmp);
+
+    DrawPage(mem, rc, CurrentLayout(), CurrentTheme());
+
+    BitBlt(dc, 0, 0, w, h, mem, 0, 0, SRCCOPY);
+
+    SelectObject(mem, oldBmp);
+    DeleteObject(bmp);
+    DeleteDC(mem);
+    EndPaint(&ps);
+}
+
+void CLyricusPrefsDlg::DrawPage(HDC dc, const RECT& rc, const PrefsLayout& L,
+                                const PrefsTheme& T) {
+    // ---- 底色 ----
+    HBRUSH bg = CreateSolidBrush(T.pageBg);
+    FillRect(dc, &rc, bg);
+    DeleteObject(bg);
+
+    // 布局判定"这块地方画不下"时返回的是空矩形，逐项判空后跳过即可。
+    auto empty = [](const RECT& r) { return r.right <= r.left || r.bottom <= r.top; };
+
+    // ---- 分组标题 ----
+    DrawTextIn(dc, L.titleColors, L"浮动面板配色", T.text, m_fontBold,
+               DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    DrawTextIn(dc, L.titleAlpha, L"整体不透明度", T.text, m_fontBold,
+               DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
     wchar_t buf[32];
     swprintf_s(buf, L"%d / 255", m_edited.alpha);
-    SetDlgItemTextW(IDC_LBL_ALPHA, buf);
+    DrawTextIn(dc, L.alphaValue, buf, T.textDim, m_fontBody,
+               DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+
+    // ---- 色块 ----
+    for (int i = 0; i < kPrefsColorCount; ++i) {
+        if (empty(L.cards[i])) continue;
+        DrawColorCard(dc, L.cards[i], i);
+        DrawTextIn(dc, L.cardLabels[i], kColorSlots[i].label, T.textDim, m_fontBody,
+                   DT_CENTER | DT_TOP | DT_SINGLELINE);
+    }
+
+    // ---- 滑块 ----
+    if (!empty(L.slider)) DrawSlider(dc, L.slider, m_edited.alpha);
+
+    // ---- 底部说明 ----
+    DrawTextIn(dc, L.hint,
+               L"点色块选颜色；拖滑块调不透明度。\n"
+               L"这些设置只影响浮动面板，DUI / CUI 面板跟随宿主主题。",
+               T.textDim, m_fontSmall, DT_LEFT | DT_TOP | DT_WORDBREAK);
+
+    // ---- 按钮 ----
+    if (!empty(L.reset)) DrawResetButton(dc, L.reset);
 }
 
-void CLyricusPrefsDlg::OnDrawItem(UINT /*ctrlId*/, LPDRAWITEMSTRUCT dis) {
-    if (dis == nullptr) return;
+void CLyricusPrefsDlg::DrawColorCard(HDC dc, const RECT& card, int index) {
+    const int dpi = static_cast<int>(GetDpiForWindowSafe(m_hWnd));
+    const int radius = MulDiv(8, dpi, 96);
 
-    const COLORREF* p = ColorForControl(dis->CtlID);
-    if (p == nullptr) return;
+    const COLORREF c = m_edited.*(kColorSlots[index].member);
+    const bool hot    = (m_hot == index);
+    const bool active = (m_active == index);
 
-    const COLORREF c = *p;
+    RECT r = card;
+    if (active) OffsetRect(&r, 0, MulDiv(1, dpi, 96));   // 按下时轻微下沉
 
-    // 色块本体
-    HBRUSH br = CreateSolidBrush(c);
-    if (br != nullptr) { FillRect(dis->hDC, &dis->rcItem, br); DeleteObject(br); }
+    FillRoundRect(dc, r, radius, c);
 
-    // 边框：色块可能和对话框底色撞色，加一圈灰边保证边界可见
-    FrameRect(dis->hDC, &dis->rcItem, static_cast<HBRUSH>(GetStockObject(GRAY_BRUSH)));
+    // 描边：色块可能和页面底色撞色。悬停时换成强调色，给出"可以点"的反馈。
+    const PrefsTheme T = CurrentTheme();
+    StrokeRoundRect(dc, r, radius, hot ? MulDiv(2, dpi, 96) : 1,
+                    hot ? T.accent : T.border);
 
-    // 十六进制值。前景色按感知亮度选，保证浅色和深色底上都读得清。
+    // 十六进制值：按色块自身亮度选黑字还是白字，浅色和深色底上都读得清。
     wchar_t text[16];
     swprintf_s(text, L"#%02X%02X%02X", GetRValue(c), GetGValue(c), GetBValue(c));
-    SetTextColor(dis->hDC, Luminance(c) > 128 ? RGB(0, 0, 0) : RGB(255, 255, 255));
-    SetBkMode(dis->hDC, TRANSPARENT);
-
-    RECT rc = dis->rcItem;
-    DrawTextW(dis->hDC, text, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    DrawTextIn(dc, r, text, PrefsLuminance(c) > 128 ? RGB(0, 0, 0) : RGB(255, 255, 255),
+               m_fontBody, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 }
+
+void CLyricusPrefsDlg::DrawSlider(HDC dc, const RECT& r, int value) {
+    const int dpi = static_cast<int>(GetDpiForWindowSafe(m_hWnd));
+    const PrefsTheme T = CurrentTheme();
+
+    const int trackH = MulDiv(6, dpi, 96);
+    const int knobR  = MulDiv(9, dpi, 96);
+    const int inset  = knobR;   // 手柄贴到两端时不至于被裁掉
+
+    const int left  = r.left + inset;
+    const int right = r.right - inset;
+    if (right <= left) return;
+
+    const int cy = (r.top + r.bottom) / 2;
+
+    // 轨道
+    RECT track{ left, cy - trackH / 2, right, cy + trackH / 2 };
+    FillRoundRect(dc, track, trackH / 2, T.cardBg);
+
+    // 已填充部分 + 手柄位置
+    const int span = right - left;
+    const int pos  = left + MulDiv(span, ClampAlpha(value) - kMinAlpha,
+                                   kMaxAlpha - kMinAlpha);
+
+    const bool hot = (m_hot == kHitSlider) || m_dragAlpha;
+
+    if (pos > left) {
+        RECT fill{ left, track.top, pos, track.bottom };
+        FillRoundRect(dc, fill, trackH / 2, T.accent);
+    }
+
+    // 手柄：悬停/拖动时稍微放大一点，给出反馈
+    const int kr = hot ? knobR + MulDiv(1, dpi, 96) : knobR;
+    RECT knob{ pos - kr, cy - kr, pos + kr, cy + kr };
+    FillRoundRect(dc, knob, kr, hot ? T.accent : T.text);
+
+    // 手柄描边用页面底色，让它和轨道之间有干净的边界
+    StrokeRoundRect(dc, knob, kr, MulDiv(2, dpi, 96), T.pageBg);
+}
+
+void CLyricusPrefsDlg::DrawResetButton(HDC dc, const RECT& r) {
+    const int dpi = static_cast<int>(GetDpiForWindowSafe(m_hWnd));
+    const PrefsTheme T = CurrentTheme();
+
+    const bool hot    = (m_hot == kHitReset);
+    const bool active = (m_active == kHitReset);
+
+    RECT box = r;
+    if (active) OffsetRect(&box, 0, MulDiv(1, dpi, 96));
+
+    const int radius = MulDiv(6, dpi, 96);
+    FillRoundRect(dc, box, radius, active ? T.accent : (hot ? T.cardHot : T.cardBg));
+    StrokeRoundRect(dc, box, radius, 1, T.border);
+
+    // 按下态底色是强调色（偏深），文字得换成能读清的一侧
+    const COLORREF fg = active ? RGB(255, 255, 255) : T.text;
+    DrawTextIn(dc, box, L"恢复默认", fg, m_fontBody,
+               DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+}
+
+// ---------------------------------------------------------------------------
+// 交互
+// ---------------------------------------------------------------------------
+
+void CLyricusPrefsDlg::OnMouseMove(UINT /*flags*/, CPoint pt) {
+    if (m_dragAlpha) {
+        SetAlphaFromSliderX(pt.x);
+        return;
+    }
+
+    // 登记一次 TME_LEAVE —— 没有它收不到 WM_MOUSELEAVE，悬停态会一直留着。
+    if (!m_tracking) {
+        TRACKMOUSEEVENT tme{};
+        tme.cbSize    = sizeof(tme);
+        tme.dwFlags   = TME_LEAVE;
+        tme.hwndTrack = m_hWnd;
+        if (TrackMouseEvent(&tme)) m_tracking = true;
+    }
+
+    const int hit = HitTest(pt);
+    SetCursor(LoadCursorW(nullptr, hit == kHitNone ? IDC_ARROW : IDC_HAND));
+    if (hit != m_hot) { m_hot = hit; Repaint(); }
+}
+
+void CLyricusPrefsDlg::OnMouseLeave() {
+    m_tracking = false;
+    if (m_hot != kHitNone) { m_hot = kHitNone; Repaint(); }
+}
+
+void CLyricusPrefsDlg::OnLButtonDown(UINT /*flags*/, CPoint pt) {
+    const int hit = HitTest(pt);
+    if (hit == kHitNone) return;
+
+    m_active = hit;
+    ::SetCapture(m_hWnd);
+
+    if (hit == kHitSlider) {
+        m_dragAlpha = true;
+        SetAlphaFromSliderX(pt.x);   // 点哪儿跳到哪儿，而不是只响应拖动
+    }
+    Repaint();
+}
+
+void CLyricusPrefsDlg::OnLButtonUp(UINT /*flags*/, CPoint pt) {
+    const int hit  = m_active;
+    const bool wasDrag = m_dragAlpha;
+
+    m_active    = kHitNone;
+    m_dragAlpha = false;
+    if (::GetCapture() == m_hWnd) ::ReleaseCapture();
+
+    if (hit == kHitReset) {
+        reset();   // reset() 只改界面，不写存储（见它的说明）
+        Repaint();
+        return;
+    }
+
+    if (hit >= 0 && hit < kPrefsColorCount) {
+        COLORREF* p = &(m_edited.*(kColorSlots[hit].member));
+        if (PickColor(*p)) {
+            NotifyChanged();
+            Repaint();
+        }
+        return;
+    }
+
+    if (wasDrag) Repaint();
+}
+
+void CLyricusPrefsDlg::SetAlphaFromSliderX(int x) {
+    const PrefsLayout L = CurrentLayout();
+    const int dpi = static_cast<int>(GetDpiForWindowSafe(m_hWnd));
+    const int knobR = MulDiv(9, dpi, 96);
+    const int left  = L.slider.left + knobR;
+    const int right = L.slider.right - knobR;
+    if (right <= left) return;
+
+    // 用 long long 作中间量再除 —— 这里要先做 (x - left) 的偏移，
+    // 套不进 MulDiv 的形式；而两个 int 相乘在极端 dpi 下有溢出风险。
+    int v = kMinAlpha + static_cast<int>(
+                static_cast<long long>(x - left) * (kMaxAlpha - kMinAlpha) / (right - left));
+    v = ClampAlpha(v);
+
+    if (v == m_edited.alpha) return;
+    m_edited.alpha = v;
+    NotifyChanged();
+    Repaint();
+}
+
+BOOL CLyricusPrefsDlg::OnSetCursor(CWindow, UINT, UINT) {
+    // 光标在 OnMouseMove 里按命中目标设过了；这里吃掉默认处理，
+    // 免得系统在边框/背景上把它改回箭头造成闪烁。
+    return TRUE;
+}
+
+UINT CLyricusPrefsDlg::OnGetDlgCode(LPMSG) {
+    // 方向键留给不透明度滑块用，别被宿主拿去做页面切换。
+    return DLGC_WANTARROWS;
+}
+
+void CLyricusPrefsDlg::OnKeyDown(TCHAR key, UINT /*repeat*/, UINT /*flags*/) {
+    int delta = 0;
+    if (key == VK_LEFT)  delta = -1;
+    if (key == VK_RIGHT) delta = +1;
+    if (delta == 0) return;
+
+    const int v = ClampAlpha(m_edited.alpha + delta);
+    if (v == m_edited.alpha) return;
+    m_edited.alpha = v;
+    NotifyChanged();
+    Repaint();
+}
+
+// ---------------------------------------------------------------------------
+// 与 preferences_page_instance 的契约
+// ---------------------------------------------------------------------------
+
+void CLyricusPrefsDlg::NotifyChanged() {
+    if (m_callback.is_valid()) m_callback->on_state_changed();
+}
+
+t_uint32 CLyricusPrefsDlg::get_state() {
+    t_uint32 state = preferences_state::resettable | preferences_state::dark_mode_supported;
+    if (m_edited != m_applied) state |= preferences_state::changed;
+    return state;
+}
+
+void CLyricusPrefsDlg::apply() {
+    SetPanelAppearance(m_edited);
+    m_applied = m_edited;
+
+    DebugLog("首选项页：已应用 曲名=#%02X%02X%02X 当前行=#%02X%02X%02X 普通行=#%02X%02X%02X "
+             "暗色=#%02X%02X%02X 警告=#%02X%02X%02X 底色=#%02X%02X%02X alpha=%d",
+             GetRValue(m_edited.header),  GetGValue(m_edited.header),  GetBValue(m_edited.header),
+             GetRValue(m_edited.current), GetGValue(m_edited.current), GetBValue(m_edited.current),
+             GetRValue(m_edited.normal),  GetGValue(m_edited.normal),  GetBValue(m_edited.normal),
+             GetRValue(m_edited.dim),     GetGValue(m_edited.dim),     GetBValue(m_edited.dim),
+             GetRValue(m_edited.warn),    GetGValue(m_edited.warn),    GetBValue(m_edited.warn),
+             GetRValue(m_edited.bg),      GetGValue(m_edited.bg),      GetBValue(m_edited.bg),
+             m_edited.alpha);
+
+    // 浮动面板每 250ms 轮询一次外观，这里不主动推它 ——
+    // 页面关闭后它自己就会跟上，也就没有"页面销毁后回调到面板"的耦合。
+}
+
+void CLyricusPrefsDlg::reset() {
+    // reset 只改界面，**不写存储** —— SDK 明确要求这样，
+    // 好让用户先看到效果再决定要不要"应用"（preferences_page.h:144）。
+    m_edited = PanelAppearance{};
+    Repaint();
+}
+
+// ---------------------------------------------------------------------------
 
 bool CLyricusPrefsDlg::PickColor(COLORREF& inOut) {
     // 见声明处的说明：先把自己钉住，防模态期间被释放
@@ -236,84 +669,12 @@ bool CLyricusPrefsDlg::PickColor(COLORREF& inOut) {
 
     // 模态期间页面可能已经被销毁（窗口没了）。self 保证对象还在，
     // 但窗口没了就不该再碰控件。
-    // ::IsWindow —— 同理，不加 :: 会被 CWindow::IsWindow（无参）抢走。
     if (!::IsWindow(m_hWnd)) return false;
 
     inOut = cc.rgbResult;
     DebugLog("首选项页：取色 -> #%02X%02X%02X",
              GetRValue(inOut), GetGValue(inOut), GetBValue(inOut));
     return true;
-}
-
-void CLyricusPrefsDlg::OnColorClicked(UINT, int ctrlId, HWND) {
-    COLORREF* p = ColorForControl(ctrlId);
-    if (p == nullptr) return;
-
-    if (PickColor(*p)) {
-        SyncControls();
-        NotifyChanged();
-    }
-}
-
-void CLyricusPrefsDlg::OnHScroll(int sbCode, short, HWND) {
-    // 只关心拖动/点击产生的位移
-    if (sbCode != SB_THUMBPOSITION && sbCode != SB_THUMBTRACK &&
-        sbCode != SB_LINELEFT && sbCode != SB_LINERIGHT &&
-        sbCode != SB_PAGELEFT && sbCode != SB_PAGERIGHT) {
-        return;
-    }
-
-    const HWND slider = GetDlgItem(IDC_SLIDER_ALPHA);
-    if (slider == nullptr) return;
-
-    const int v = static_cast<int>(::SendMessage(slider, TBM_GETPOS, 0, 0));
-    if (v == m_edited.alpha) return;
-
-    m_edited.alpha = ClampAlpha(v);
-    SyncControls();
-    NotifyChanged();
-}
-
-void CLyricusPrefsDlg::OnResetClicked(UINT, int, HWND) {
-    // reset 只改界面，**不写存储** —— SDK 明确要求这样，
-    // 好让用户先看到效果再决定要不要"应用"（preferences_page.h:144）。
-    m_edited = PanelAppearance{};
-    SyncControls();
-    NotifyChanged();
-    DebugLog("首选项页：已恢复界面上的默认值（尚未应用）");
-}
-
-void CLyricusPrefsDlg::NotifyChanged() {
-    if (m_callback.is_valid()) m_callback->on_state_changed();
-}
-
-t_uint32 CLyricusPrefsDlg::get_state() {
-    t_uint32 state = preferences_state::resettable | preferences_state::dark_mode_supported;
-    if (m_edited != m_applied) state |= preferences_state::changed;
-    return state;
-}
-
-void CLyricusPrefsDlg::apply() {
-    SetPanelAppearance(m_edited);
-    m_applied = m_edited;
-
-    DebugLog("首选项页：已应用 曲名=#%02X%02X%02X 当前行=#%02X%02X%02X 普通行=#%02X%02X%02X "
-             "暗色=#%02X%02X%02X 警告=#%02X%02X%02X 底色=#%02X%02X%02X alpha=%d",
-             GetRValue(m_edited.header),  GetGValue(m_edited.header),  GetBValue(m_edited.header),
-             GetRValue(m_edited.current), GetGValue(m_edited.current), GetBValue(m_edited.current),
-             GetRValue(m_edited.normal),  GetGValue(m_edited.normal),  GetBValue(m_edited.normal),
-             GetRValue(m_edited.dim),     GetGValue(m_edited.dim),     GetBValue(m_edited.dim),
-             GetRValue(m_edited.warn),    GetGValue(m_edited.warn),    GetBValue(m_edited.warn),
-             GetRValue(m_edited.bg),      GetGValue(m_edited.bg),      GetBValue(m_edited.bg),
-             m_edited.alpha);
-
-    // 浮动面板每 250ms 轮询一次外观，这里不主动推它 ——
-    // 页面关闭后它自己就会跟上，也就没有"页面销毁后回调到面板"的耦合。
-}
-
-void CLyricusPrefsDlg::reset() {
-    m_edited = PanelAppearance{};
-    SyncControls();
 }
 
 // ---------------------------------------------------------------------------

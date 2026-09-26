@@ -5,6 +5,7 @@
 #include "svg_icon.h"
 #include "debug_log.h"
 #include "control_bar_layout.h"   // 控制条的布局数学（纯函数，可离线单测）
+#include "dpi_util.h"             // GetDpiForWindowSafe（与首选项页共用）
 
 #include <algorithm>
 #include <dwmapi.h>
@@ -162,31 +163,8 @@ const wchar_t* ModeDisplayName(BackdropMode mode) {
     return L"未知";
 }
 
-// GetDpiForWindow / GetDpiForSystem 在 winuser.h 里受 WINVER 宏保护，
-// 当前编译环境没暴露出来。改成运行时从 user32.dll 取地址 —— 顺便兼容老系统。
-UINT GetDpiForWindowSafe(HWND hwnd) {
-    using fn_t = UINT(WINAPI*)(HWND);
-    static const auto p = reinterpret_cast<fn_t>(
-        GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow"));
-    if (p != nullptr) return p(hwnd);
-
-    HDC dc = GetDC(hwnd);
-    const UINT dpi = (dc != nullptr) ? static_cast<UINT>(GetDeviceCaps(dc, LOGPIXELSY)) : 96u;
-    if (dc != nullptr) ReleaseDC(hwnd, dc);
-    return dpi;
-}
-
-UINT GetDpiForSystemSafe() {
-    using fn_t = UINT(WINAPI*)();
-    static const auto p = reinterpret_cast<fn_t>(
-        GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForSystem"));
-    if (p != nullptr) return p();
-
-    HDC dc = GetDC(nullptr);
-    const UINT dpi = (dc != nullptr) ? static_cast<UINT>(GetDeviceCaps(dc, LOGPIXELSY)) : 96u;
-    if (dc != nullptr) ReleaseDC(nullptr, dc);
-    return dpi;
-}
+// GetDpiForWindowSafe / GetDpiForSystemSafe 已搬到 dpi_util.h ——
+// 首选项页也要用同一份实现（两份漂移会导致界面按不同 DPI 缩放）。
 
 // 画一行文字并把「实际占用的高度 + 行距」返回，供调用方推进光标。
 // 用 DT_CALCRECT 量出真实高度 —— 而不是写死像素，这是 DPI 无关的关键。
