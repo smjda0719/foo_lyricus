@@ -11,9 +11,13 @@
 
 同时它也提供 DUI 元素和 Columns UI 面板两种常规形态，跟随宿主主题。
 
-![独立浮动面板：半透明窗口，歌词和播放控制条在同一个窗口里](docs/images/panel-dark.png)
+![独立浮动面板：图片背景、歌词和播放控制条在同一个窗口里](docs/images/panel-bg.png)
 
-浅色主题下是这样（这张是 Columns UI 面板的形态，背景跟随宿主）：
+窗口是半透明的，浅色和深色主题都可以用：
+
+![深色主题下的半透明面板](docs/images/panel-dark.png)
+
+它也能作为宿主布局里的普通面板（这张是 Columns UI 的形态，配色跟随宿主）：
 
 ![浅色主题下的歌词显示](docs/images/panel-light.png)
 
