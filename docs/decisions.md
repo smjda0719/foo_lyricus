@@ -238,6 +238,40 @@ LanguageStandard            = stdcpp20
   **缓冲区越界，不是编译错误**，而且只在特定字体回调路径下触发，极难排查。
 - **结论**：这个设置**不能动**。改它之前先看这条。
 
+## D-070 首选项取色改用 Win32 `ChooseColorW`（绕开 WTL CColorDialog 的 ATL 静态锁）
+
+- **起因**：用户 2026-09-26 报「preference 里的颜色选项，点击之后会崩溃」。
+- **证据**（来自 `%APPDATA%\foobar2000-v2\crash reports\failure_00000001.txt`）：
+  - `Access violation, operation: write, address: 0x20`
+  - `Crash location: ntdll!RtlEnterCriticalSection`，寄存器 `RCX = 0x18`
+  - 调用栈里同时有 `ChooseColorW`（COMDLG32）和 `foo_lyricus` 的帧
+  - 崩溃前最后一条应用日志正是 `Lyricus: 首选项页：已初始化（alpha=190）`
+- **分析链**：
+  1. `RtlEnterCriticalSection` 的第一个参数（RCX）是 `0x18` —— **显然不是有效指针**。
+     这正是"在**空对象**上访问偏移 0x18 的临界区"的特征（`this == NULL` 的成员访问）。
+  2. 本工程**自己的代码里没有任何临界区**（全树 grep `CRITICAL_SECTION` / `critsec` /
+     `CComCriticalSection` 均无命中），所以调用者在上层库里。
+  3. WTL 的 `CColorDialogImpl` 里**只有它**碰临界区：
+     `_GetSetRGBMessage()` / `_GetColorOKMessage()` → `CStaticDataInitCriticalSectionLock`。
+     而组里其它对话框（hint / adjust / source）走的是 `CDialogImpl`，不经过这个锁 ——
+     这与"只有颜色选择器崩"的现象吻合。
+  4. 那条路吃的是 ATL 的全局模块状态，而本组件**从来没有创建过 ATL 模块对象**
+     （全工程 grep 不到 `CAtlDllModuleT` / `_pAtlModule` 的初始化）。
+- **决定**：**改用纯 Win32 的 `ChooseColorW`**，整条 ATL 静态初始化路径直接消失。
+  - 16 个自定义色的存储由调用方提供（函数内静态，跨调用保留，与通用对话框自身行为一致）；
+  - 加 `CC_RGBINIT` 让当前色作为初始值；
+  - **保留**原有的「模态期间页面可能被销毁」防护（`service_ptr_t self` + `::IsWindow`）——
+    这一条与本次崩溃无关，但它防的是另一类真实风险，不能顺手删掉。
+- **⚠️ 诚实标注**：这是**基于证据链的推断，不是实测确证的根因**。
+  判定方式：让用户再点一次颜色。为便于分辨，这次加了两条日志 ——
+  `首选项页：取色被取消` 与 `首选项页：取色 -> #RRGGBB`。
+  若仍崩且**两条日志都没出现**，说明崩在进入取色之前（那是另一条路径，得重新查）；
+  若出现了其中一条还崩，则崩在取色**之后**的 `SyncControls` / `NotifyChanged`，
+  方向立刻收窄。
+- **顺带**：诊断过程中排除了一个我自己担心的可能 —— `COMMAND_RANGE_HANDLER_EX`
+  用的是 `[IDC_BTN_HEADER(1001), IDC_BTN_BG(1006)]` 这个**闭区间范围**，
+  如果新加的控件 ID 落进去就会被误捕获。D-068 新加的 1214/1215 不在其中，无冲突。
+
 ## D-069 浮层上的悬停标签失效 —— 一个状态变量被当成两种语义用
 
 - **起因**：用户 2026-09-26 试过 D-065/D-067 之后报：「你给横向音量的条做了

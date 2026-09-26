@@ -7,7 +7,9 @@
 
 #include <SDK/preferences_page.h>
 #include <helpers/atl-misc.h>   // preferences_page_impl
-#include <atldlgs.h>            // CColorDialog（在 atldlgs.h 里，不在 atlctrlx.h）
+// ⚠️ 刻意**不**包含 atldlgs.h、也不用 WTL 的 CColorDialog —— 原因写在 PickColor() 里。
+// 取色走纯 Win32 的 ChooseColorW，只需要 commdlg.h。
+#include <commdlg.h>
 
 // ---------------------------------------------------------------------------
 // Lyricus 首选项页 —— 浮动面板的配色与不透明度
@@ -68,6 +70,23 @@ const ColorSlot kColorSlots[] = {
 // 用加权而不是简单平均 —— 纯蓝和纯黄的"平均"一样，人眼看上去差得远。
 int Luminance(COLORREF c) {
     return (GetRValue(c) * 299 + GetGValue(c) * 587 + GetBValue(c) * 114) / 1000;
+}
+
+// ChooseColorW 要求调用方自带 16 个自定义颜色的存储，而且这块内存要**跨调用保留**
+// （用户上次调好的自定义色，下次打开还该在 —— 和通用对话框自己的行为一致）。
+// 所以用函数内静态。它只在 UI 线程被碰，不需要额外加锁。
+COLORREF* CustomColors() {
+    static COLORREF rgb[16] = {
+        RGB(255, 255, 255), RGB(255, 255, 255),
+        RGB(255, 255, 255), RGB(255, 255, 255),
+        RGB(255, 255, 255), RGB(255, 255, 255),
+        RGB(255, 255, 255), RGB(255, 255, 255),
+        RGB(255, 255, 255), RGB(255, 255, 255),
+        RGB(255, 255, 255), RGB(255, 255, 255),
+        RGB(255, 255, 255), RGB(255, 255, 255),
+        RGB(255, 255, 255), RGB(255, 255, 255),
+    };
+    return rgb;
 }
 
 class CLyricusPrefsDlg : public CDialogImpl<CLyricusPrefsDlg>,
@@ -181,18 +200,48 @@ void CLyricusPrefsDlg::OnDrawItem(UINT /*ctrlId*/, LPDRAWITEMSTRUCT dis) {
 }
 
 bool CLyricusPrefsDlg::PickColor(COLORREF& inOut) {
-    // 见声明处的说明：先把自己钉住，防 DoModal 期间被释放
+    // 见声明处的说明：先把自己钉住，防模态期间被释放
     service_ptr_t<preferences_page_instance> self = this;
 
-    CColorDialog dlg(inOut, CC_FULLOPEN | CC_ANYCOLOR, m_hWnd);
-    if (dlg.DoModal(m_hWnd) != IDOK) return false;
+    // ⚠️ 刻意**不用** WTL/ATL 的 CColorDialog，直接调 Win32 的 ChooseColorW。
+    //
+    // 【为什么】2026-09-26 用户报「preference 里的颜色选项，点击之后会崩溃」。
+    // foobar2000 的崩溃报告（crash reports\failure_00000001.txt）里写着：
+    //     Access violation, operation: write, address: 0x20
+    //     Crash location: ntdll!RtlEnterCriticalSection   (RCX = 0x18)
+    // RCX 是第一个参数 —— 0x18 显然不是有效指针。这正是"在**空对象**上访问
+    // 偏移 0x18 的临界区"的特征（this == NULL 时的成员访问）。
+    //
+    // 而 WTL 的 CColorDialogImpl 里**只有它**碰临界区：
+    //     _GetSetRGBMessage() / _GetColorOKMessage()
+    //         -> CStaticDataInitCriticalSectionLock
+    // 那条路吃的是 ATL 的全局模块状态，而本组件从来没创建过 ATL 模块对象
+    // （全工程 grep 不到 CAtlDllModuleT / _pAtlModule 的初始化），所以那状态是空的。
+    // 组里其它对话框（hint / adjust / source）走的是 CDialogImpl，不经过这个锁 ——
+    // 这与"只有颜色选择器崩"的现象吻合。
+    //
+    // ChooseColorW 是纯 Win32，不依赖任何 ATL 全局状态，整条路直接没了。
+    // CC_RGBINIT 让 inOut 作为初始色（CColorDialog 内部也是这么做的）。
+    CHOOSECOLORW cc{};
+    cc.lStructSize  = sizeof(cc);
+    cc.hwndOwner    = m_hWnd;
+    cc.rgbResult    = inOut;
+    cc.lpCustColors = CustomColors();
+    cc.Flags        = CC_FULLOPEN | CC_ANYCOLOR | CC_RGBINIT;
+
+    if (!::ChooseColorW(&cc)) {
+        DebugLog("首选项页：取色被取消");
+        return false;
+    }
 
     // 模态期间页面可能已经被销毁（窗口没了）。self 保证对象还在，
     // 但窗口没了就不该再碰控件。
     // ::IsWindow —— 同理，不加 :: 会被 CWindow::IsWindow（无参）抢走。
     if (!::IsWindow(m_hWnd)) return false;
 
-    inOut = dlg.GetColor();
+    inOut = cc.rgbResult;
+    DebugLog("首选项页：取色 -> #%02X%02X%02X",
+             GetRValue(inOut), GetGValue(inOut), GetBValue(inOut));
     return true;
 }
 
