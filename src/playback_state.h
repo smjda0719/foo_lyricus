@@ -17,6 +17,8 @@
 
 namespace lyricus {
 
+struct LyricSearchHit;   // lyric_search.h；这里只按 const& 用得到，不必拉进那个头
+
 // RefreshPosition() 这一拍到底变了什么。
 //
 // 【为什么不直接返回 bool】两者的代价差得远：
@@ -119,7 +121,16 @@ public:
     float                VolumeDb()   const { return m_volumeDb; }
     bool                 IsMuted()    const { return m_isMuted; }
 
-    // 按当前曲目路径重新推导并加载 .lrc（自动匹配）
+    // 按当前曲目路径重新推导并加载 .lrc（自动匹配）。
+    //
+    // 【它现在是"发起"，不是"做完"】搜索跑在后台线程上，本函数**立刻返回**；
+    // 结果回来之后才填 m_lyrics 并 ++m_revision。所以调用方不要指望
+    // 调完就能读到歌词 —— 三个宿主都是轮询式重绘，等代次变了自然会重画。
+    //
+    // 之所以要这么改：搜索会在目录上跑 FindFirstFileW 枚举，而**首次访问
+    // 一盘睡着的硬盘**实测要 10~11 秒（见 D-057）。它原先同步跑在这条链上，
+    // 而这条链的起点是 play_callback 的主线程 —— 冻住的不是我们的面板，
+    // 是整个播放器。
     void ReloadLyrics();
 
     // 手动指定歌词文件（菜单里选文件用）。
@@ -180,17 +191,42 @@ private:
     // online_lyric.h 明确说了模块本身**不做去重**，重复触发要调用方自己拦。
     std::string         m_onlinePendingUrl;
 
-    // 换曲时自增。回调回来时对不上就说明用户已经换歌了，结果直接丢弃 ——
-    // 后台查询可能几十秒才回来，期间换歌是常态。
-    unsigned            m_onlineGeneration = 0;
+    // 换曲 / 重查时自增。回调回来时对不上就说明这一轮已经不作数了，
+    // 结果直接丢弃 —— 后台查询可能几十秒才回来，期间换歌是常态。
+    //
+    // 【为什么本地搜索也用它】一条链路上串行着「本地搜索 → 在线兜底」两步，
+    // 两者属于**同一轮**歌词获取：换曲时两步都要作废，而且两步的"完成"
+    // 顺序是固定的。给它们各配一个代次只会多出一处可能不同步的状态。
+    unsigned            m_lookupGeneration = 0;
 
-    // 当前这一轮在线查询的取消令牌（见 online_lyric.h 的 OnlineCancelFlag）。
+    // 当前这一轮的取消令牌（见 online_lyric.h 的 OnlineCancelFlag）。
     // 换曲 / 重查时置位并换一块新的 —— 后台那一轮会在下一个检查点收工，
     // 省下它本来要发的请求。
-    OnlineCancelFlag    m_onlineCancel = std::make_shared<std::atomic<bool>>(false);
+    //
+    // ⚠️ **本地搜索没有检查点可插**，对它而言"取消"只体现为结果回来后
+    //    被丢弃。这不是偷懒：11 秒卡在 SearchContext 构造函数那一次枚举上
+    //    （见 D-057），那个等待本来就不可中断 —— 插检查点要等盘醒过来
+    //    才轮得到执行，救不了这一次。
+    OnlineCancelFlag    m_lookupCancel = std::make_shared<std::atomic<bool>>(false);
 
-    void CancelOnlineLookup();
-    bool IsOnlineLookupCancelled() const;
+    void CancelLookup();
+    bool IsLookupCancelled() const;
+
+    // 发起一次**后台**本地搜索（lyric_search 的 FindLyricFile + 读文件）。
+    // 由 ReloadLyrics() 在读完标签之后调用，立刻返回。
+    void StartLocalSearch();
+
+    // 后台搜索回到主线程后的处理：判过期、填歌词、必要时排队在线兜底。
+    //
+    // doc 按值收是为了能 move 进 m_lyrics —— 一首歌几百行，没必要白拷一次。
+    // 它可能是**空文档**（没找到文件，或者文件在但解析不出内容），两种情况
+    // 在函数里是分开报的。
+    //
+    // elapsedMs 是后台量出来的耗时。日志在**主线程**打（见 StartLocalSearch
+    // 里关于 DebugLog 为什么不能后台调用的说明），格式与原先逐字一致。
+    void ApplyLocalResult(unsigned gen, const std::string& url,
+                          const LyricSearchHit& hit,
+                          LyricDocument doc, double elapsedMs);
 
     // **实际发出去查询的歌手**（标签里的，或者用户给文件夹填的线索）。
     //

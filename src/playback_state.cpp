@@ -266,15 +266,16 @@ void PlaybackState::OnNewTrack(metadb_handle_ptr track) {
     m_trackPath.clear();
     m_lyricPath.clear();
 
-    // 换曲就作废所有在途的在线查询结果：代次一变，回来的回调会被丢掉。
-    // 同时清掉"正在查"的标记，让新曲目能立刻发起自己的查询。
+    // 换曲就作废所有在途的**查询**结果：代次一变，回来的回调会被丢掉。
+    // 这一条现在同时管本地搜索和在线查询 —— 两者是同一条链路上串行的两步，
+    // 换曲时都该作废。同时清掉"正在查"的标记，让新曲目能立刻发起自己的查询。
     //
     // 光"回来时丢弃"还不够 —— 旧查询会**照样把请求全发完**。实测日志里
     // `结果已过期（期间换过曲），丢弃` 出现过 36 次，每次都是白烧一个请求，
     // 而网易云的限流咬过我们。所以这里还把取消令牌置位，让后台那一轮
     // 在下一个检查点提前收工（见 OnlineCancelFlag）。
-    CancelOnlineLookup();
-    ++m_onlineGeneration;
+    CancelLookup();
+    ++m_lookupGeneration;
     m_onlinePendingUrl.clear();
     m_onlineWanted = false;
 
@@ -345,8 +346,9 @@ void PlaybackState::OnStop() {
 }
 
 void PlaybackState::ReloadLyrics() {
-    // 主线程。搜索要枚举目录、跑模糊匹配，目录大时会明显变慢。
-    ScopedTimer timer("ReloadLyrics（搜索+加载）", 8.0);
+    // 主线程。**这里已经不做搜索了** —— 只剩读标签和派活两件事，
+    // 所以这个计时器量的是"发起"的开销，不再是搜索的开销。
+    ScopedTimer timer("ReloadLyrics（发起）", 8.0);
 
     ++m_revision;
     m_lyrics      = LyricDocument();
@@ -370,8 +372,9 @@ void PlaybackState::ReloadLyrics() {
     // 旧查询的在途结果会被当成新的收下 —— 而那是用**旧线索**搜出来的东西。
     //
     // 取消同理：重查意味着"上一条线索的结果我不要了"，后台那一轮该收工。
-    CancelOnlineLookup();
-    ++m_onlineGeneration;
+    // 本地搜索也一样 —— 它现在也跑在后台，回来时会被这个代次挡掉。
+    CancelLookup();
+    ++m_lookupGeneration;
     m_onlinePendingUrl.clear();
 
     if (m_trackPath.empty()) return;
@@ -391,21 +394,103 @@ void PlaybackState::ReloadLyrics() {
         m_tagAlbum  = RenderTagField(m_trackHandle, "%album%",  s_albumScript);
     }
 
-    // 多策略搜索：精确 / 去前缀 / 标签构造 / 模糊，取置信度最高的一条。
-    // 详见 lyric_search.h 的策略表与计分说明。
+    // 【标签为什么留在主线程读】两个理由：
+    //   1. titleformat 的线程安全没有保证，而这些脚本对象是静态复用的；
+    //   2. 它虽然也可能触发磁盘读（刚拖进播放器的文件第一次 format_title
+    //      会同步读标签，大 WAV 上十几毫秒），但和 11 秒不在一个量级 ——
+    //      为一个十几毫秒的读去冒线程安全的险，不划算。
     //
-    // 旧版这里只有 MakeLyricPathForAudio（同目录 + 同名 + .lrc），
-    // 遇到「塞壬唱片-MSR - Battleplan Obliteration.wav」配
-    // 「Battleplan Obliteration.lrc」这种带厂牌前缀的摆放必然落空。
-    const LyricSearchConfig searchCfg = GetLyricSearchConfig();
-    const LyricSearchHit hit = [&] {
-        ScopedTimer findTimer("FindLyricFile（目录搜索）", 3.0);
-        return FindLyricFile(m_trackPath, m_tagArtist, m_tagTitle, m_tagAlbum, searchCfg);
-    }();
+    // 标签读完就交给后台。多策略匹配（精确 / 去前缀 / 标签构造 / 模糊）
+    // 本身是**纯函数**，离开主线程没有任何风险。
+    StartLocalSearch();
+}
+
+void PlaybackState::StartLocalSearch() {
+    // 主线程。本函数只负责**派活**，真正的搜索在 splitTask 的线程里。
+    //
+    // 【为什么用 fb2k::splitTask 而不是 std::thread】它内部会先
+    // async_task_manager::acquire()，foobar2000 退出时会等这个任务跑完 ——
+    // 裸线程则可能在 DLL 已经卸载之后才醒过来，回到消失的代码段上就是崩溃。
+    // 理由与 FetchLyricOnlineAsync 那边完全一致，那边写了更详细的推导。
+    const unsigned    gen = m_lookupGeneration;
+    const std::string url = m_trackUrl;
+
+    // splitTask 收的是 std::function<void()>（按值），所以 lambda 里
+    // **只能**捕获可拷贝的东西 —— 这几个 shared_ptr 是为这个而生的，
+    // 不是为了省拷贝。
+    auto path   = std::make_shared<std::wstring>(m_trackPath);
+    auto artist = std::make_shared<std::wstring>(m_tagArtist);
+    auto title  = std::make_shared<std::wstring>(m_tagTitle);
+    auto album  = std::make_shared<std::wstring>(m_tagAlbum);
+    // 配置也要拷一份进去：GetLyricSearchConfig() 读的是 configStore，
+    // 那些对象不属于后台线程（和源顺序是同一个理由）。
+    auto cfg    = std::make_shared<LyricSearchConfig>(GetLyricSearchConfig());
+    auto cancel = m_lookupCancel;
+
+    fb2k::splitTask([this, gen, url, path, artist, title, album, cfg, cancel] {
+        // ---- 后台线程 ----
+        //
+        // ⚠️ 这一段**不许**用 ScopedTimer / DebugLog：debug_log.h 开头写明
+        //    DebugLog「只在主线程调用，内部没有加锁」，而这里可能同时有好几个
+        //    后台搜索在跑（用户连着切歌）。所以耗时在这里自己量，带回主线程再打。
+        LARGE_INTEGER t0{}, t1{}, freq{};
+        QueryPerformanceCounter(&t0);
+
+        auto hit = std::make_shared<LyricSearchHit>();
+        auto doc = std::make_shared<LyricDocument>();
+        try {
+            *hit = FindLyricFile(*path, *artist, *title, *album, *cfg);
+            // 找到文件就顺手读了 —— 读文件同样是磁盘 IO，没有理由留在主线程。
+            if (!hit->path.empty()) {
+                *doc = LyricDocument::LoadFromFile(hit->path);
+            }
+        } catch (...) {
+            // FindLyricFile 声明了"内部不抛异常"，但 std::function 里的异常
+            // 跑出去会直接 terminate 掉整个进程。兜住它，当成"没找到"。
+            *hit = LyricSearchHit();
+            *doc = LyricDocument();
+        }
+
+        QueryPerformanceCounter(&t1);
+        QueryPerformanceFrequency(&freq);
+        const double ms = (freq.QuadPart == 0)
+            ? 0.0
+            : static_cast<double>(t1.QuadPart - t0.QuadPart) * 1000.0 /
+                  static_cast<double>(freq.QuadPart);
+
+        // foobar2000 正在启动/关闭时服务系统不可用，inMainThread 会触发致命错误。
+        // 此刻**安静地丢掉结果**才是对的 —— 反正主线程那边多半也没了。
+        if (!core_api::are_services_available()) return;
+
+        fb2k::inMainThread([this, gen, url, hit, doc, ms] {
+            // 先查存活令牌再碰 this —— 理由见 g_onlineAlive 的声明处。
+            if (!g_onlineAlive.alive.load()) return;
+            ApplyLocalResult(gen, url, *hit, std::move(*doc), ms);
+        });
+    });
+}
+
+void PlaybackState::ApplyLocalResult(unsigned gen, const std::string& url,
+                                     const LyricSearchHit& hit,
+                                     LyricDocument doc, double elapsedMs) {
+    // 后台搜索回来时用户可能早就换歌了 —— 盘睡着的时候这段要 11 秒，
+    // 这期间换歌是常态而不是意外。
+    if (gen != m_lookupGeneration || url != m_trackUrl) {
+        DebugLog("本地搜索：结果已过期（期间换过曲），丢弃（耗时 %.1f ms）", elapsedMs);
+        return;
+    }
+
+    // 耗时日志在**这里**打，不在后台 —— 理由见 StartLocalSearch。
+    // 格式与原先 ScopedTimer 打出来的**逐字一致**：D-057 那类诊断
+    //（"同一目录 11.2ms / 11073.8ms 成对"）全靠这一行，改了格式
+    // 就等于把那些查法的依据弄丢了。
+    if (elapsedMs >= 3.0) {
+        DebugLog("慢: FindLyricFile（目录搜索） 用了 %.1f ms", elapsedMs);
+    }
 
     if (hit.path.empty()) {
         DebugLog("未找到本地歌词（精确/去前缀/标签%s 都没命中）: %s",
-                 searchCfg.fuzzy ? "/模糊" : "",
+                 GetLyricSearchConfig().fuzzy ? "/模糊" : "",
                  WideToUtf8(FileStemOf(m_trackPath)).c_str());
 
         // 交给在线兜底。**真正的发起不在这里**，在 RefreshPosition() ——
@@ -424,7 +509,7 @@ void PlaybackState::ReloadLyrics() {
     // 旧版无条件写成推导出的 .lrc 路径，哪怕那个文件根本不存在 ——
     // 界面就会在「（无歌词）」下面挂一个不存在的文件名，误导排查方向。
     m_lyricPath = hit.path;
-    m_lyrics = LyricDocument::LoadFromFile(m_lyricPath);
+    m_lyrics    = std::move(doc);
 
     if (m_lyrics.IsEmpty()) {
         // 文件在但解析不出内容，和"没找到文件"要分开报，否则会去查错方向
@@ -432,6 +517,13 @@ void PlaybackState::ReloadLyrics() {
                  WideToUtf8(m_lyricPath).c_str());
         return;
     }
+
+    // ★ 结果是从后台回来的，**必须自己 bump 代次**让三个宿主重绘。
+    //
+    // ReloadLyrics() 开头那一次 ++m_revision 只覆盖到"歌词被清空"那一帧；
+    // 异步之后这两件事**不再发生在同一拍里**，漏掉这一句的表现是
+    // 「歌词其实已经找到了，面板却一直显示（无歌词）」。
+    ++m_revision;
 
     DebugLog("歌词命中 [%s, %d 分]: %s", WideToUtf8(hit.how).c_str(), hit.score,
              WideToUtf8(m_lyricPath).c_str());
@@ -443,6 +535,21 @@ bool PlaybackState::LoadLyricFile(const std::wstring& path, bool remember) {
         DebugLog("手动加载歌词失败或为空: %s", WideToUtf8(path).c_str());
         return false;
     }
+
+    // ★ 作废在途的自动搜索 / 在线查询：**用户手动指定的意图高于它们**。
+    //
+    // 【不做这一步会怎样】本地搜索现在跑在后台，盘睡着时那一轮要 11 秒。
+    // 用户等不及、自己指定了一个 .lrc —— 11 秒后后台结果回来，代次没变、
+    // URL 也没变，于是把用户刚选的歌词**覆盖掉**，表现是"我明明选了，
+    // 过一会它自己变回去了"，而且完全看不出是谁干的。
+    //
+    // 在线查询那一侧同理，只是窗口小得多（几百毫秒）。那个 bug 在异步化
+    // **之前就存在**（查询在途时手动指定会被回来的结果顶掉），这次一并堵上。
+    CancelLookup();
+    ++m_lookupGeneration;
+    m_onlinePendingUrl.clear();
+    m_onlineWanted = false;   // 已经有词了，不需要在线兜底
+
     m_lyrics      = std::move(doc);
     m_lyricPath   = path;
     m_currentLine = LyricDocument::npos;
@@ -573,7 +680,7 @@ void PlaybackState::StartOnlineLookup() {
     if (m_onlinePendingUrl == m_trackUrl) return;   // 这首已经在查了
 
     m_onlinePendingUrl = m_trackUrl;
-    const unsigned gen = m_onlineGeneration;        // 回来时用它判断有没有换曲
+    const unsigned gen = m_lookupGeneration;        // 回来时用它判断有没有换曲
 
     OnlineLyricRequest req;
     req.title       = m_tagTitle;
@@ -633,27 +740,31 @@ void PlaybackState::StartOnlineLookup() {
             if (!g_onlineAlive.alive.load()) return;
             ApplyOnlineResult(gen, url, res);
         },
-        m_onlineCancel,
+        m_lookupCancel,
         Utf8ToWide(cfg_lyric_source_order.get().get_ptr()));
 }
 
-void PlaybackState::CancelOnlineLookup() {
+void PlaybackState::CancelLookup() {
     // 只置位、不等它 —— 后台线程会在下一个检查点自己收工。
     // 等它会卡住主线程（网络往返最长几十秒），那比"多烧一个请求"糟得多。
-    if (m_onlineCancel) m_onlineCancel->store(true, std::memory_order_relaxed);
+    //
+    // ⚠️ 对**本地搜索**而言这里省不下什么（它没有检查点，见头文件里的说明），
+    //    置位只让它的结果回来后被更早地识别成过期。这条路径的收益全在
+    //    在线查询那一侧。
+    if (m_lookupCancel) m_lookupCancel->store(true, std::memory_order_relaxed);
 
-    // 换一块新的给下一轮查询用：旧的那块已经被置位，不能复用。
-    m_onlineCancel = std::make_shared<std::atomic<bool>>(false);
+    // 换一块新的给下一轮用：旧的那块已经被置位，不能复用。
+    m_lookupCancel = std::make_shared<std::atomic<bool>>(false);
 }
 
-bool PlaybackState::IsOnlineLookupCancelled() const {
-    return m_onlineCancel && m_onlineCancel->load(std::memory_order_relaxed);
+bool PlaybackState::IsLookupCancelled() const {
+    return m_lookupCancel && m_lookupCancel->load(std::memory_order_relaxed);
 }
 
 void PlaybackState::ApplyOnlineResult(unsigned gen, const std::string& url,
                                       const OnlineLyricResult& res) {
     // 后台查询可能几十秒才回来，期间换歌是常态。
-    if (gen != m_onlineGeneration || url != m_trackUrl) {
+    if (gen != m_lookupGeneration || url != m_trackUrl) {
         DebugLog("在线歌词：结果已过期（期间换过曲），丢弃");
         return;
     }
