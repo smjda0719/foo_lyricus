@@ -203,6 +203,21 @@ void ApplyAppearancePreset(const AppearancePreset& p) {
     a.bgZoomPct    = p.bgZoomPct;
     a.bgOffsetXPct = p.bgOffsetXPct;
     a.bgOffsetYPct = p.bgOffsetYPct;
+
+    // ⚠️ 鼠标穿透**不进预设**，要从当前设置里继承（D-130）。
+    //
+    // 【为什么必须显式继承】这里构造的是一个**全新的 PanelAppearance**，
+    //    任何没被赋值的字段都会落到结构体的默认值上 —— 而 clickThrough
+    //    的默认值是 false，于是用户每切一次外观预设，穿透就被静默关掉。
+    //
+    // 【为什么它不该进预设】预设是"面板长什么样"（六个颜色 / 控件配色 /
+    //    背景图），而穿透是"面板怎么响应鼠标" —— 一个**行为偏好**。
+    //    同一个理由见 D-098：背景图路径也不进预设（那是机器相关的）。
+    //
+    // ★ 这是个通用陷阱：**PanelAppearance 每加一个字段，这里就多一处
+    //   可能忘记继承**。加字段时先问一句"它属于外观吗"，不属于就在这里补一行。
+    a.clickThrough = GetPanelAppearance().clickThrough;
+
     SetPanelAppearance(a);
 
     // ---- 字体族与字号 ----

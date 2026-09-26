@@ -46,7 +46,7 @@ constexpr int kPrefsWidth96  = 380;
 // ⚠️ 这个值**必须跟着内容走**：它同时是"页面建议尺寸"和"滚动内容高度"，
 //    写小了的话最后那一区会被切掉（测试里那条"所有元素都落在客户区内"
 //    就是钉这个的，它扫的起点正是这个常量 —— 所以常量错了它会红）。
-constexpr int kPrefsHeight96 = 1180;
+constexpr int kPrefsHeight96 = 1232;   // 含「面板行为」那一节（D-130，+52）
 
 // 首选项页上所有需要定位的元素。
 //
@@ -115,10 +115,17 @@ struct PrefsLayout {
     RECT bgBlurLabel{},    bgBlurValue{},    bgBlurSlider{};
     RECT bgDimLabel{},     bgDimValue{},     bgDimSlider{};
 
+    // ---- 面板行为（D-130）----
+    //
+    //     ◆ 面板行为
+    //     [x] 鼠标穿透（按住 Ctrl 临时操作）
+    RECT titleBehavior{};        // 小标题：面板行为
+    RECT clickThroughCheck{};    // 勾选框方块（点这里也能切）
+    RECT clickThroughLabel{};    // 勾选框右边的文字
+
     int  dpi = 96;                      // 回传给绘制侧，省得它再查一次
     int  padX = 0;                      // 左右内边距（提示文字要用）
 };
-
 // 算出整页的元素位置。width / height 是**客户区**的物理像素尺寸。
 //
 // 【降级】页面很小的时候（宿主给的区域窄）按顺序丢东西：色块从三列变两列、

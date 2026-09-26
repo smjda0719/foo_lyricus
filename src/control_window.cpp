@@ -757,6 +757,33 @@ LRESULT ControlWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
 
     case WM_NCHITTEST: {
+        // ---- 鼠标穿透（D-130）----
+        //
+        // ⚠️ 必须排在**最前面** —— 排在后面的话下面那些分支会先返回 HTCLIENT /
+        //    HTCAPTION / HTBOTTOMRIGHT，穿透就永远轮不到。
+        //
+        // 【为什么用 HTTRANSPARENT 而不是 WS_EX_TRANSPARENT】
+        //   * 扩展样式是"整窗"开关，而且改了要**重建窗口**才生效
+        //     （我们的分层窗口重建代价不小：要重新 SetLayeredWindowAttributes、
+        //       重新算 DPI、重新铺背景）；
+        //   * 更要紧的是 HTTRANSPARENT 是在这个**消息里**返回的，
+        //     窗口仍然**收得到** WM_NCHITTEST —— 于是能读到修饰键状态，
+        //     这正是"按住 Ctrl 就不穿透"能实现的原因。
+        //     换成扩展样式的话鼠标消息根本不到我们这儿，那条逃生舱就没了。
+        //
+        // 【为什么必须有逃生舱】这是个单向门：打开之后面板完全点不动，
+        //   要关只能去 foobar2000 主窗口开首选项 —— 而主窗口要是也被面板挡着，
+        //   用户就卡死了。Ctrl 让"临时操作一下"不需要任何额外的 UI。
+        //
+        // 用 GetAsyncKeyState 而不是 GetKeyState：后者读的是**消息队列**里的
+        // 键盘状态，而这个窗口因为穿透本来就不该拿到键盘焦点 —— 那种状态下
+        // GetKeyState 返回的东西不可靠。GetAsyncKeyState 读的是全局物理状态，
+        // 正是这里需要的。
+        if (m_appearance.clickThrough &&
+            (::GetAsyncKeyState(VK_CONTROL) & 0x8000) == 0) {
+            return HTTRANSPARENT;
+        }
+
         const POINTS sp = MAKEPOINTS(lp);
         POINT c{ sp.x, sp.y };
         ScreenToClient(hwnd, &c);

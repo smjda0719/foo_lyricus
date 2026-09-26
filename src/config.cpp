@@ -74,6 +74,10 @@ cfg_var_modern::cfg_string cfg_app_bg_image ({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6
 cfg_var_modern::cfg_int    cfg_app_bg_fit   ({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x51}}, 0);
 cfg_var_modern::cfg_int    cfg_app_bg_blur  ({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x52}}, 0);
 cfg_var_modern::cfg_int    cfg_app_bg_dim   ({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x53}}, 0);
+
+// 鼠标穿透（D-130）。存 int 而不是 bool —— cfg_var_modern 那套按整数存，
+// 用 int 省得为"0/1"再包一层。读回来按 != 0 判。
+cfg_var_modern::cfg_int    cfg_app_click_through({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x58}}, 0);
 cfg_var_modern::cfg_int    cfg_app_bg_opacity({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x54}}, 100);
 // 手动构图（D-103）。GUID 末字节 0x55~0x57。
 cfg_var_modern::cfg_int    cfg_app_bg_zoom  ({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x55}}, 100);
@@ -120,6 +124,7 @@ PanelAppearance GetPanelAppearance() {
     a.bgFit     = ClampInt(static_cast<int>(cfg_app_bg_fit.get()),     kBgFitMin,     kBgFitMax);
     a.bgBlur    = ClampInt(static_cast<int>(cfg_app_bg_blur.get()),    kBgBlurMin,    kBgBlurMax);
     a.bgDim     = ClampInt(static_cast<int>(cfg_app_bg_dim.get()),     kBgDimMin,     kBgDimMax);
+    a.clickThrough = (cfg_app_click_through.get() != 0);
     a.bgOpacity = ClampInt(static_cast<int>(cfg_app_bg_opacity.get()), kBgOpacityMin, kBgOpacityMax);
 
     // 手动构图（D-103）。用 ClampBgManual 而不是逐个 ClampInt ——
@@ -157,6 +162,7 @@ void SetPanelAppearance(const PanelAppearance& a) {
     cfg_app_bg_fit     = ClampInt(a.bgFit,     kBgFitMin,     kBgFitMax);
     cfg_app_bg_blur    = ClampInt(a.bgBlur,    kBgBlurMin,    kBgBlurMax);
     cfg_app_bg_dim     = ClampInt(a.bgDim,     kBgDimMin,     kBgDimMax);
+    cfg_app_click_through = a.clickThrough ? 1 : 0;
     cfg_app_bg_opacity = ClampInt(a.bgOpacity, kBgOpacityMin, kBgOpacityMax);
 
     // 手动构图（D-103）。同样走 ClampBgManual，让"三点一组"的约束只有一份实现。

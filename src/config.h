@@ -61,6 +61,7 @@ extern cfg_var_modern::cfg_string cfg_app_bg_image;
 extern cfg_var_modern::cfg_int  cfg_app_bg_fit;
 extern cfg_var_modern::cfg_int  cfg_app_bg_blur;
 extern cfg_var_modern::cfg_int  cfg_app_bg_dim;
+extern cfg_var_modern::cfg_int  cfg_app_click_through;
 extern cfg_var_modern::cfg_int  cfg_app_bg_opacity;
 // 手动构图（D-103）。GUID 末字节 0x55~0x57。
 extern cfg_var_modern::cfg_int  cfg_app_bg_zoom;
@@ -228,6 +229,19 @@ struct PanelAppearance {
     COLORREF bg      = RGB(28, 28, 30);      // 面板底色
     int      alpha   = 215;                  // 整体不透明度 0..255
 
+    // ---- 鼠标穿透（D-130）----
+    //
+    // true = 面板不接收鼠标，点击落到**下面的窗口**上。
+    //
+    // 【为什么需要】面板是置顶的，挡住底下窗口时用户想点下面的东西就得先移开它 ——
+    // 移开又得拖回来，一来一回。开了这个就"当它不存在"。
+    //
+    // ⚠️ **逃生舱是 Ctrl**：穿透时按住 Ctrl 就不穿透（见 control_window 的
+    //    WM_NCHITTEST）。没有它的话这个开关就是个单向门 —— 打开之后面板
+    //    完全点不动，只能从 foobar2000 主窗口去开首选项改回来，
+    //    而主窗口要是也被挡着就更麻烦。
+    bool     clickThrough = false;
+
     // ---- 控件配色（D-093）----
     //
     // ⚠️ 控制条上那 11 类颜色**不在这里**，只放 4 个**基色** + 一个模式标记：
@@ -281,7 +295,8 @@ struct PanelAppearance {
                bgBlur   == o.bgBlur   && bgDim     == o.bgDim &&
                bgOpacity == o.bgOpacity &&
                bgZoomPct == o.bgZoomPct &&
-               bgOffsetXPct == o.bgOffsetXPct && bgOffsetYPct == o.bgOffsetYPct;
+               bgOffsetXPct == o.bgOffsetXPct && bgOffsetYPct == o.bgOffsetYPct &&
+               clickThrough == o.clickThrough;
     }
     bool operator!=(const PanelAppearance& o) const { return !(*this == o); }
 };

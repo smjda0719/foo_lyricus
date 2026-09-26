@@ -205,6 +205,19 @@ PrefsLayout ComputePrefsLayout(int width, int height, int dpi) {
     }
     y += btnH2 + Sx(14);
 
+    // ---- 面板行为（D-130）----
+    //
+    // 一个勾选框，所以只占两行（小标题 + 控件行）。
+    // 放在底部说明和按钮之前 —— 它是"面板怎么表现"，不属于外观设置，
+    // 但也不值得单独开一节。
+    out.titleBehavior = RECT{ padX, y, width - padX, y + Sx(16) };
+    y += Sx(16) + Sx(4);
+
+    const int chk = Sx(16);
+    out.clickThroughCheck = RECT{ padX, y, padX + chk, y + chk };
+    out.clickThroughLabel = RECT{ padX + chk + Sx(8), y, width - padX, y + chk };
+    y += chk + Sx(16);
+
     // ---- 底部说明 ----
     out.hint = RECT{ padX, y, width - padX, y + Sx(32) };
     y += Sx(32) + Sx(10);

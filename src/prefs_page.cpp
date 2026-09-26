@@ -136,6 +136,14 @@ constexpr int kHitBgDim     = -16;
 // 预览区（D-103）/ 四角手柄（D-107）
 constexpr int kHitBgPreview = -17;
 
+// 鼠标穿透的勾选框（D-130）。
+//
+// ⚠️ 取 -40 而**不是** -18 —— 紧挨着既有编号是 D-113 那次的坑：
+//    当时手柄段 -20..-17 和"预览区 -17"首尾相接，左下角手柄就此永远无效
+//    （两条分支各自看都对，只有"这两个常量挨着"这件事错）。
+//    新编号一律和既有的**留出空档**，代价只是一个数字。
+constexpr int kHitClickThrough = -40;
+
 // ⚠️ 角手柄用**连续的一段**，且这一段必须和上面那个值**完全不重叠**（D-113）。
 //
 //    原来写成 -20..-17，而 kHitBgPreview 正好是 -17 —— 于是**左下角手柄
@@ -273,6 +281,7 @@ private:
     void DrawResetButton(HDC dc, const RECT& r);
     void DrawFontButton(HDC dc, const RECT& r);
     void DrawPresetArea(HDC dc, const PrefsLayout& L);
+void DrawBehaviorArea(HDC dc, const PrefsLayout& L);
     void DrawCtrlColorArea(HDC dc, const PrefsLayout& L);
 
     // ---- 控件配色（D-093）----
@@ -575,6 +584,11 @@ int CLyricusPrefsDlg::HitTest(POINT pt) const {
     if (inside(L.slider)) return kHitSlider;
     if (inside(L.reset))  return kHitReset;
     if (inside(L.fontBtn)) return kHitFontBtn;
+
+    // 勾选框：方块和文字都算命中区域 —— 和色块那里同一个理由
+    //（只点那个 16 逻辑像素的小方块，手感很别扭）。
+    if (inside(L.clickThroughCheck) || inside(L.clickThroughLabel))
+        return kHitClickThrough;
     // ---- 外观预设（D-088）----
     if (inside(L.presetCombo))  return kHitPresetCombo;
     if (inside(L.presetSave))   return kHitPresetSave;
@@ -780,6 +794,50 @@ void CLyricusPrefsDlg::DrawPage(HDC dc, const RECT& rc, const PrefsLayout& L,
     DrawBgArea(dc, L);
     DrawBgPreview(dc, L);
     DrawCtrlColorArea(dc, L);
+    DrawBehaviorArea(dc, L);
+}
+
+// 面板行为区（D-130）—— 目前只有一个勾选框：鼠标穿透。
+//
+// 【为什么值得单独一节而不是塞进哪一行】它和上面所有设置都不是一类：
+// 那些是"面板长什么样"，这个是"面板怎么响应鼠标"。混进配色区会被当成
+// 另一个外观选项，而它其实会改变面板的**可用性**（开了之后点不动）。
+void CLyricusPrefsDlg::DrawBehaviorArea(HDC dc, const PrefsLayout& L) {
+    if (empty(L.clickThroughCheck)) return;   // 整区被降级了
+
+    const PrefsTheme& T = CurrentTheme();
+    const int dpi = static_cast<int>(GetDpiForWindowSafe(m_hWnd));
+
+    if (!empty(L.titleBehavior)) {
+        DrawTextIn(dc, L.titleBehavior, L"面板行为", T.text, m_fontBold,
+                   DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    }
+
+    // 勾选框：和色块一样用圆角方块，但只有描边 + 勾，没有填充色 ——
+    // 它表示的是"开关"而不是"某个颜色"。
+    const bool on   = m_edited.clickThrough;
+    const bool hot  = (m_hot == kHitClickThrough);
+    const int  rad  = MulDiv(3, dpi, 96);
+
+    RECT box = L.clickThroughCheck;
+    if (m_active == kHitClickThrough) OffsetRect(&box, 0, MulDiv(1, dpi, 96));
+
+    FillRoundRect(dc, box, rad, on ? T.accent : T.pageBg);
+    StrokeRoundRect(dc, box, rad, hot ? MulDiv(2, dpi, 96) : MulDiv(1, dpi, 96),
+                    (on || hot) ? T.accent : T.border);
+
+    if (on) {
+        // 勾用文字画 —— 两条线也能画，但那要自己算端点，
+        // 而这里是一个固定大小的方块，文字更直接。
+        DrawTextIn(dc, box, L"✓",
+                   ColorLuminance(T.accent) > 128 ? RGB(0, 0, 0) : RGB(255, 255, 255),
+                   m_fontBold, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    }
+
+    DrawTextIn(dc, L.clickThroughLabel,
+               L"鼠标穿透（按住 Ctrl 可临时操作面板）",
+               T.text, m_fontBody,
+               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 }
 
 void CLyricusPrefsDlg::DrawColorCard(HDC dc, const RECT& card, int index) {
@@ -1705,6 +1763,25 @@ void CLyricusPrefsDlg::OnLButtonUp(UINT /*flags*/, CPoint pt) {
     if (hit == kHitCtrlMode) { OnCtrlModeToggle(); Repaint(); return; }
     if (hit >= kHitCtrlColorBase && hit < kHitCtrlColorBase + kPrefsCtrlColorCount) {
         PickCtrlColor(hit - kHitCtrlColorBase);
+        Repaint();
+        return;
+    }
+
+    // ---- 面板行为（D-130）----
+    //
+    // 勾选框，点一下切换。⚠️ **立刻写回配置**，不等用户点「应用」。
+    //
+    // 【为什么这里必须立刻生效】用户勾完就会去点面板试 —— 如果那时还没生效，
+    //    他得到的结论是"这功能没用"，而不是"我忘了点应用"。
+    //    字体也是立刻生效的（D-082），同一条理由：改变的是**当下的手感**，
+    //    延迟生效等于没做。
+    //
+    // 走 SetPanelAppearance 而不是只改 m_edited：面板靠轮询那份配置发现变化，
+    // 不写回去的话它下一帧读到的还是旧值。
+    if (hit == kHitClickThrough) {
+        m_edited.clickThrough = !m_edited.clickThrough;
+        SetPanelAppearance(m_edited);
+        NotifyChanged();
         Repaint();
         return;
     }
