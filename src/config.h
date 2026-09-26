@@ -118,9 +118,23 @@ struct LyricDisplayConfig {
     // 所以这不是"高级选项"，是两种正当的读法。
     bool tlPrimary = false;
 
+    // 用户自己指定的字体族（UTF-8）。**空串 = 没设过**，此时按下面的优先级回落：
+    //
+    //     用户指定的  >  宿主界面字体（DUI / CUI 会给）  >  渲染层默认（Segoe UI）
+    //
+    // 【为什么要有它】用户 2026-09-26 看过"接上宿主字体"的效果之后说
+    // 「字体确实变了，也许可以给用户自定义字体的权限」。
+    // 前两级各解决了一半：跟宿主让 DUI/CUI 里的歌词和界面协调，
+    // 但用户可能就是想用别的字体（宋体配古风歌词、等宽体配代码注释）。
+    //
+    // ⚠️ **只存字体族，不存字号** —— 字号归 fontPct，两个维度独立。
+    //    混在一起的话，用户挑一次字体就会把辛苦调好的字号一并覆盖。
+    std::string fontFace;
+
     bool operator!=(const LyricDisplayConfig& o) const {
         return fontPct != o.fontPct || span != o.span ||
-               currentRatio != o.currentRatio || tlPrimary != o.tlPrimary;
+               currentRatio != o.currentRatio || tlPrimary != o.tlPrimary ||
+               fontFace != o.fontFace;
     }
     bool operator==(const LyricDisplayConfig& o) const { return !(*this != o); }
 };
@@ -139,6 +153,10 @@ void MigrateCurrentRatioToPanelBase();
 void SetLyricFontPct(int pct);
 void SetLyricSpan(int span);
 void SetLyricCurrentRatio(int ratio);
+
+// 设置用户指定的字体族。传空串 = 恢复"跟随宿主 / 默认"。
+// 和上面几个一样：写完各宿主下一帧轮询就能读到，不需要额外通知。
+void SetLyricFontFace(const std::string& faceUtf8);
 
 // 把显示设置格式化成一行，供日志用。
 //

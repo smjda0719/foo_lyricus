@@ -64,6 +64,7 @@ void TestDefaultLayout() {
     Check(!IsEmpty(L.slider),      "滑块有位置");
     Check(!IsEmpty(L.hint),        "底部说明有位置");
     Check(!IsEmpty(L.reset),       "「恢复默认」按钮有位置");
+    Check(!IsEmpty(L.fontBtn),     "「字体...」按钮有位置（默认尺寸下放得下）");
 }
 
 // ---------------------------------------------------------------------------
@@ -101,6 +102,15 @@ void TestNothingOverlaps() {
                 if (Overlap(L.slider, L.hint))   ++bad;
                 if (Overlap(L.reset,  L.hint))   ++bad;
 
+                // 「字体...」按钮（窄窗口下会被布局省略，空矩形跳过）
+                if (Overlap(L.fontBtn, L.reset))  ++bad;
+                if (Overlap(L.fontBtn, L.slider)) ++bad;
+                if (Overlap(L.fontBtn, L.hint))   ++bad;
+                for (int i = 0; i < lyricus::kPrefsColorCount; ++i) {
+                    if (Overlap(L.fontBtn, L.cards[i]))      ++bad;
+                    if (Overlap(L.fontBtn, L.cardLabels[i])) ++bad;
+                }
+
                 // 两个标题不能叠（它们分属上下两组）
                 if (Overlap(L.titleColors, L.titleAlpha)) ++bad;
             }
@@ -126,7 +136,7 @@ void TestInsideClientArea() {
                     L.cards[0], L.cards[1], L.cards[2],
                     L.cards[3], L.cards[4], L.cards[5],
                     L.titleColors, L.titleAlpha, L.alphaValue,
-                    L.slider, L.hint, L.reset,
+                    L.slider, L.hint, L.reset, L.fontBtn,
                 };
                 for (const RECT& r : all) {
                     if (IsEmpty(r)) continue;

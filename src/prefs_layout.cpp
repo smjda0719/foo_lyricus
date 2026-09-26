@@ -86,6 +86,20 @@ PrefsLayout ComputePrefsLayout(int width, int height, int dpi) {
     const int btnW = Sx(88), btnH = Sx(26);
     out.reset = RECT{ padX, y, padX + btnW, y + btnH };
 
+    // 「字体...」放在它右边。比「恢复默认」宽得多 —— 按钮上要显示**当前字体名**，
+    // 「Microsoft YaHei UI」这种名字窄了就只能看到开头几个字母，等于没显示。
+    //
+    // ⚠️ 放不下就**不给位置**（保持空矩形，绘制侧会跳过）。首选项窗口被拖得很窄时
+    //    宁可不显示这个按钮，也不要画到客户区外面去 —— 那会糊在旁边的控件上。
+    //    实测 284 逻辑宽是它的下限（padX 20 + 88 + 间距 8 + 148 + padX 20），
+    //    而客户区检查是从 220 开始扫的，所以这条分支真的会走到。
+    //    窄窗口下用户仍可以从高级首选项里改字体（lyricus.fontFace）。
+    const int fontW    = Sx(148);
+    const int fontLeft = out.reset.right + Sx(8);
+    if (fontLeft + fontW <= width - padX) {
+        out.fontBtn = RECT{ fontLeft, y, fontLeft + fontW, y + btnH };
+    }
+
     return out;
 }
 

@@ -503,14 +503,14 @@ void TestHostFont() {
     std::printf("\n== 宿主字体 ==\n");
 
     using lyricus::HostFontScalePct;
-    using lyricus::HostFontFace;
+    using lyricus::EffectiveFontFace;
     using lyricus::LyricsViewTheme;
 
     // ---- 没有宿主字体：一切照旧 ----
     {
         LyricsViewTheme t;
         Check(HostFontScalePct(t) == 100, "★ 没有宿主字体 -> 100%（行为与接之前完全一致）");
-        Check(HostFontFace(t) == nullptr, "没有宿主字体 -> 字体族为 nullptr（回落到默认）");
+        Check(EffectiveFontFace(t) == nullptr, "没有宿主字体 -> 字体族为 nullptr（回落到默认）");
     }
 
     // ---- 基准字号 ----
@@ -563,13 +563,43 @@ void TestHostFont() {
     }
 
     // ---- 字体族 ----
-    Check(wcscmp(HostFontFace(ThemeWithHostFont(L"Consolas", 9)), L"Consolas") == 0,
+    Check(wcscmp(EffectiveFontFace(ThemeWithHostFont(L"Consolas", 9)), L"Consolas") == 0,
           "字体族原样取出");
 
     {
         LyricsViewTheme empty;
         empty.hasHostFont = true;               // 有字体，但名字是空串
-        Check(HostFontFace(empty) == nullptr, "★ 空串的字体名当成没有（否则 CreateFontW 会静默挑一个）");
+        Check(EffectiveFontFace(empty) == nullptr,
+              "★ 空串的字体名当成没有（否则 CreateFontW 会静默挑一个）");
+    }
+
+    // ---- ★ 三级优先级：用户指定 > 宿主 > 默认 ----
+    //
+    // 用户 2026-09-26 提「也许可以给用户自定义字体的权限」。
+    // 这一组钉的就是"用户一旦明确挑了字体，它必须压过宿主" ——
+    // 那个顺序搞反的话，表现是"我明明设了字体，它没生效"，
+    // 而且因为宿主那级看着也很合理，排查起来会绕很久。
+    {
+        LyricsViewTheme t = ThemeWithHostFont(L"Consolas", 9);
+        Check(wcscmp(EffectiveFontFace(t), L"Consolas") == 0,
+              "第②级：没设用户字体 -> 用宿主字体");
+
+        wcscpy_s(t.userFontFace, L"SimSun");
+        Check(wcscmp(EffectiveFontFace(t), L"SimSun") == 0,
+              "★ 第①级：设了用户字体 -> **压过宿主**");
+
+        t.userFontFace[0] = L'\0';
+        Check(wcscmp(EffectiveFontFace(t), L"Consolas") == 0,
+              "清掉用户字体 -> 立刻回落到宿主（恢复默认走的就是这条路）");
+    }
+
+    // 浮动面板没有宿主可跟：只有第①、③两级
+    {
+        LyricsViewTheme t;
+        Check(EffectiveFontFace(t) == nullptr, "第③级：既没用户字体也没宿主 -> nullptr（默认字体）");
+        wcscpy_s(t.userFontFace, L"KaiTi");
+        Check(wcscmp(EffectiveFontFace(t), L"KaiTi") == 0,
+              "★ 浮动面板：用户字体照样生效（挑字体是全局偏好，不是某个面板的）");
     }
 
     // ---- ★ 最要紧的不变量：宿主字体不让歌词变得比界面字还小 ----

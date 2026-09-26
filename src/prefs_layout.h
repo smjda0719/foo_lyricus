@@ -51,6 +51,7 @@ struct PrefsLayout {
     RECT slider{};                      // 不透明度滑块的完整区域
     RECT hint{};                        // 底部说明文字
     RECT reset{};                       // "恢复默认"按钮
+    RECT fontBtn{};                     // "字体..."按钮（按钮上显示当前字体名）
     int  dpi = 96;                      // 回传给绘制侧，省得它再查一次
     int  padX = 0;                      // 左右内边距（提示文字要用）
 };

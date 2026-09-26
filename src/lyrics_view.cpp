@@ -270,10 +270,16 @@ int HostFontScalePct(const LyricsViewTheme& theme) {
     return pct;
 }
 
-const wchar_t* HostFontFace(const LyricsViewTheme& theme) {
-    if (!theme.hasHostFont) return nullptr;
-    if (theme.hostFont.lfFaceName[0] == L'\0') return nullptr;   // 空串当没有
-    return theme.hostFont.lfFaceName;
+const wchar_t* EffectiveFontFace(const LyricsViewTheme& theme) {
+    // ① 用户明确设过 -> 用它，**不看宿主**。
+    if (theme.userFontFace[0] != L'\0') return theme.userFontFace;
+
+    // ② 没设过，但在 DUI / CUI 里 -> 跟宿主界面字体。
+    if (theme.hasHostFont && theme.hostFont.lfFaceName[0] != L'\0')
+        return theme.hostFont.lfFaceName;
+
+    // ③ 都没有（独立浮动面板）-> nullptr，渲染层用默认字体。
+    return nullptr;
 }
 
 LyricsViewResult DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& theme,
@@ -305,7 +311,7 @@ LyricsViewResult DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& t
 
     // 宿主字体：DUI 元素和 CUI 面板会填，独立浮动面板留空。
     // 留空时 face = nullptr、hostPct = 100，行为与接宿主字体之前**完全一致**。
-    const wchar_t* face    = HostFontFace(theme);
+    const wchar_t* face    = EffectiveFontFace(theme);
     const int      hostPct = HostFontScalePct(theme);
 
     HFONT fHeader  = MakeFont(dpi, ScalePt(11, pct, layout.panelScalePct, hostPct), false, face);   // 曲名：刻意比歌词小，别抢戏

@@ -1131,6 +1131,19 @@ void ControlWindow::DrawTextContent(HDC dc, const RECT& rc) {
     theme.dimText     = m_appearance.dim;
     theme.warnText    = m_appearance.warn;
 
+    // 用户在设置里指定的字体族（空 = 用渲染层默认字体）。
+    //
+    // 【为什么三种宿主都读它】挑字体是**全局偏好**，不是"这个面板的偏好" ——
+    // 用户说"我要用宋体"的时候，不会希望只有浮动面板变、DUI 元素不变。
+    // 这也是它放在 LyricDisplayConfig 而不是浮动面板配置里的原因。
+    //
+    // 这里不填 hostFont：浮动面板没有宿主可跟随（那是 DUI / CUI 才有的事）。
+    // 所以它的字体优先级实际是「用户指定 > 默认」这两级。
+    {
+        const std::wstring userFace = Utf8ToWide(m_displayCfg.fontFace.c_str());
+        wcsncpy_s(theme.userFontFace, userFace.c_str(), _TRUNCATE);
+    }
+
     // ⚠️ 这里传的是**整个面板** rc，不是"歌词区"。
     //
     // currentRatio（当前行的垂直位置）的基准是整个面板 —— 三种宿主统一，

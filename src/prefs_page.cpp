@@ -10,11 +10,15 @@
 #include "ui_draw.h"            // 圆角矩形/文字/字体/宿主主题（与色环取色器共用）
 #include "color_util.h"         // ColorLuminance（判"该配黑字还是白字"）
 #include "color_picker.h"       // PromptColorWheel（取色走自绘色环）
+#include "lyric.h"              // Utf8ToWide / WideToUtf8（字体族是 UTF-8 存的）
 
 #include <SDK/preferences_page.h>
 #include <SDK/ui.h>             // ui_control::show_preferences（菜单"外观设置"要用）
 #include <SDK/ui_element.h>     // ui_config_manager：宿主主题色 + 暗色模式
 #include <helpers/atl-misc.h>   // preferences_page_impl
+// ⚠️ 取色和取字体都走纯 Win32 的通用对话框（ChooseColorW / ChooseFontW），
+//    刻意不碰 WTL 的 CColorDialog / CFontDialog —— 原因写在 PickColor() 里。
+#include <commdlg.h>
 
 #include <cstdio>
 
@@ -65,9 +69,10 @@ const ColorSlot kColorSlots[kPrefsColorCount] = {
 
 // 命中目标。色块直接用数组下标（0..5），其余用负值区分 ——
 // 这样返回值能直接当数组下标用，少一层映射。
-constexpr int kHitNone   = -1;
-constexpr int kHitSlider = -2;
-constexpr int kHitReset  = -3;
+constexpr int kHitNone    = -1;
+constexpr int kHitSlider  = -2;
+constexpr int kHitReset   = -3;
+constexpr int kHitFontBtn = -4;
 
 class CLyricusPrefsDlg : public CDialogImpl<CLyricusPrefsDlg>,
                          public preferences_page_instance {
@@ -135,7 +140,10 @@ private:
     void DrawPage(HDC dc, const RECT& rc, const PrefsLayout& L, const PrefsTheme& T);
     void DrawColorCard(HDC dc, const RECT& card, int index);
     void DrawSlider(HDC dc, const RECT& r, int value);
+    void DrawButton(HDC dc, const RECT& r, const wchar_t* text, int hitId,
+                    const PrefsTheme& T, bool leftAlign);
     void DrawResetButton(HDC dc, const RECT& r);
+    void DrawFontButton(HDC dc, const RECT& r);
 
     void SetAlphaFromSliderX(int x);
 
@@ -146,6 +154,7 @@ private:
     //    所以进来先拿一份自身引用把自己钉住，返回后碰成员才安全；
     //    返回后还要再确认一次窗口还在。
     bool PickColor(COLORREF& inOut);
+    void PickFont();   // 弹系统字体对话框，把选中的**字体族**写进设置
 
     preferences_page_callback::ptr m_callback;
     PanelAppearance m_edited;
@@ -195,6 +204,7 @@ int CLyricusPrefsDlg::HitTest(POINT pt) const {
     }
     if (inside(L.slider)) return kHitSlider;
     if (inside(L.reset))  return kHitReset;
+    if (inside(L.fontBtn)) return kHitFontBtn;
     return kHitNone;
 }
 
@@ -287,6 +297,7 @@ void CLyricusPrefsDlg::DrawPage(HDC dc, const RECT& rc, const PrefsLayout& L,
 
     // ---- 按钮 ----
     if (!empty(L.reset)) DrawResetButton(dc, L.reset);
+    if (!empty(L.fontBtn)) DrawFontButton(dc, L.fontBtn);
 }
 
 void CLyricusPrefsDlg::DrawColorCard(HDC dc, const RECT& card, int index) {
@@ -353,12 +364,17 @@ void CLyricusPrefsDlg::DrawSlider(HDC dc, const RECT& r, int value) {
     StrokeRoundRect(dc, knob, kr, MulDiv(2, dpi, 96), T.pageBg);
 }
 
-void CLyricusPrefsDlg::DrawResetButton(HDC dc, const RECT& r) {
+// 自绘按钮。「恢复默认」和「字体...」共用 —— 两个按钮的视觉本来就该一致，
+// 各写一份的话圆角、按下位移、文字色判断迟早各改各的，慢慢就看出不一样了。
+//
+// leftAlign：字体名长短差很多（「跟随」vs「Microsoft YaHei UI」），
+// 左对齐 + 省略号才看得清开头；固定文案居中更好看。
+void CLyricusPrefsDlg::DrawButton(HDC dc, const RECT& r, const wchar_t* text, int hitId,
+                                  const PrefsTheme& T, bool leftAlign) {
     const int dpi = static_cast<int>(GetDpiForWindowSafe(m_hWnd));
-    const PrefsTheme T = CurrentTheme();
 
-    const bool hot    = (m_hot == kHitReset);
-    const bool active = (m_active == kHitReset);
+    const bool hot    = (m_hot == hitId);
+    const bool active = (m_active == hitId);
 
     RECT box = r;
     if (active) OffsetRect(&box, 0, MulDiv(1, dpi, 96));
@@ -377,8 +393,33 @@ void CLyricusPrefsDlg::DrawResetButton(HDC dc, const RECT& r) {
     // 按填充色判断是那种情况下唯一永远正确的做法。
     const COLORREF fg = (ColorLuminance(fill) > 140) ? RGB(20, 20, 24)
                                                      : RGB(255, 255, 255);
-    DrawTextIn(dc, box, L"恢复默认", fg, m_fontBody,
-               DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+    RECT textRc = box;
+    UINT flags = DT_VCENTER | DT_SINGLELINE;
+    if (leftAlign) {
+        textRc.left += MulDiv(10, dpi, 96);
+        flags |= DT_LEFT | DT_END_ELLIPSIS;
+    } else {
+        flags |= DT_CENTER;
+    }
+    DrawTextIn(dc, textRc, text, fg, m_fontBody, flags);
+}
+
+void CLyricusPrefsDlg::DrawResetButton(HDC dc, const RECT& r) {
+    DrawButton(dc, r, L"恢复默认", kHitReset, CurrentTheme(), false);
+}
+
+void CLyricusPrefsDlg::DrawFontButton(HDC dc, const RECT& r) {
+    // 按钮上直接显示**当前字体名** —— 不用点开就知道现在用的是什么。
+    // 空 = 跟随宿主（DUI/CUI）/ 默认（浮动面板），显示成「跟随」。
+    const LyricDisplayConfig cfg = GetLyricDisplayConfig();
+    std::wstring label = L"字体：";
+    if (cfg.fontFace.empty()) {
+        label += L"跟随";
+    } else {
+        label += Utf8ToWide(cfg.fontFace.c_str());
+    }
+    DrawButton(dc, r, label.c_str(), kHitFontBtn, CurrentTheme(), true);
 }
 
 // ---------------------------------------------------------------------------
@@ -434,6 +475,12 @@ void CLyricusPrefsDlg::OnLButtonUp(UINT /*flags*/, CPoint pt) {
 
     if (hit == kHitReset) {
         reset();   // reset() 只改界面，不写存储（见它的说明）
+        Repaint();
+        return;
+    }
+
+    if (hit == kHitFontBtn) {
+        PickFont();   // 自己负责写设置 + NotifyChanged
         Repaint();
         return;
     }
@@ -530,6 +577,19 @@ void CLyricusPrefsDlg::reset() {
     // reset 只改界面，**不写存储** —— SDK 明确要求这样，
     // 好让用户先看到效果再决定要不要"应用"（preferences_page.h:144）。
     m_edited = PanelAppearance{};
+
+    // ★ 字体是个例外，这里**必须**写存储，而且立刻就写。
+    //
+    // 【为什么不能跟颜色一样等"应用"】颜色在 m_edited 里，用户点应用才落盘；
+    // 而字体是点「字体...」当场写进去的（ChooseFontW 是模态的，点确定
+    // 就是明确意图，没必要再让他确认一次）。于是"恢复默认"如果不动它，
+    // 就会出现：颜色全回去了、字体还留着 —— 用户会觉得这个按钮坏了一半。
+    //
+    // 【更要紧的是没有别的入口】ChooseFontW 没有"清除"这个选项，
+    // 用户一旦设了自定义字体，**除了这里没有第二条路能回到"跟随宿主"**。
+    SetLyricFontFace(std::string());
+    NotifyChanged();
+
     Repaint();
 }
 
@@ -560,6 +620,59 @@ bool CLyricusPrefsDlg::PickColor(COLORREF& inOut) {
     // 但窗口没了就不该再碰控件。
     if (!::IsWindow(m_hWnd)) return false;
     return true;
+}
+
+void CLyricusPrefsDlg::PickFont() {
+    // 和 PickColor 一样：模态期间页面可能被关掉、对象被释放
+    //（SDK 在 preferences_page.h:133 警告过这件事）。
+    service_ptr_t<preferences_page_instance> self = this;
+
+    const LyricDisplayConfig cfg = GetLyricDisplayConfig();
+
+    // 对话框的初始值。
+    LOGFONTW lf{};
+    if (!cfg.fontFace.empty()) {
+        // 用户设过 —— 以它为起点，打开就是当前值
+        const std::wstring w = Utf8ToWide(cfg.fontFace.c_str());
+        wcsncpy_s(lf.lfFaceName, w.c_str(), _TRUNCATE);
+        lf.lfHeight = -MulDiv(12, 96, 72);
+    } else {
+        // 没设过 —— 拿**系统界面字体**当起点。用户多半只是想微调一下
+        // 现在看到的那个字体，从这个起点改最省事。
+        NONCLIENTMETRICSW ncm{};
+        ncm.cbSize = sizeof(ncm);
+        if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0)) {
+            lf = ncm.lfMessageFont;
+        } else {
+            wcscpy_s(lf.lfFaceName, L"Segoe UI");
+            lf.lfHeight = -MulDiv(12, 96, 72);
+        }
+    }
+
+    // ⚠️ 刻意**不用** WTL 的 CFontDialog —— 和 CColorDialog 是同一个坑：
+    //    两者都走 CStaticDataInitCriticalSectionLock，而那个锁的构造函数直接
+    //    解引用 ATL::_pAtlModule。本组件从没创建过 ATL 模块对象，那指针是空的，
+    //    于是 RtlEnterCriticalSection 收到 0x18 —— 正是 2026-09-26 那次崩溃
+    //    （failure_00000001.txt，见 D-070）。ChooseFontW 是纯 Win32，
+    //    不经过任何 ATL 全局状态，整条路直接没了。
+    CHOOSEFONTW cf{};
+    cf.lStructSize = sizeof(cf);
+    cf.hwndOwner   = m_hWnd;
+    cf.lpLogFont   = &lf;
+    cf.Flags       = CF_SCREENFONTS | CF_INITTOLOGFONTSTRUCT | CF_NOVERTFONTS;
+
+    if (!::ChooseFontW(&cf)) return;   // 用户取消
+    if (!::IsWindow(m_hWnd)) return;   // 模态期间页面被关了
+
+    // ★ 只取**字体族**，忽略对话框里挑的字号和粗体。
+    //
+    // 字号归「字号百分比」那条滑块管，是另一个维度。混在一起的话，
+    // 用户挑一次字体就会把辛苦调好的字号一并覆盖掉 —— 而且他多半
+    // 根本没注意到自己在字体对话框里也动了字号。
+    SetLyricFontFace(WideToUtf8(lf.lfFaceName));
+    NotifyChanged();
+
+    DebugLog("首选项页：字体 -> 「%s」", WideToUtf8(lf.lfFaceName).c_str());
 }
 
 // ---------------------------------------------------------------------------

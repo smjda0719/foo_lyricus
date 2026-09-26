@@ -3,6 +3,7 @@
 #include "lyrics_view.h"
 #include "color_util.h"   // BlendColor（原先在本文件里有一份，已提到公共层）
 #include "dpi_util.h"     // GetDpiForWindowSafe（窗口所在显示器的 DPI）
+#include "lyric.h"        // Utf8ToWide（用户自定义字体族是 UTF-8 存的）
 #include "config.h"
 #include "playback_state.h"
 #include "debug_log.h"
@@ -494,6 +495,13 @@ void LyricusCuiPanel::RefreshTheme() {
     theme.hostFont    = m_fontDesc;
     theme.hasHostFont = m_hasFontDesc;
 
+    // 用户在设置里指定的字体族（空 = 跟随宿主）。**它压过宿主字体。**
+    // 字体族在 LyricDisplayConfig 里，由定时器轮询 —— 改了下一拍就到这里。
+    {
+        const std::wstring userFace = Utf8ToWide(m_displayCfg.fontFace.c_str());
+        wcsncpy_s(theme.userFontFace, userFace.c_str(), _TRUNCATE);
+    }
+
     // ⚠️ 必须在填完字体**之后**再赋给 m_theme —— 上面几行改的是局部变量 theme。
     m_theme = theme;
 
@@ -624,6 +632,8 @@ LRESULT LyricusCuiPanel::OnTimer(UINT, WPARAM wParam, LPARAM, BOOL& bHandled) {
     if (cfgChanged) {
         m_displayCfg = cfg;
         m_layout = { cfg.fontPct, cfg.span, cfg.currentRatio, cfg.tlPrimary };
+        // ★ 字体族也在 cfg 里（用户自定义字体），改了必须重问一遍主题。
+        MarkThemeDirty(false);
         DebugLog("CUI 显示设置变更 -> %s", DescribeDisplayConfig(cfg).c_str());
     }
 

@@ -52,6 +52,7 @@ const GUID kUseTagsGuid      = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x
 const GUID kOnlineGuid       = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x27}};
 // 0x28 起是新段：0x20-0x27 已经用满（原来是照"最多 8 项"排的）
 const GUID kTlPrimaryGuid    = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x28}};
+const GUID kFontFaceGuid     = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x29}};
 
 // 挂在高级首选项树的根下。Lyricus 只有一个分支，优先级取 0 就行。
 advconfig_branch_factory g_branch("Lyricus", kBranchGuid, advconfig_branch::guid_root, 0);
@@ -104,6 +105,17 @@ advconfig_checkbox_factory g_tlPrimary(
     "歌词有翻译时，把**翻译**当正文显示（原文降为小字参照行）", "lyricus.translationPrimary",
     kTlPrimaryGuid, kBranchGuid, 7, false);
 
+// 用户自己指定的歌词字体族。留空 = 跟随宿主界面字体（DUI/CUI），
+// 宿主也没给（浮动面板）就用渲染层的默认字体。
+//
+// 【为什么放这里而不是只做首选项页的一个按钮】三个宿主共用 GetLyricDisplayConfig()
+// 的快照，放进来之后"用户改了字体 -> 宿主轮询发现变了 -> 重绘"这条链路是**免费**的，
+// 不需要任何额外通知机制 —— 这正是当初选轮询换来的好处。
+advconfig_string_factory g_fontFace(
+    "歌词字体（留空 = 跟随宿主界面字体；填字体名，如「微软雅黑」「Consolas」）",
+    "lyricus.fontFace",
+    kFontFaceGuid, kBranchGuid, 8, "");
+
 } // namespace
 
 LyricDisplayConfig GetLyricDisplayConfig() {
@@ -117,6 +129,14 @@ LyricDisplayConfig GetLyricDisplayConfig() {
     c.span         = static_cast<int>(g_span.get());
     c.currentRatio = static_cast<int>(g_currentRatio.get());
     c.tlPrimary    = g_tlPrimary.get();
+
+    // 字体族：pfc::string8 内部就是 UTF-8，直接搬进 std::string。
+    // 空串是**正常值**（= 跟随宿主），不是"没读到"。
+    {
+        pfc::string8 face;
+        g_fontFace.get(face);
+        c.fontFace.assign(face.get_ptr(), face.length());
+    }
 
     // 兜底夹取。advconfig 自己会 clip，但配置文件是文本的，
     // 手工编辑或跨版本残留都可能塞进超范围的值。
@@ -142,6 +162,11 @@ void SetLyricSpan(int span) {
 
 void SetLyricCurrentRatio(int ratio) {
     g_currentRatio.set(static_cast<uint64_t>(ratio));
+}
+
+void SetLyricFontFace(const std::string& faceUtf8) {
+    // 传空串 = 恢复"跟随宿主 / 默认"。这是合法的设置值，不是清空错误。
+    g_fontFace.set(faceUtf8.c_str());
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +222,11 @@ std::string DescribeDisplayConfig(const LyricDisplayConfig& c) {
     s += "%";
     // 只在**开着**时才写出来：默认值不刷日志，免得每次换曲都多出一截
     if (c.tlPrimary) s += "  正文=翻译";
+    // 字体同理：空 = 跟随宿主（常态），写出来只是噪音
+    if (!c.fontFace.empty()) {
+        s += "  字体=";
+        s += c.fontFace;
+    }
     return s;
 }
 

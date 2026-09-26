@@ -44,6 +44,13 @@ struct LyricsViewTheme {
     // 就再也不依赖宿主的任何东西了。
     LOGFONTW hostFont{};
     bool     hasHostFont = false;
+
+    // 用户在设置里指定的字体族（空 = 没设过）。
+    //
+    // **优先级最高** —— 设了就完全不听宿主的。用户明确表达过意图时，
+    // 不该再被"跟随宿主界面字体"覆盖掉；那两级是"没得选时的合理默认"，
+    // 不是"必须服从的规则"。
+    wchar_t userFontFace[LF_FACESIZE] = L"";
 };
 
 // 排版参数。
@@ -167,8 +174,18 @@ int PanelFontScalePct(int panelWidthLogical, int baseWidthLogical = 460);
 // theme.hasHostFont 为 false（独立浮动面板）时返回 100。
 int HostFontScalePct(const LyricsViewTheme& theme);
 
-// 从宿主字体里取字体族名；没有宿主字体时返回 nullptr（调用方回落到默认字体）。
-// 单独拎出来是因为渲染层有三处要用，各自判一遍容易漏掉空串的情况。
-const wchar_t* HostFontFace(const LyricsViewTheme& theme);
+// 最终该用哪个字体族。三级回落，返回 nullptr 表示"用渲染层的默认字体"：
+//
+//     ① 用户在设置里指定的（theme.userFontFace）
+//     ② 宿主界面字体（DUI / CUI 会给，见 hostFont）
+//     ③ nullptr -> 渲染层回落到 Segoe UI
+//
+// 【为什么用户指定的压过宿主】跟宿主是**没得选时的合理默认**，
+// 不是必须服从的规则。用户一旦明确挑了字体，再拿宿主去覆盖他，
+// 表现就是"我明明设了字体，它没生效"。
+//
+// 注意这一级**只管字体族**：字号倍率仍然跟宿主走（见 HostFontScalePct），
+// 两个维度是独立的 —— 挑字体不该顺带把字号也锁死。
+const wchar_t* EffectiveFontFace(const LyricsViewTheme& theme);
 
 } // namespace lyricus
