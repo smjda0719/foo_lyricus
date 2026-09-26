@@ -494,7 +494,7 @@ LRESULT LyricusDui::OnTimer(UINT, WPARAM wParam, LPARAM, BOOL& bHandled) {
         return 0;
     }
 
-    ScopedTimer tick("DUI 元素定时器一拍", 5.0);
+    ScopedTimer tick("DUI 元素定时器一拍", 10.0);
 
     auto& state = PlaybackState::Get();
 

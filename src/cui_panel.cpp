@@ -612,7 +612,7 @@ LRESULT LyricusCuiPanel::OnTimer(UINT, WPARAM wParam, LPARAM, BOOL& bHandled) {
 
     // 每 250ms 一次的热路径。CUI 面板和浮动面板**同时在跑**，
     // 所以两边各有一份轮询开销。
-    ScopedTimer tick("CUI 面板定时器一拍", 5.0);
+    ScopedTimer tick("CUI 面板定时器一拍", 10.0);
 
     auto& state = PlaybackState::Get();
 

@@ -946,7 +946,7 @@ LRESULT ControlWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (wp == kRefreshTimerId) {
             // 每 250ms 一次的热路径。阈值取 5ms —— 超过就说明这一拍太重了，
             // 连续几拍偏重就是肉眼可见的卡顿。
-            ScopedTimer tick("面板定时器一拍", 5.0);
+            ScopedTimer tick("面板定时器一拍", 10.0);
 
             auto& st = PlaybackState::Get();
             const TickChange change = st.RefreshPosition();
@@ -1191,9 +1191,9 @@ void ControlWindow::ReleaseLayeredCache() {
 }
 
 void ControlWindow::RenderLayered() {
-    ScopedTimer timer("RenderLayered（重绘 + 提交）", 5.0);
+    ScopedTimer timer("RenderLayered（重绘 + 提交）", 10.0);
 
-    // 分段计时。**只在整帧偏慢时才写一行**（借用 ScopedTimer 的 5ms 阈值），
+    // 分段计时。**只在整帧明显偏慢时才写一行**（阈值同 ScopedTimer，见 debug_log.h），
     // 免得平时把日志刷爆。
     //
     // 【为什么要它】用户 2026-09-25 报「现在能动了，不过帧数确实不高」。
@@ -1336,15 +1336,33 @@ void ControlWindow::RenderLayered() {
     const BOOL uwlOk = UpdateLayeredWindow(m_hwnd, screenDC, &dst, &size, memDC, &src, 0, &blend, ULW_ALPHA);
     QueryPerformanceCounter(&qpc5);
 
-    // 整帧偏慢就写一行分解。阈值同 ScopedTimer（5ms）——
+    // 整帧明显偏慢就写一行分解（阈值见 debug_log.h 里 ScopedTimer 的说明）——
     // 平时不写，动画期间才看得到，正好是我们要诊断的场景。
+    //
+    // ★ 除了各段耗时，还要带**距上一帧的真实间隔**（2026-09-26 加）。
+    //
+    // 【为什么间隔比各段总和更要紧】用户报「偶尔会稍微卡顿一下」。
+    // 各段耗时之和再小，只要两帧之间隔了 300ms，用户看到的就是停顿 ——
+    // 而那种停顿**根本不会体现在任何一段的耗时里**（时间花在"没轮到我们跑"上）。
+    // 有了这个数就能一刀切开两种截然不同的原因：
+    //   * 间隔正常（40 / 250ms 左右）而耗时长  -> 是**我们**慢，该优化代码；
+    //   * 间隔明显偏大而耗时正常               -> 是**被抢了**（别的进程 / 系统），
+    //                                             优化我们一行代码都没用。
+    // 没有这一列的话，这两种情况在日志里长得一模一样。
     {
+        static ULONGLONG s_lastFrameTick = 0;
+        const ULONGLONG nowTick = GetTickCount64();
+        const ULONGLONG gap = (s_lastFrameTick != 0) ? (nowTick - s_lastFrameTick) : 0;
+        s_lastFrameTick = nowTick;
+
         const double total = msBetween(qpc0, qpc5);
-        if (total >= 5.0) {
-            DebugLog("RenderLayered 分解: 铺底=%.1f 画=%.1f 预乘=%.1f 图标=%.1f 提交=%.1f 共=%.1f ms",
+        if (total >= 10.0) {
+            DebugLog("RenderLayered 分解: 铺底=%.1f 画=%.1f 预乘=%.1f 图标=%.1f 提交=%.1f "
+                     "共=%.1f ms  距上帧=%llu ms",
                      msBetween(qpc0, qpc1), msBetween(qpc1, qpc2),
                      msBetween(qpc2, qpc3), msBetween(qpc3, qpc4),
-                     msBetween(qpc4, qpc5), total);
+                     msBetween(qpc4, qpc5), total,
+                     static_cast<unsigned long long>(gap));
         }
     }
 
