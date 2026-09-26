@@ -1232,50 +1232,86 @@ void CLyricusPrefsDlg::DrawBgPreview(HDC dc, const PrefsLayout& L) {
             // 用户会去重新选一遍，而问题其实出在文件本身。
             centered(L"读不到这张图（文件被移走、或格式不支持）");
         } else {
+            // ★★ 图要**混合**到底板上，不能直接覆盖（D-125）。
+            //
+            // 【为什么要绕这一圈】bmp 里"图之外的区域"是**透明像素，RGB = 0**。
+            //    而 `StretchDIBits(..., SRCCOPY)` **不看 alpha**，于是那些地方
+            //    被画成**纯黑**、把底板整个盖掉。
+            //
+            //    表现就是：无论把"面板底色"改成什么，预览里那块永远是黑的 ——
+            //    用户报"底板颜色还是没变"正是这个。他看到黑色，
+            //    以为那是底板，其实是透明区。
+            //
+            //    面板那边走的是 BlendBgOver（source-over），预览这边漏了 ——
+            //    **同一个概念两条路径各写一份**，又一次漏掉了一边。
+            //
+            // 先在一块临时缓冲里铺底板再叠图，最后一次性贴上去。
+            // 底板不透明（alpha=255），所以合成结果也是不透明的，
+            // 这正是预览该有的样子（真实面板的不透明度由窗口管，
+            // 预览里体现不了，也不该体现）。
+            const size_t n = static_cast<size_t>(w) * static_cast<size_t>(h);
+            std::vector<unsigned char> canvas(n * 4);
+            const BYTE bb = GetBValue(m_edited.bg);
+            const BYTE bg = GetGValue(m_edited.bg);
+            const BYTE br = GetRValue(m_edited.bg);
+            for (size_t i = 0; i < n; ++i) {
+                canvas[i * 4 + 0] = bb;
+                canvas[i * 4 + 1] = bg;
+                canvas[i * 4 + 2] = br;
+                canvas[i * 4 + 3] = 255;
+            }
+            BlendBgOver(canvas.data(), bmp->bgra.data(), n);
+
             BITMAPINFO bi{};
             bi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
-            bi.bmiHeader.biWidth       = bmp->width;
-            bi.bmiHeader.biHeight      = -bmp->height;   // 负 = 自上而下，否则上下颠倒
+            bi.bmiHeader.biWidth       = w;
+            bi.bmiHeader.biHeight      = -h;   // 负 = 自上而下，否则上下颠倒
             bi.bmiHeader.biPlanes      = 1;
             bi.bmiHeader.biBitCount    = 32;
             bi.bmiHeader.biCompression = BI_RGB;
             ::StretchDIBits(dc, L.bgPreview.left, L.bgPreview.top, w, h,
-                            0, 0, bmp->width, bmp->height,
-                            bmp->bgra.data(), &bi, DIB_RGB_COLORS, SRCCOPY);
+                            0, 0, w, h,
+                            canvas.data(), &bi, DIB_RGB_COLORS, SRCCOPY);
         }
     }
 
-    // ★ 歌词示意（D-123）。
+    // ★ 歌词示意（D-123 / D-126）。
     //
     // 【为什么必须有】预览里只画底板和控件的话，"歌词文字"那一整组颜色
-    //（页眉 / 当前行 / 普通 / 次要 / 警告）改了在预览里**毫无反应** ——
-    //    而那恰恰是用户最常调的一组。用户报"预览窗口的颜色没有变"就是这个：
-    //    他改的颜色根本没有对应的东西可显示。
+    //（曲名 / 当前行 / 其它行 / 次要 / 警告）改了在预览里**毫无反应** ——
+    //    而那恰恰是用户最常调的一组。
     //
-    // 用假文本而不是真歌词：预览不该依赖"现在有没有在播放"，
-    // 而且长度可控，能一次把四种颜色都摆出来。
-    if (L.bgPreview.bottom - L.bgPreview.top > MulDiv(60, dpi, 96)) {
-        const int lineH = MulDiv(20, dpi, 96);
-        const int cx = (L.bgPreview.left + L.bgPreview.right) / 2;
-        int ty = L.bgPreview.top + MulDiv(10, dpi, 96);
+    // 【为什么按面板的布局摆】上一版是五行从上往下平铺，曲名和歌词挤在一起、
+    //    当前行还被挤出框外。预览的意义就是"看起来和面板一样"，
+    //    所以位置要照面板来：**曲名在顶、歌词当前行垂直居中、控制条在底**。
+    //    摆错了不如不摆 —— 用户会以为面板上也是那样。
+    if (L.bgPreview.bottom - L.bgPreview.top > MulDiv(70, dpi, 96)) {
+        const int lineH = MulDiv(19, dpi, 96);
+        const int cx0 = L.bgPreview.left;
+        const int cx1 = L.bgPreview.right;
+        const int ctrlH = MulDiv(30, dpi, 96);   // 底部控制条大致占这么高
 
-        struct DemoLine { const wchar_t* text; COLORREF color; bool bold; };
-        const DemoLine demo[] = {
-            { L"曲名 — 歌手",           m_edited.header,  true  },
-            { L"当前这一行歌词",        m_edited.current, true  },
-            { L"上一行",                m_edited.dim,     false },
-            { L"下一行",                m_edited.normal,  false },
-            { L"歌词未找到",            m_edited.warn,    false },
-        };
-        for (const DemoLine& d : demo) {
-            RECT lr{ L.bgPreview.left, ty, L.bgPreview.right, ty + lineH };
-            // 文字压在图上要看得清，所以带一圈底色描边（和歌词渲染层同一个思路）
-            DrawTextIn(dc, lr, d.text, d.color,
-                       d.bold ? m_fontBold : m_fontBody,
+        auto line = [&](int cy, const wchar_t* text, COLORREF color, bool bold) {
+            RECT r{ cx0, cy - lineH / 2, cx1, cy + lineH / 2 };
+            DrawTextIn(dc, r, text, color, bold ? m_fontBold : m_fontBody,
                        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-            ty += lineH;
-            if (ty > L.bgPreview.bottom) break;
-        }
+        };
+
+        // 曲名：贴着预览框顶部（面板上也是顶部一行）
+        line(L.bgPreview.top + MulDiv(12, dpi, 96) + lineH / 2,
+             L"曲名 — 歌手", m_edited.header, true);
+
+        // 歌词：以"控制条上方的区域"的中心为当前行位置 —— 和面板一致
+        const int midY = (L.bgPreview.top +
+                          (L.bgPreview.bottom - ctrlH)) / 2;
+        line(midY - lineH * 3 / 2, L"上一行歌词",   m_edited.dim,    false);
+        line(midY,                 L"当前这一行歌词", m_edited.current, true);
+        line(midY + lineH * 3 / 2, L"下一行歌词",   m_edited.normal, false);
+
+        // 警告色单独放控制条上方一行 —— 它平时不出现，
+        // 但用户调色时要能看到自己挑的是什么。
+        line(L.bgPreview.bottom - ctrlH - lineH / 2,
+             L"歌词未找到", m_edited.warn, false);
     }
 
     // 边框画在最后（先画会被图盖住）
