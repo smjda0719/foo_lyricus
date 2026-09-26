@@ -81,4 +81,19 @@ void BoxBlurBgra(unsigned char* bgra, int w, int h, int radiusPx);
 // 在这里一次做完，"每帧"只剩一次内存拷贝。
 void ApplyDimAndOpacity(unsigned char* bgra, int w, int h, int dimPct, int opacityPct);
 
+// 把背景图 source-over 混合到**已经铺好底色的** BGRA 缓冲上（原地改 dst）。
+//
+// 【为什么要"叠"而不是"替"】背景图带自己的 alpha（由 bgOpacity 决定），
+// 半透明的图下面必须有底色兜着 —— 直接替换的话面板会变成"图有多透明、
+// 面板就有多透明"，直接透出桌面。而用户要的是"面板底色上有一张图"。
+//
+// ⚠️ **dst 的 alpha 通道一个像素都不动。**
+//    面板整体的不透明度（cfg 里的 alpha）和图的不透明度是两件独立的事：
+//    前者决定面板有多透明，后者决定图有多显眼。混在一起的话，
+//    用户调"图片不透明度"会连带把整个面板弄透明 —— 那不是他要的。
+//
+// 两条渲染路径（分层的 m_layeredBits、非分层的 GDI）都调这一份，
+// 两处各写一遍的话迟早会出现"分层模式下图偏亮"这种诡异差异。
+void BlendBgOver(unsigned char* dst, const unsigned char* src, size_t pixelCount);
+
 } // namespace lyricus

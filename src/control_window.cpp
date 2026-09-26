@@ -7,6 +7,8 @@
 #include "control_bar_layout.h"   // 控制条的布局数学（纯函数，可离线单测）
 #include "dpi_util.h"             // GetDpiForWindowSafe（与首选项页共用）
 #include "color_util.h"           // BlendColor / ColorLuminance（控制条配色从底色推导）
+#include "bg_image.h"             // 背景图加载与缓存（D-098）
+#include "lyric.h"                // Utf8ToWide
 
 #include <algorithm>
 #include <dwmapi.h>
@@ -1158,13 +1160,70 @@ void ControlWindow::PaintContentRaw(HDC dc, const RECT& rc) {
          mode == BackdropMode::Acrylic ||
          mode == BackdropMode::MicaAlt);
 
-    if (!dwmProvidesBackground) {
-        HBRUSH bg = CreateSolidBrush(RGB(28, 28, 30));
-        FillRect(dc, &rc, bg);
-        DeleteObject(bg);
+    const int w = rc.right - rc.left;
+    const int h = rc.bottom - rc.top;
+
+    if (!dwmProvidesBackground && w > 0 && h > 0) {
+        // ⚠️ 底色取自配置的 m_appearance.bg，**不是**写死的。
+        //    从前这里硬编码 RGB(28,28,30) —— 于是「亮色」预设下如果浮动面板
+        //    走的是这条路径，底色仍是深灰，和用户在首选项里看到的完全脱节。
+        const COLORREF bgColor = m_appearance.bg;
+        const BgBitmap* bgImg  = CurrentBackground(w, h);
+
+        if (bgImg != nullptr) {
+            // 有背景图：手工把「底色 + 图」混在一块 BGRA 缓冲里，再整块贴。
+            //
+            // 【为什么不用 AlphaBlend】那要额外链接 msimg32.lib，而且它按 DC
+            // 的混合设置走。手工混合能复用**同一个** BlendBgOver ——
+            // 两条渲染路径用同一份逻辑，观感才不会分叉
+            //（各写一遍，迟早出现「分层模式下图偏亮」这种查不出原因的差异）。
+            std::vector<unsigned char> buf(static_cast<size_t>(w) * h * 4);
+            const unsigned char bb = static_cast<unsigned char>(GetBValue(bgColor));
+            const unsigned char bgc = static_cast<unsigned char>(GetGValue(bgColor));
+            const unsigned char br = static_cast<unsigned char>(GetRValue(bgColor));
+            for (size_t i = 0; i < static_cast<size_t>(w) * h; ++i) {
+                buf[i * 4 + 0] = bb;
+                buf[i * 4 + 1] = bgc;
+                buf[i * 4 + 2] = br;
+                buf[i * 4 + 3] = 255;   // 这条路径没有整体 alpha（DWM 不参与）
+            }
+            BlendBgOver(buf.data(), bgImg->bgra.data(), static_cast<size_t>(w) * h);
+
+            BITMAPINFO bi{};
+            bi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
+            bi.bmiHeader.biWidth       = w;
+            // ⚠️ **负高度** = 自上而下。写正数的话 DIB 是自下而上的，
+            //    背景图会上下颠倒 —— 而那看起来像"图片本身的问题"。
+            bi.bmiHeader.biHeight      = -h;
+            bi.bmiHeader.biPlanes      = 1;
+            bi.bmiHeader.biBitCount    = 32;
+            bi.bmiHeader.biCompression = BI_RGB;
+            ::StretchDIBits(dc, 0, 0, w, h, 0, 0, w, h,
+                            buf.data(), &bi, DIB_RGB_COLORS, SRCCOPY);
+        } else {
+            HBRUSH bg = CreateSolidBrush(bgColor);
+            FillRect(dc, &rc, bg);
+            DeleteObject(bg);
+        }
     }
 
     DrawTextContent(dc, rc);
+}
+
+const BgBitmap* ControlWindow::CurrentBackground(int w, int h) {
+    const PanelAppearance& ap = m_appearance;
+    if (ap.bgImage.empty() || w <= 0 || h <= 0) return nullptr;
+
+    // ⚠️ bgBlur 存的是 **96dpi 逻辑像素**，要按当前 dpi 放大成物理像素 ——
+    //    不然 200% 缩放下磨砂粒度只有一半，"糊"的程度和用户设的对不上。
+    const int dpi    = static_cast<int>(GetDpiForWindowSafe(m_hwnd));
+    const int blurPx = MulDiv(ap.bgBlur, (dpi > 0) ? dpi : 96, 96);
+
+    // 读不到图时 GetPanelBackground 返回 nullptr，这里如实往下传 ——
+    // 调用方按"没有背景图"处理，回到纯色底。日志里已经有原因了。
+    return GetPanelBackground(Utf8ToWide(ap.bgImage.c_str()), w, h,
+                              static_cast<BgFit>(ap.bgFit), blurPx,
+                              ap.bgDim, ap.bgOpacity);
 }
 
 void ControlWindow::PaintContent(HDC dc) {
@@ -1385,6 +1444,23 @@ void ControlWindow::RenderLayered() {
             p[3] = alpha;
             p += 4;
         }
+    }
+
+    // 1.5) 背景图叠在底色之上（D-098）。
+    //
+    // 【为什么是"叠"而不是"替"】图带自己的 alpha（由 bgOpacity 决定），
+    // 半透明的图下面必须有底色兜着 —— 直接替换的话面板会变成
+    // "图有多透明、面板就有多透明"，透出桌面，而用户要的是
+    // "面板底色上有一张图"。
+    //
+    // ⚠️ 混合函数**不动 alpha 通道**：面板整体不透明度（cfg 的 alpha）
+    //    和图的不透明度是两件独立的事，混在一起的话用户调"图片不透明度"
+    //    会连带把整个面板弄透明。
+    //
+    // 这一趟只在**参数或尺寸变化时**才会真的重算 —— CurrentBackground
+    // 返回的是缓存好的位图，所以这里每帧的代价就是一次内存混合。
+    if (const BgBitmap* bgImg = CurrentBackground(w, h)) {
+        BlendBgOver(static_cast<BYTE*>(bits), bgImg->bgra.data(), pixelCount);
     }
 
     QueryPerformanceCounter(&qpc1);

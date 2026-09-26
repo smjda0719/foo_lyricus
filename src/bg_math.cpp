@@ -185,4 +185,30 @@ void ApplyDimAndOpacity(unsigned char* bgra, int w, int h, int dimPct, int opaci
     }
 }
 
+void BlendBgOver(unsigned char* dst, const unsigned char* src, size_t pixelCount) {
+    if (dst == nullptr || src == nullptr) return;
+
+    for (size_t i = 0; i < pixelCount; ++i) {
+        const int sa = src[3];
+        if (sa == 0) {
+            // 全透明：底色原样保留。**必须早退** —— 不判的话下面的
+            // 除法会把 dst 一点点拉向 src 的黑色（src 透明区的 RGB 是 0），
+            // 面板边角会慢慢变黑。
+            dst += 4; src += 4;
+            continue;
+        }
+        if (sa == 255) {
+            // 全不透明：直接覆盖 RGB，省掉三次除法
+            dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2];
+        } else {
+            const int inv = 255 - sa;
+            dst[0] = static_cast<unsigned char>((src[0] * sa + dst[0] * inv) / 255);
+            dst[1] = static_cast<unsigned char>((src[1] * sa + dst[1] * inv) / 255);
+            dst[2] = static_cast<unsigned char>((src[2] * sa + dst[2] * inv) / 255);
+        }
+        // ⚠️ dst[3] 不动。见头文件里的说明。
+        dst += 4; src += 4;
+    }
+}
+
 } // namespace lyricus

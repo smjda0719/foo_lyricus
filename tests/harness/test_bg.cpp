@@ -293,11 +293,73 @@ void TestDimOpacity() {
 
 } // namespace
 
+// 混合单独放一个函数里（逻辑上属于"背景图怎么贴上去"那一组）
+namespace {
+
+void TestBlend() {
+    std::printf("\n== 背景图混合（BlendBgOver）==\n");
+
+    // 全不透明的图 -> 完全盖住底色。底色是"面板底色"，图不透明时就该看不见它。
+    {
+        auto dst = MakeSolid(2, 2, 10, 20, 30, 200);
+        auto src = MakeSolid(2, 2, 100, 110, 120, 255);
+        lyricus::BlendBgOver(dst.data(), src.data(), 4);
+        Check(dst[0] == 100 && dst[1] == 110 && dst[2] == 120, "★ 图全不透明 -> 盖住底色");
+        // ★ 这条是设计意图：面板整体不透明度（cfg 的 alpha）和图的不透明度
+        //   是两件独立的事。混在一起的话用户调"图片不透明度"会连带把整个
+        //   面板弄透明 —— 那不是他要的。
+        Check(dst[3] == 200, "★ 底色的 alpha 一个像素都不动");
+    }
+
+    // 全透明的图 -> 底色完全不变。
+    // ⚠️ 这条挡的是"透明区被慢慢拉黑"：不早退的话那三次除法会把底色
+    //    一点点拉向 src 的黑色（透明区 RGB = 0），面板边角会越来越暗。
+    {
+        auto dst = MakeSolid(2, 2, 10, 20, 30, 200);
+        auto src = MakeSolid(2, 2, 0, 0, 0, 0);
+        const auto before = dst;
+        lyricus::BlendBgOver(dst.data(), src.data(), 4);
+        Check(dst == before, "★ 图全透明 -> 底色完全不变（没被拉黑）");
+    }
+
+    // 半透明 -> 两边各取一半
+    {
+        auto dst = MakeSolid(1, 1, 0, 0, 0, 128);
+        auto src = MakeSolid(1, 1, 255, 255, 255, 128);
+        lyricus::BlendBgOver(dst.data(), src.data(), 1);
+        Check(dst[0] > 120 && dst[0] < 136, "★ 半透明 -> 黑白各半（约 127）");
+        Check(dst[3] == 128, "★ 半透明时底色的 alpha 同样不动");
+    }
+
+    // 逐像素独立：同一个缓冲里有的盖住、有的透出来
+    {
+        auto dst = MakeSolid(2, 1, 0, 0, 0, 255);
+        auto src = MakeSolid(2, 1, 200, 200, 200, 255);
+        src[7] = 0;   // 第二个像素的 alpha 改成 0
+        lyricus::BlendBgOver(dst.data(), src.data(), 2);
+        Check(dst[0] == 200, "★ 第一个像素被盖住");
+        Check(dst[4] == 0,   "★ 第二个像素（透明）保留底色");
+        Check(dst[7] == 255, "★ 两处的 alpha 都没动");
+    }
+
+    // 空指针不崩
+    {
+        auto v = MakeSolid(2, 2, 1, 2, 3, 4);
+        const auto before = v;
+        lyricus::BlendBgOver(nullptr, v.data(), 4);
+        lyricus::BlendBgOver(v.data(), nullptr, 4);
+        Check(v == before, "★ 空指针：静默返回不崩");
+    }
+}
+
+} // namespace
+
 int main() {
     std::printf("======== 面板背景图（纯计算）========\n");
     TestPlacement();
     TestBlur();
     TestDimOpacity();
+    TestBlend();
     std::printf("\n----------------------------------------\n");
     std::printf("通过 %d，失败 %d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;

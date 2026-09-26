@@ -2,6 +2,7 @@
 
 #include "config.h"
 #include "lyrics_view.h"
+#include "bg_image.h"      // BgBitmap（CurrentBackground 的返回类型）
 
 // ---------------------------------------------------------------------------
 // 独立操作面板（顶层窗口）
@@ -57,6 +58,10 @@ private:
     void PaintContent(HDC dc);
     // 真正落笔的那个（PaintContent 只负责给它套一层内存 DC 做双缓冲）
     void PaintContentRaw(HDC dc, const RECT& rc);
+
+    // 当前该用的背景图（没设 / 读不到 / 尺寸非法 -> nullptr）。
+    // 内部走 bg_image 的缓存，参数没变时只是几次整数比较。
+    const BgBitmap* CurrentBackground(int w, int h);
 
     // 触发一次重绘（分层模式下走 RenderLayered，否则走 WM_PAINT）
     void RequestRepaint();
