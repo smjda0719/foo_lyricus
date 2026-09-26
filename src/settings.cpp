@@ -192,6 +192,13 @@ void ApplyAppearancePreset(const AppearancePreset& p) {
     a.ctrlIcon   = p.ctrlIcon;
     a.ctrlSlider = p.ctrlSlider;
     a.ctrlText   = p.ctrlText;
+    // 背景图（D-098）。不必手动清背景缓存 —— GetPanelBackground 自己会比对
+    // 参数（路径/尺寸/四个值），任一变化就重算。
+    a.bgImage    = p.bgImage;
+    a.bgFit      = p.bgFit;
+    a.bgBlur     = p.bgBlur;
+    a.bgDim      = p.bgDim;
+    a.bgOpacity  = p.bgOpacity;
     SetPanelAppearance(a);
 
     // ---- 字体族与字号 ----

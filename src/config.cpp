@@ -69,6 +69,13 @@ cfg_var_modern::cfg_int cfg_app_ctrl_icon  ({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e
 cfg_var_modern::cfg_int cfg_app_ctrl_slider({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x43}}, RGB(206,210,220));
 cfg_var_modern::cfg_int cfg_app_ctrl_text  ({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x44}}, RGB(190,190,198));
 
+// 背景图（D-098）。GUID 末字节 0x50~0x54（0x01~0x0d / 0x30~0x3c / 0x40~0x44 都已占用）。
+cfg_var_modern::cfg_string cfg_app_bg_image ({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x50}}, "");
+cfg_var_modern::cfg_int    cfg_app_bg_fit   ({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x51}}, 0);
+cfg_var_modern::cfg_int    cfg_app_bg_blur  ({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x52}}, 0);
+cfg_var_modern::cfg_int    cfg_app_bg_dim   ({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x53}}, 0);
+cfg_var_modern::cfg_int    cfg_app_bg_opacity({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x54}}, 100);
+
 int ClampAlpha(int v) {
     if (v < kMinAlpha) return kMinAlpha;
     if (v > kMaxAlpha) return kMaxAlpha;
@@ -101,6 +108,15 @@ PanelAppearance GetPanelAppearance() {
     a.ctrlIcon   = static_cast<COLORREF>(cfg_app_ctrl_icon.get());
     a.ctrlSlider = static_cast<COLORREF>(cfg_app_ctrl_slider.get());
     a.ctrlText   = static_cast<COLORREF>(cfg_app_ctrl_text.get());
+
+    // 背景图（D-098）。四个数值都夹一下 —— 手改配置写个 999 进来的话，
+    // 模糊会跑到几十秒（半径越大越慢，而盒式的复杂度虽然与半径无关，
+    // 迭代次数乘上去仍然是实打实的开销），压暗过头会让图全黑。
+    a.bgImage = cfg_app_bg_image.get();
+    a.bgFit     = ClampInt(static_cast<int>(cfg_app_bg_fit.get()),     kBgFitMin,     kBgFitMax);
+    a.bgBlur    = ClampInt(static_cast<int>(cfg_app_bg_blur.get()),    kBgBlurMin,    kBgBlurMax);
+    a.bgDim     = ClampInt(static_cast<int>(cfg_app_bg_dim.get()),     kBgDimMin,     kBgDimMax);
+    a.bgOpacity = ClampInt(static_cast<int>(cfg_app_bg_opacity.get()), kBgOpacityMin, kBgOpacityMax);
     return a;
 }
 
@@ -118,6 +134,12 @@ void SetPanelAppearance(const PanelAppearance& a) {
     cfg_app_ctrl_icon   = static_cast<int64_t>(a.ctrlIcon);
     cfg_app_ctrl_slider = static_cast<int64_t>(a.ctrlSlider);
     cfg_app_ctrl_text   = static_cast<int64_t>(a.ctrlText);
+
+    cfg_app_bg_image   = a.bgImage.c_str();
+    cfg_app_bg_fit     = ClampInt(a.bgFit,     kBgFitMin,     kBgFitMax);
+    cfg_app_bg_blur    = ClampInt(a.bgBlur,    kBgBlurMin,    kBgBlurMax);
+    cfg_app_bg_dim     = ClampInt(a.bgDim,     kBgDimMin,     kBgDimMax);
+    cfg_app_bg_opacity = ClampInt(a.bgOpacity, kBgOpacityMin, kBgOpacityMax);
 }
 
 // ---------------------------------------------------------------------------

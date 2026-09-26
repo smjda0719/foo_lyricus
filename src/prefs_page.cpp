@@ -976,6 +976,12 @@ AppearancePreset CLyricusPrefsDlg::SnapshotAppearance(const std::wstring& name) 
     p.ctrlIcon   = m_edited.ctrlIcon;
     p.ctrlSlider = m_edited.ctrlSlider;
     p.ctrlText   = m_edited.ctrlText;
+    // 背景图（D-098）：也要进预设，否则"保存当前外观"会把用户挑的图丢掉
+    p.bgImage    = m_edited.bgImage;
+    p.bgFit      = m_edited.bgFit;
+    p.bgBlur     = m_edited.bgBlur;
+    p.bgDim      = m_edited.bgDim;
+    p.bgOpacity  = m_edited.bgOpacity;
     p.fontFace = m_editedFontFace;
     // 这两项不在本页上，从配置读当前值
     p.fontPct      = GetLyricDisplayConfig().fontPct;

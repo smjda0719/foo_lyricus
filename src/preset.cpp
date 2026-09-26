@@ -79,6 +79,13 @@ AppearancePreset ClampPreset(AppearancePreset p) {
     p.backdropMode = ClampInt(p.backdropMode, kPresetMinBackdrop, kPresetMaxBackdrop);
     // 手改配置写了个 7 之类的值进来，退回自动（安全的那一档）
     p.ctrlMode     = ClampInt(p.ctrlMode, kCtrlMin, kCtrlMax);
+
+    // 背景图参数。模糊和压暗都必须夹：写个 999 进来的话，
+    // 模糊会实打实地跑很久（迭代次数乘上整幅像素），压暗过头会让图全黑。
+    p.bgFit     = ClampInt(p.bgFit,     kBgFitMin,     kBgFitMax);
+    p.bgBlur    = ClampInt(p.bgBlur,    kBgBlurMin,    kBgBlurMax);
+    p.bgDim     = ClampInt(p.bgDim,     kBgDimMin,     kBgDimMax);
+    p.bgOpacity = ClampInt(p.bgOpacity, kBgOpacityMin, kBgOpacityMax);
     return p;
 }
 
@@ -227,6 +234,22 @@ std::string FormatPresets(const std::vector<AppearancePreset>& presets) {
             s += ";ctrlText=";   s += ColorToHex(p.ctrlText);
         }
 
+        // 背景图同样**只在真的设了图时才写**。没有图是常态，
+        // 每次都写五个 `bg*=0` 只是让文件变长；反过来读的时候
+        // 缺省就是"没有背景图"，于是老预设一个字都不用改。
+        if (!p.bgImage.empty()) {
+            // 路径里可能有分号（虽然罕见），换掉 —— 分号会截断字段
+            std::string img = p.bgImage;
+            for (char& c : img) {
+                if (c == ';' || c == '\n' || c == '\r') c = ' ';
+            }
+            s += ";bgImage=";   s += img;
+            s += ";bgFit=";     s += std::to_string(p.bgFit);
+            s += ";bgBlur=";    s += std::to_string(p.bgBlur);
+            s += ";bgDim=";     s += std::to_string(p.bgDim);
+            s += ";bgOpacity="; s += std::to_string(p.bgOpacity);
+        }
+
         s += '\n';
     }
     return s;
@@ -290,6 +313,13 @@ std::vector<AppearancePreset> ParsePresets(const std::string& text) {
             else if (k == "ctrlIcon")   HexToColor(v, p.ctrlIcon);
             else if (k == "ctrlSlider") HexToColor(v, p.ctrlSlider);
             else if (k == "ctrlText")   HexToColor(v, p.ctrlText);
+            // 背景图。缺省就是"没有背景图"，所以老预设天然兼容 ——
+            // 和"只在设了图时才写出去"是同一件事的两半。
+            else if (k == "bgImage")   p.bgImage   = v;
+            else if (k == "bgFit")     ParseInt(v, p.bgFit);
+            else if (k == "bgBlur")    ParseInt(v, p.bgBlur);
+            else if (k == "bgDim")     ParseInt(v, p.bgDim);
+            else if (k == "bgOpacity") ParseInt(v, p.bgOpacity);
             // 其它 key 忽略（见上面的说明）
         }
 

@@ -231,13 +231,30 @@ struct PanelAppearance {
     COLORREF ctrlSlider = RGB(206, 210, 220);  // 滑块填充
     COLORREF ctrlText   = RGB(190, 190, 198);  // 时间文字
 
+    // ---- 背景图（D-098）----
+    //
+    // 空路径 = 没有背景图，回到纯色底（也就是从前一直的行为）。
+    //
+    // ⚠️ 存的是**机器相关的绝对路径**，所以预设分享给别人之后这个字段
+    //    多半是无效的。刻意不做"把图片嵌进预设"那件事 —— 一张图几 MB，
+    //    塞进那个纯文本格式里会让预设文件完全没法看、也没法手工编辑。
+    //    读不到就当作"没有背景图"，并在日志里留一行原因。
+    std::string bgImage;
+    int bgFit     = 0;     // BgFit：0=填充 1=适应 2=拉伸 3=平铺
+    int bgBlur    = 0;     // 磨砂半径（96dpi 逻辑像素）0..40
+    int bgDim     = 0;     // 压暗 % 0..90 —— 保证歌词能读清
+    int bgOpacity = 100;   // 图片不透明度 % 0..100
+
     bool operator==(const PanelAppearance& o) const {
         return header == o.header && current == o.current && normal  == o.normal &&
                dim    == o.dim    && warn    == o.warn    && bg      == o.bg &&
                alpha  == o.alpha  &&
                ctrlMode   == o.ctrlMode   &&
                ctrlButton == o.ctrlButton && ctrlIcon   == o.ctrlIcon &&
-               ctrlSlider == o.ctrlSlider && ctrlText   == o.ctrlText;
+               ctrlSlider == o.ctrlSlider && ctrlText   == o.ctrlText &&
+               bgImage  == o.bgImage  && bgFit     == o.bgFit &&
+               bgBlur   == o.bgBlur   && bgDim     == o.bgDim &&
+               bgOpacity == o.bgOpacity;
     }
     bool operator!=(const PanelAppearance& o) const { return !(*this == o); }
 };

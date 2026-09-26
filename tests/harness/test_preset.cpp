@@ -49,6 +49,11 @@ using lyricus::kPresetMaxBackdrop;
 using lyricus::kCtrlAuto;
 using lyricus::kCtrlCustom;
 using lyricus::kCtrlMax;
+// 背景图参数的取值范围（D-098）—— 断言直接用实现那份常量，
+// 而不是再写一遍字面量：两处各写一份迟早不同步（这个坑踩过一次）。
+using lyricus::kBgFitMax;
+using lyricus::kBgBlurMax;
+using lyricus::kBgDimMax;
 
 // ---------------------------------------------------------------------------
 void TestBuiltins() {
@@ -439,6 +444,72 @@ void TestControlColors() {
     }
 }
 
+// ---------------------------------------------------------------------------
+void TestBackground() {
+    std::printf("\n== 背景图字段（D-098）==\n");
+
+    // 默认没有背景图 —— 也就是"回到纯色底"，和从前一直的行为一致
+    {
+        const AppearancePreset p;
+        Check(p.bgImage.empty(), "★ 默认没有背景图（空路径 = 纯色底）");
+        Check(p.bgFit == 0 && p.bgBlur == 0 && p.bgDim == 0 && p.bgOpacity == 100,
+              "★ 默认参数：填充 / 不模糊 / 不压暗 / 不透明 100%");
+    }
+
+    // 没设图时不写那 5 个字段 —— 没有图是常态，写一堆 bg*=0 只是让文件变长
+    {
+        AppearancePreset p;
+        p.name = L"没图";
+        const std::string line = ExportPreset(p);
+        Check(line.find("bgImage") == std::string::npos,
+              "★ 没设图的预设里不含 bg* 字段（没图是常态）");
+    }
+
+    // 设了图就往返
+    {
+        AppearancePreset p;
+        p.name      = L"带图";
+        p.bgImage   = "C:/pics/bg.jpg";
+        p.bgFit     = 1;
+        p.bgBlur    = 12;
+        p.bgDim     = 30;
+        p.bgOpacity = 80;
+
+        AppearancePreset back;
+        Check(ImportPreset(ExportPreset(p), back), "带图的预设能导出再导入");
+        Check(back.bgImage == p.bgImage, "★ 路径往返一致");
+        Check(back.bgFit == 1 && back.bgBlur == 12 &&
+              back.bgDim == 30 && back.bgOpacity == 80, "★ 四个参数往返一致");
+    }
+
+    // ★ 向前兼容：没有 bgImage 的老预设读进来 = 没有背景图
+    {
+        const auto v = ParsePresets("老预设\tbg=1C1C1E;current=FFFFFF\n");
+        Check(v.size() == 1 && v[0].bgImage.empty(),
+              "★ 老预设读进来没有背景图（向前兼容）");
+    }
+
+    // 夹取：模糊和压暗越界都会实打实地出问题（跑很久 / 图全黑）
+    {
+        const auto v = ParsePresets("A\tbgImage=x.jpg;bgBlur=9999;bgDim=9999;bgFit=99\n");
+        Check(v.size() == 1, "带越界参数的预设仍能解析");
+        Check(v[0].bgBlur == kBgBlurMax, "★ bgBlur 被夹到上限");
+        Check(v[0].bgDim  == kBgDimMax,  "★ bgDim 被夹到上限（不是全黑）");
+        Check(v[0].bgFit  == kBgFitMax,  "★ bgFit 被夹到上限");
+    }
+
+    // 路径里的分号会截断字段，导出时要被换掉
+    {
+        AppearancePreset p;
+        p.name    = L"怪路径";
+        p.bgImage = "C:/a;b/c.jpg";
+        AppearancePreset back;
+        Check(ImportPreset(ExportPreset(p), back), "含分号的路径不会让字段截断");
+        Check(back.bgImage.find(';') == std::string::npos,
+              "★ 路径里的分号被换掉了（否则后面的字段全丢）");
+    }
+}
+
 } // namespace
 
 int main() {
@@ -450,6 +521,7 @@ int main() {
     TestImportExport();
     TestMaxPresets();
     TestControlColors();
+    TestBackground();
     std::printf("\n----------------------------------------\n");
     std::printf("通过 %d，失败 %d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;

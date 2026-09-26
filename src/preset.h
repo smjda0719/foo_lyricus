@@ -2,6 +2,8 @@
 
 #include <windows.h>
 
+#include "bg_math.h"   // BgFit 的取值范围常量（kPresetClamp 要用）
+
 #include <string>
 #include <vector>
 
@@ -99,6 +101,21 @@ struct AppearancePreset {
     COLORREF ctrlIcon   = RGB(200, 200, 208);  // 图标（其它状态由它推）
     COLORREF ctrlSlider = RGB(206, 210, 220);  // 滑块**填充**（轨道由它推）
     COLORREF ctrlText   = RGB(190, 190, 198);  // 时间文字
+
+    // ---- 背景图（D-098）----
+    //
+    // 和 PanelAppearance 里的同名字段一一对应。空路径 = 没有背景图，
+    // 也就是回到纯色底（从前一直的行为），所以老预设天然兼容。
+    //
+    // ⚠️ 这是**机器相关的绝对路径**：预设分享给别人之后多半无效。
+    //    刻意不做"把图片嵌进预设"—— 一张图几 MB，塞进那个纯文本格式里
+    //    会让它彻底没法看、也没法手工编辑，而那个格式的全部价值就在于
+    //    "能打开看一眼、能手动改一行"。读不到图就当作没有背景图。
+    std::string bgImage;
+    int bgFit     = 0;     // BgFit：0=填充 1=适应 2=拉伸 3=平铺
+    int bgBlur    = 0;     // 磨砂半径（96dpi 逻辑像素）
+    int bgDim     = 0;     // 压暗 % —— 保证歌词能读清
+    int bgOpacity = 100;   // 图片不透明度 %
 };
 
 // 内置的几套。**顺序就是它们在下拉里的顺序**（第一套是「默认」）。
