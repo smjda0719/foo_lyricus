@@ -38,6 +38,13 @@ using lyricus::FindPreset;
 using lyricus::ExportPreset;
 using lyricus::ImportPreset;
 using lyricus::BuiltinPresets;
+// 区间常量和实现共用同一份 —— 见 preset.h 里那段说明
+using lyricus::kPresetMinAlpha;
+using lyricus::kPresetMaxAlpha;
+using lyricus::kPresetMinFontPct;
+using lyricus::kPresetMaxFontPct;
+using lyricus::kPresetMinBackdrop;
+using lyricus::kPresetMaxBackdrop;
 
 // ---------------------------------------------------------------------------
 void TestBuiltins() {
@@ -56,12 +63,16 @@ void TestBuiltins() {
 
     // ★ 每套都必须是**完整**的外观，不能"只覆盖几个字段"。
     //   否则切过去再切回来时，中间态会污染别的预设。
+    //
+    // ⚠️ 区间用 preset.h 里的常量，不写字面量 —— 这条断言想验的是
+    //    "字段合法"，不是"上限恰好是几"。写死 0..2 时，实现把上限改成 4
+    //    之后这条就红了，而它红得完全没有道理。
     int incomplete = 0;
     for (const auto& p : b) {
         if (p.name.empty()) ++incomplete;
-        if (p.alpha < 0 || p.alpha > 255) ++incomplete;
-        if (p.fontPct < 50 || p.fontPct > 300) ++incomplete;
-        if (p.backdropMode < 0 || p.backdropMode > 2) ++incomplete;
+        if (p.alpha < kPresetMinAlpha || p.alpha > kPresetMaxAlpha) ++incomplete;
+        if (p.fontPct < kPresetMinFontPct || p.fontPct > kPresetMaxFontPct) ++incomplete;
+        if (p.backdropMode < kPresetMinBackdrop || p.backdropMode > kPresetMaxBackdrop) ++incomplete;
     }
     Check(incomplete == 0, "★ 每套都是完整的外观（不依赖当前配置，切换不会互相污染）");
 
@@ -72,7 +83,7 @@ void TestBuiltins() {
         Check(hc->alpha == 255,
               "★ 高对比：alpha = 255（半透明会透出后面的内容，正好毁掉对比度）");
         Check(hc->backdropMode == 0,
-              "★ 高对比：通透度也选「不透明」—— 同上，这一套的全部意义就是对比度");
+              "★ 高对比：通透度选 None(0) 自绘不透明 —— 同上，这一套的全部意义就是对比度");
         Check(hc->fontPct > 100,
               "★ 高对比：字号大于 100%（选它的人本来就是要\"更容易看清\"）");
         Check(GetRValue(hc->bg) < 20 && GetGValue(hc->bg) < 20 && GetBValue(hc->bg) < 20,
@@ -165,7 +176,26 @@ void TestParseTolerance() {
         const auto v = ParsePresets("A\talpha=999;fontPct=1;backdrop=9\n");
         Check(v.size() == 1 && v[0].alpha == 255,    "★ alpha 越界被夹到 255");
         Check(v.size() == 1 && v[0].fontPct == 50,   "★ fontPct 越界被夹到 50");
-        Check(v.size() == 1 && v[0].backdropMode == 2, "★ backdrop 越界被夹到 2");
+        Check(v.size() == 1 && v[0].backdropMode == 4, "★ backdrop 越界被夹到 4（不是 2）");
+    }
+
+    // ★ 这一组是**踩过坑之后加的**：preset.h 最初照着想当然的顺序把 backdropMode
+    //   注释成 "0=不透明 1=毛玻璃 2=半透明"、默认值和夹取上限都取了 2。
+    //   而 config.h 里实际有 **5** 个值且顺序不同：
+    //     0=None 1=Mica 2=Acrylic 3=MicaAlt 4=Translucent
+    //   后果是出厂那套「半透明」(4) 一存一读就被夹成「毛玻璃」(2)。
+    {
+        const AppearancePreset d;            // 默认构造 = 出厂值
+        Check(d.backdropMode == 4,
+              "★ 默认预设的 backdropMode = 4（Translucent，和 cfg_backdrop_mode 的出厂默认一致）");
+
+        const auto v = ParsePresets("A\tbackdrop=4\n");
+        Check(v.size() == 1 && v[0].backdropMode == 4,
+              "★ 合法的 4 不会被夹掉（夹取范围是 0..4）");
+
+        const auto v3 = ParsePresets("A\tbackdrop=3\n");
+        Check(v3.size() == 1 && v3[0].backdropMode == 3,
+              "★ 合法的 3（MicaAlt）也保留 —— 范围错成 0..2 时它会变成 2");
     }
 
     // 名字里的 TAB 会把表撑坏 —— 它本来就分割不开，直接跳过整行
