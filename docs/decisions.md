@@ -262,12 +262,32 @@ LanguageStandard            = stdcpp20
   - 加 `CC_RGBINIT` 让当前色作为初始值；
   - **保留**原有的「模态期间页面可能被销毁」防护（`service_ptr_t self` + `::IsWindow`）——
     这一条与本次崩溃无关，但它防的是另一类真实风险，不能顺手删掉。
-- **⚠️ 诚实标注**：这是**基于证据链的推断，不是实测确证的根因**。
-  判定方式：让用户再点一次颜色。为便于分辨，这次加了两条日志 ——
+- **✅ 根因已确证**（不再是推断）。WTL 的 `CStaticDataInitCriticalSectionLock`
+  （定义在 `3rdparty/WTL/Include/atlapp.h:1368`）在**构造函数里直接解引用**：
+
+      CStaticDataInitCriticalSectionLock()
+          : m_cslock(ATL::_pAtlModule->m_csStaticDataInitAndTypeInfo, false)
+      { }
+
+  **没有任何空指针检查。** `CComCritSecLock` 的构造只是 `m_pCS = &cs`，
+  于是 `&(NULL->m_csStaticDataInitAndTypeInfo)` 就等于**该成员在 CAtlModule 里的偏移**；
+  随后 `Lock()` 调 `m_pCS->Lock()` → `EnterCriticalSection(那个偏移)`。
+  `atlbase.h` 里 `CAtlModule` 的成员顺序是 `LONG m_nLockCnt`（行 517）紧跟着
+  `CComCriticalSection m_csStaticDataInitAndTypeInfo`（行 519）—— 偏移正好落在
+  **0x18**，与崩溃报告的 `RCX = 0x18`、`address: 0x20`（0x18 + 8）完全吻合。
+  路径上的 `ATLASSERT(m_pCS != NULL)` 在 Release 构建里是空的，于是直接崩。
+- **✅ 残留风险也排查过了**：全工程 grep，除 `CColorDialog` 之外，
+  `CDwm` / `CTheme` / `CCommandBarCtrlBase` / `CDragListBoxT` / `CWizard97SheetWindow`
+  也走同一个锁 —— **这些类我们一个都没用**。所以移除 `CColorDialog` 之后，
+  这条路径在本组件里彻底消失。
+- **用于分辨的两条日志**（无论本次是否修好都留着）：
   `首选项页：取色被取消` 与 `首选项页：取色 -> #RRGGBB`。
-  若仍崩且**两条日志都没出现**，说明崩在进入取色之前（那是另一条路径，得重新查）；
-  若出现了其中一条还崩，则崩在取色**之后**的 `SyncControls` / `NotifyChanged`，
-  方向立刻收窄。
+  若将来仍崩，它们能立刻区分"崩在取色之前"还是"取色之后"。
+- **⚠️ 一次真实的误判记录**：中途我曾用"两条日志一条都没出现"判定"崩在进入取色之前"，
+  但那是错的 —— 那次崩溃跑的是**加日志之前**的构建（进程 13:20:36 启动，
+  而带日志的 DLL 13:21:21 才装上）。**用"某个日志没出现"来推断时要先确认
+  那个日志所在的构建确实在跑。** 这也解释了为什么"改完还是崩"：
+  那次测的根本不是修复版。
 - **顺带**：诊断过程中排除了一个我自己担心的可能 —— `COMMAND_RANGE_HANDLER_EX`
   用的是 `[IDC_BTN_HEADER(1001), IDC_BTN_BG(1006)]` 这个**闭区间范围**，
   如果新加的控件 ID 落进去就会被误捕获。D-068 新加的 1214/1215 不在其中，无冲突。
