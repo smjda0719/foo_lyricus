@@ -656,6 +656,18 @@ void CLyricusPrefsDlg::OnPresetCombo() {
     const PrefsLayout L = CurrentLayout();
     POINT pt{ L.presetCombo.left, L.presetCombo.bottom };
 
+    // ★ 必须转到**屏幕坐标**再交给 TrackPopupMenu。
+    //
+    // 布局是按**客户区**算的（和绘制同一套坐标），而 TrackPopupMenu 收的是
+    // 屏幕坐标 —— 直接把客户区坐标递过去，菜单会弹到屏幕的另一个位置去
+    //（对话框离屏幕原点越远，偏得越离谱）。绘制那边不需要这一步，
+    // 所以这个错很容易漏：**同一对坐标，两个 API 要的口径不一样**。
+    // ⚠️ 这里必须写 `::` —— 和 MessageBoxW / SetWindowTextW 是同一个坑：
+    //    CDialogImpl -> CWindow 有一大批和 Win32 API **同名**的成员函数，
+    //    不加 `::` 时编译器优先选成员版。这次参数个数对不上所以报错了，
+    //    但**参数个数恰好相同的那些会静默选错**，那才危险。
+    ::ClientToScreen(m_hWnd, &pt);
+
     const UINT cmd = TrackPopupMenu(menu,
                                     TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN,
                                     pt.x, pt.y, 0, m_hWnd, nullptr);
