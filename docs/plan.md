@@ -30,6 +30,21 @@ DUI element + CUI panel 双支持，用 `uie_shim_panel` 思路一个实现出�
 
 ---
 
+## 工具
+
+| 脚本 | 用途 |
+|---|---|
+| `tools/watch-install.ps1` | 守候 `bin\x64\Release\foo_lyricus.dll`，一变就热安装 + 重启播放器 |
+| `tools/capture-ui.ps1` | **视觉验证**：找窗口 + 截图。`-List` 看有哪些界面、`-Target` 选抓哪个、`-Restart` 先重启 |
+
+`capture-ui.ps1`（D-080）的由来：Lyricus 有五个界面 —— 浮动面板、DUI 元素、
+CUI 面板、首选项页、色环取色器 —— **全部只在真机上，离屏单测覆盖不到**。
+在此之前每次要看效果都得临时敲一遍命令，而那几个坑（截屏被遮挡、
+DPI 虚拟化坐标、副屏负坐标、`FindWindowEx` 的 `$null`）每看一次就重踩一次。
+现在固定下来，并且把踩过的坑写进了脚本注释里。
+
+---
+
 ## 里程碑
 
 | # | 目标 | 验收标准 |
