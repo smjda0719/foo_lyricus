@@ -328,6 +328,28 @@ const BgBitmap* GetPanelBackground(const std::wstring& path,
         return nullptr;
     }
 
+    // ---- 模糊 + 压暗：在**图自己的缓冲**上做（D-105）----
+    //
+    // ⚠️ 顺序很重要：这两步必须在 BlitInto **之前**、作用在 pixels 上。
+    //
+    //    它们原本作用在**目标缓冲**上，基址算成
+    //        bmp.bgra.data() + (offY * dstW + offX) * 4
+    //    而 offX/offY **可以是负数** —— 手动构图把图移出区域时就是这样
+    //    （实测日志里出现过 off=(0,-387)）。`static_cast<size_t>(负数) * dstW`
+    //    会绕成一个巨大的值，基址于是指到缓冲**之前**，模糊一扫就是访问违例。
+    //
+    //    在图自己的坐标里做，这两个偏移根本不出现在这里 ——
+    //    那类错误从源头消失，而不是靠"记得判一下 offY >= 0"。
+    //
+    //    顺带还解决了一个观感问题：整幅图都参与模糊（包括之后会被裁掉的部分），
+    //    边缘不会因为"只模糊可见区"而在接缝处出现色差。
+    if (blurPx > 0) {
+        BoxBlurBgra(pixels.data(), drawW, drawH, blurPx);
+    }
+    if (dimPct != 0 || opacityPct != 100) {
+        ApplyDimAndOpacity(pixels.data(), drawW, drawH, dimPct, opacityPct);
+    }
+
     // ---- 铺到目标尺寸的缓冲里 ----
     //
     // 输出缓冲**等于目标区域大小**（不是图的大小）：图和透明区都摆好，
@@ -342,7 +364,7 @@ const BgBitmap* GetPanelBackground(const std::wstring& path,
     const int offY = place.tile ? 0 : place.dst.top;
 
     // ⚠️ 这一行是 D-105 那次崩溃的**取证点**。
-    //    崩在 BlitInto 里读越界，但崩溃报告连着两次只有几字节（二次崩溃）、
+    //    崩在模糊那一步读越界，但崩溃报告连着几次只有几字节（二次崩溃）、
     //    拿不到局部变量 —— 所以把实际数值打出来：
     //    下一次真出问题，日志里直接能看到是哪个尺寸/偏移不对。
     //    只在参数变化（也就是真的重算）时记一行，不会刷屏。
@@ -351,41 +373,6 @@ const BgBitmap* GetPanelBackground(const std::wstring& path,
              place.tile ? 1 : 0, static_cast<int>(fit));
 
     BlitInto(bmp.bgra, dstW, dstH, pixels.data(), drawW, drawH, offX, offY, place.tile);
-
-    // ---- 模糊 ----
-    //
-    // ⚠️ 只在**图占的那块**上模糊，不模糊整个缓冲。
-    //    整块模糊的话，Contain 留下的透明区（RGB 全 0）会被卷进来，
-    //    图片四周糊出一圈暗晕 —— 那看起来像"图有黑边"。
-    //    传子矩形指针即可：BoxBlurBgra 内部所有索引都夹在它自己的 w/h 内，
-    //    不会读到区域外面去。
-    if (blurPx > 0) {
-        const int bw = place.tile ? dstW : drawW;
-        const int bh = place.tile ? dstH : drawH;
-        unsigned char* base = bmp.bgra.data() +
-                              (static_cast<size_t>(offY) * dstW + offX) * 4;
-        BoxBlurBgra(base, bw, bh, blurPx);
-    }
-
-    // ---- 压暗 + 不透明度 ----
-    // 同样只作用在图占的那块上：透明区改不改都看不见，
-    // 但少扫一遍就是少几百万次乘法。
-    if (dimPct != 0 || opacityPct != 100) {
-        const int bw = place.tile ? dstW : drawW;
-        const int bh = place.tile ? dstH : drawH;
-        unsigned char* base = bmp.bgra.data() +
-                              (static_cast<size_t>(offY) * dstW + offX) * 4;
-        // ApplyDimAndOpacity 按行连续处理，所以这里要逐行走（缓冲的
-        // stride 是 dstW，而图可能只占其中一段）。
-        if (bw == dstW) {
-            ApplyDimAndOpacity(base, bw, bh, dimPct, opacityPct);
-        } else {
-            for (int y = 0; y < bh; ++y) {
-                ApplyDimAndOpacity(base + static_cast<size_t>(y) * dstW * 4, bw, 1,
-                                   dimPct, opacityPct);
-            }
-        }
-    }
 
     if (!bmp.valid()) {
         g_lastError = L"结果缓冲非法";
