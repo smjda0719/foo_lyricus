@@ -1156,6 +1156,19 @@ void CLyricusPrefsDlg::DrawBgPreview(HDC dc, const PrefsLayout& L) {
     // 底板先铺：有图时它会从圆角的四个角露出来，看着像"图嵌在里面"
     FillRoundRect(dc, L.bgPreview, rad, T.cardBg);
 
+    // ⚠️ 从图开始**裁剪到预览框内**（D-110）。
+    //
+    // 图放大之后会超出框（那是正常的，用户就是想让局部更大），
+    // 但四角手柄是贴在**图的角**上的 —— 图一出框，手柄就跑到框外
+    // 压在其他控件上，看着像画错了。
+    //
+    // 裁剪之后超出部分自然消失，而**部分落在框内**的手柄仍然看得见、
+    // 也仍然拖得到（命中测试不裁剪）—— 用户不会因为"图比框大"
+    // 就完全失去缩小的入口。
+    const int savedDC = ::SaveDC(dc);
+    ::IntersectClipRect(dc, L.bgPreview.left, L.bgPreview.top,
+                        L.bgPreview.right, L.bgPreview.bottom);
+
     auto centered = [&](const wchar_t* msg) {
         DrawTextIn(dc, L.bgPreview, msg, T.textDim, m_fontBody,
                    DT_CENTER | DT_VCENTER | DT_WORDBREAK | DT_NOPREFIX);
@@ -1197,6 +1210,13 @@ void CLyricusPrefsDlg::DrawBgPreview(HDC dc, const PrefsLayout& L) {
     // 边框画在最后（先画会被图盖住）
     StrokeRoundRect(dc, L.bgPreview, rad, 1, T.border);
 
+    // 裁剪到此为止 —— 下面要画手柄，但手柄也得跟着裁
+    //（图超出框时它们在框外，正是要裁掉的那部分）。
+    ::RestoreDC(dc, savedDC);
+    const int savedDC2 = ::SaveDC(dc);
+    ::IntersectClipRect(dc, L.bgPreview.left, L.bgPreview.top,
+                        L.bgPreview.right, L.bgPreview.bottom);
+
     // 四角手柄（D-107 / D-108）。**贴在图片的四角上**，不是预览框的四角。
     //
     // 【为什么要贴图】用户拖的是"这张图的角"。贴框的话，图没铺满时
@@ -1217,6 +1237,7 @@ void CLyricusPrefsDlg::DrawBgPreview(HDC dc, const PrefsLayout& L) {
             StrokeRoundRect(dc, h, hRad, MulDiv(1, dpi, 96), RGB(70, 70, 75));
         }
     }
+    ::RestoreDC(dc, savedDC2);
 
     if (!empty(L.bgPreviewHint)) {
         // 提示里带上**当前缩放百分比**（D-107）。
