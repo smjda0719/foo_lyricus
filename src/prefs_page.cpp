@@ -340,8 +340,7 @@ private:
     // 每帧用上一帧的结果递推 —— 递推会把取整误差累积起来，
     // 拖久了图会明显跑偏。
     CPoint m_dragAnchor{};        // 对角手柄的位置（客户区坐标）
-    CPoint m_dragStartPt{};       // 按下时鼠标的位置
-    double m_dragStartDist = 0.0; // 按下时鼠标到锚点的距离（保底用）
+    CPoint m_dragStartPt{};       // 按下时鼠标的位置（算曼哈顿距离比的基准）
     int    m_dragStartZoom   = 100;
     int    m_dragStartOffX   = 0; // 按下时的 offset
     int    m_dragStartOffY   = 0;
@@ -1345,45 +1344,36 @@ void CLyricusPrefsDlg::BeginBgHandleDrag(int hit, CPoint pt, const PrefsLayout& 
     m_dragStartOffX = m.offsetXPct;
     m_dragStartOffY = m.offsetYPct;
     m_dragStartPt   = pt;
-
-    const double dx = pt.x - m_dragAnchor.x;
-    const double dy = pt.y - m_dragAnchor.y;
-    m_dragStartDist = std::sqrt(dx * dx + dy * dy);
-
-    // 起点距离太小时比例会炸。放开缩放下限（D-114）之后图可以被缩得很小，
-    // 四个手柄都靠近中心，这个下限就不再是防御性的摆设了。
-    if (m_dragStartDist < 8.0) m_dragStartDist = 8.0;
 }
 
 void CLyricusPrefsDlg::OnBgHandleDrag(CPoint pt) {
-    if (m_dragHandle == kHitNone || m_dragStartDist <= 0.0) return;
+    if (m_dragHandle == kHitNone) return;
 
-    // ★ 比例按**分量**算，不按欧氏距离（D-116）。
+    // ★ 用**曼哈顿距离**（L1）的比例（D-117）。
     //
-    // 【为什么】用距离的话只有**沿对角线**拖才灵敏：用户横向拖了半天、
-    //    纵向没动，到锚点的距离只变了一点点，图几乎没反应 ——
+    // 【为什么不用欧氏距离】只有沿对角线拖才灵敏：用户横向拖了半天、
+    //    纵向没动，到锚点的欧氏距离只变一点点，图几乎没反应 ——
     //    感觉就是"缩放不跟手"。
-    //    按分量算则无论往哪个方向拖都有响应。
     //
-    // 【为什么取两个分量里较大的那个】四个角朝向不同（右下角的"外"是
-    //    +x+y，左上角是 -x-y），固定用某个分量的话有的角灵敏、有的角迟钝。
-    //    取 max 则四个角一致：**谁拖得多听谁的**。
-    const double d0x = std::abs(static_cast<double>(m_dragStartPt.x - m_dragAnchor.x));
-    const double d0y = std::abs(static_cast<double>(m_dragStartPt.y - m_dragAnchor.y));
-    const double d1x = std::abs(static_cast<double>(pt.x - m_dragAnchor.x));
-    const double d1y = std::abs(static_cast<double>(pt.y - m_dragAnchor.y));
+    // 【为什么不用"两个分量比例取 max"（我上一版的做法）】
+    //    max 只让**变化最大**的那个分量起作用，另一个被**完全忽略**：
+    //      · "横向放大两倍、同时纵向往回收" -> 纵向那部分白做了；
+    //      · 纵向不动时 ry 恒为 1，还会把结果**卡在 >= 1** ——
+    //        只横向拖就永远缩不小。
+    //
+    // 【曼哈顿为什么对】|dx| + |dy| 把两个方向**加起来**：
+    //   哪个方向拖都有响应、两个方向同时拖效果叠加、而且是**单调**的
+    //  （拖得越远越大、收得越近越小），不会出现"某个方向不动就把比例锁住"。
+    //
+    //  代价是"斜着拖"比"正着拖"灵敏（对角线方向同样的位移会同时计入两轴）——
+    //  但那在各向同性的意义上是自洽的：鼠标走了多少路，图就变多少。
+    const double m0 = std::abs(static_cast<double>(m_dragStartPt.x - m_dragAnchor.x)) +
+                      std::abs(static_cast<double>(m_dragStartPt.y - m_dragAnchor.y));
+    const double m1 = std::abs(static_cast<double>(pt.x - m_dragAnchor.x)) +
+                      std::abs(static_cast<double>(pt.y - m_dragAnchor.y));
 
-    // 某个分量起点就贴着锚点（< 1 像素）时那个分量没有意义，跳过它
-    const double rx = (d0x > 1.0) ? (d1x / d0x) : 0.0;
-    const double ry = (d0y > 1.0) ? (d1y / d0y) : 0.0;
-    double ratio = (rx > ry) ? rx : ry;
-
-    // 两个分量都没法用（鼠标正压在锚点上）-> 退回距离比，至少不会除零
-    if (ratio <= 0.0) {
-        const double dx = pt.x - m_dragAnchor.x;
-        const double dy = pt.y - m_dragAnchor.y;
-        ratio = std::sqrt(dx * dx + dy * dy) / m_dragStartDist;
-    }
+    // 起点压在锚点上时 m0 接近 0，比例会炸 —— 那时保持原样（ratio=1）
+    const double ratio = (m0 > 1.0) ? (m1 / m0) : 1.0;
 
     BgManual m = CurrentManual();
     m.zoomPct = static_cast<int>(std::lround(m_dragStartZoom * ratio));
