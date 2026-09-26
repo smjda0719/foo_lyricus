@@ -109,6 +109,8 @@ constexpr int kHitBgFit     = -13;   // 适配方式（点击循环，不是下�
 constexpr int kHitBgOpacity = -14;   // 下面三个是滑块
 constexpr int kHitBgBlur    = -15;
 constexpr int kHitBgDim     = -16;
+// 预览区（D-103）
+constexpr int kHitBgPreview = -17;
 
 // 控件基色块用**独立的索引区**，不和上面那 6 个配色色块（0..5）混。
 // 混在一起的话 HitTest 的 `hit < kPrefsColorCount` 判断会把它们误当成配色色块，
@@ -260,6 +262,17 @@ private:
     void DrawBgArea(HDC dc, const PrefsLayout& L);
     void OnBgPick();   // 「选择图片…」
 
+    // ---- 背景图手动构图（D-103）----
+    void DrawBgPreview(HDC dc, const PrefsLayout& L);
+    // 当前的手动构图参数（已夹取）
+    BgManual CurrentManual() const;
+    // 拖动预览：dx/dy 是本次鼠标位移（像素）
+    void OnBgPreviewDrag(int dx, int dy);
+    // 滚轮缩放。delta > 0 = 放大
+    void OnBgPreviewZoom(int delta);
+    // 切到"手动"适配模式（拖动/缩放时自动调）
+    void EnsureManualFit();
+
     // 弹一个模态取色器。
     //
     // ⚠️ 模态对话框会泵消息，期间**首选项窗口可能被关掉、页面随之被释放**。
@@ -293,6 +306,10 @@ private:
     // 是因为现在有四个滑块；布尔的话每加一个就要多一个标志，
     // 而漏掉"松开时清哪一个"就是滑块粘住鼠标。
     int  m_dragSlider = kHitNone;
+    // 正在拖预览里的图（D-103）。和 m_dragSlider 分开：预览拖的是"图的位置"，
+    // 滑块拖的是"某个参数的值"，两者的位移语义完全不同。
+    bool m_dragPreview = false;
+    CPoint m_dragPreviewLast{};
     bool m_tracking  = false;      // 已登记 TME_LEAVE
 
     // 字体按 dpi 建一次就够（对话框存续期间不会变 dpi）
@@ -432,7 +449,16 @@ void CLyricusPrefsDlg::OnVScroll(UINT nSBCode, UINT nPos, CScrollBar) {
     ScrollTo(target);
 }
 
-BOOL CLyricusPrefsDlg::OnMouseWheel(UINT, short zDelta, CPoint) {
+BOOL CLyricusPrefsDlg::OnMouseWheel(UINT, short zDelta, CPoint pt) {
+    // 鼠标在预览区上 -> 缩放构图，**不滚动页面**。
+    //
+    // ⚠️ 必须判位置：不判的话用户在预览上滚一下就同时缩放了图、又滚了页面，
+    //    而页面一动预览就跑掉了 —— 想微调的人会一直对不准。
+    if (!m_edited.bgImage.empty() && HitTest(pt) == kHitBgPreview) {
+        OnBgPreviewZoom(zDelta);
+        return TRUE;
+    }
+
     // 一格滚轮 = 3 行，和系统别的滚动面板一致
     const int dpi = static_cast<int>(GetDpiForWindowSafe(m_hWnd));
     const int step = MulDiv(24 * 3, (dpi > 0) ? dpi : 96, 96);
@@ -488,6 +514,7 @@ int CLyricusPrefsDlg::HitTest(POINT pt) const {
     if (inside(L.bgOpacitySlider)) return kHitBgOpacity;
     if (inside(L.bgBlurSlider))    return kHitBgBlur;
     if (inside(L.bgDimSlider))     return kHitBgDim;
+    if (inside(L.bgPreview))       return kHitBgPreview;
     // ---- 控件配色（D-093）----
     if (inside(L.ctrlModeBtn))  return kHitCtrlMode;
     for (int i = 0; i < kPrefsCtrlColorCount; ++i) {
@@ -646,6 +673,7 @@ void CLyricusPrefsDlg::DrawPage(HDC dc, const RECT& rc, const PrefsLayout& L,
     if (!empty(L.fontBtn)) DrawFontButton(dc, L.fontBtn);
     DrawPresetArea(dc, L);
     DrawBgArea(dc, L);
+    DrawBgPreview(dc, L);
     DrawCtrlColorArea(dc, L);
 }
 
@@ -1002,6 +1030,155 @@ void CLyricusPrefsDlg::OnBgPick() {
     NotifyChanged();
 }
 
+BgManual CLyricusPrefsDlg::CurrentManual() const {
+    BgManual m;
+    m.zoomPct    = m_edited.bgZoomPct;
+    m.offsetXPct = m_edited.bgOffsetXPct;
+    m.offsetYPct = m_edited.bgOffsetYPct;
+    return ClampBgManual(m);
+}
+
+void CLyricusPrefsDlg::EnsureManualFit() {
+    if (m_edited.bgFit == static_cast<int>(BgFit::Manual)) return;
+    // 用户一动手就切到"手动" —— 否则他拖了半天、画面却在按 Cover 重算，
+    // 根本看不出拖动有效果。切换本身是无损的：手动参数默认就是
+    // "铺满 + 居中"，也就是 Cover 的样子。
+    m_edited.bgFit = static_cast<int>(BgFit::Manual);
+    DebugLog("背景图：用户手动调整构图 -> 切到「手动」适配");
+}
+
+// 预览区（D-103）。
+void CLyricusPrefsDlg::DrawBgPreview(HDC dc, const PrefsLayout& L) {
+    if (empty(L.bgPreview)) return;
+
+    const PrefsTheme& T = CurrentTheme();
+    const int dpi = static_cast<int>(GetDpiForWindowSafe(m_hWnd));
+    const int rad = MulDiv(6, dpi, 96);
+    const int w = L.bgPreview.right - L.bgPreview.left;
+    const int h = L.bgPreview.bottom - L.bgPreview.top;
+    if (w <= 0 || h <= 0) return;
+
+    // 底板先铺：有图时它会从圆角的四个角露出来，看着像"图嵌在里面"
+    FillRoundRect(dc, L.bgPreview, rad, T.cardBg);
+
+    auto centered = [&](const wchar_t* msg) {
+        DrawTextIn(dc, L.bgPreview, msg, T.textDim, m_fontBody,
+                   DT_CENTER | DT_VCENTER | DT_WORDBREAK | DT_NOPREFIX);
+    };
+
+    const bool manual = (m_edited.bgFit == static_cast<int>(BgFit::Manual));
+
+    if (m_edited.bgImage.empty()) {
+        centered(L"选了图片之后，在这里拖动调整");
+    } else {
+        // ⚠️ 用**预览区的尺寸**取图，不是面板的 —— bg_image 有两个缓存槽，
+        //    所以这两个尺寸不会互相挤掉。（只有一条缓存时它们会交替重算，
+        //    表现为"一边好好的、另一边每帧卡"。）
+        const int blurPx = MulDiv(m_edited.bgBlur, dpi, 96);
+        const BgBitmap* bmp = GetPanelBackground(
+            Utf8ToWide(m_edited.bgImage.c_str()), w, h,
+            static_cast<BgFit>(m_edited.bgFit), CurrentManual(),
+            blurPx, m_edited.bgDim, m_edited.bgOpacity);
+
+        if (bmp == nullptr) {
+            // 读不到就**如实说**，而不是画一块空白 —— 后者看起来像"没设图"，
+            // 用户会去重新选一遍，而问题其实出在文件本身。
+            centered(L"读不到这张图（文件被移走、或格式不支持）");
+        } else {
+            BITMAPINFO bi{};
+            bi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
+            bi.bmiHeader.biWidth       = bmp->width;
+            bi.bmiHeader.biHeight      = -bmp->height;   // 负 = 自上而下，否则上下颠倒
+            bi.bmiHeader.biPlanes      = 1;
+            bi.bmiHeader.biBitCount    = 32;
+            bi.bmiHeader.biCompression = BI_RGB;
+            ::StretchDIBits(dc, L.bgPreview.left, L.bgPreview.top, w, h,
+                            0, 0, bmp->width, bmp->height,
+                            bmp->bgra.data(), &bi, DIB_RGB_COLORS, SRCCOPY);
+        }
+    }
+
+    // 边框画在最后（先画会被图盖住）
+    StrokeRoundRect(dc, L.bgPreview, rad, 1, T.border);
+
+    if (!empty(L.bgPreviewHint)) {
+        const wchar_t* hint = m_edited.bgImage.empty()
+            ? L""
+            : (manual ? L"拖动移动 · 滚轮缩放"
+                      : L"拖动或滚轮会自动切成「手动」适配");
+        DrawTextIn(dc, L.bgPreviewHint, hint, T.textDim, m_fontSmall,
+                   DT_CENTER | DT_TOP | DT_SINGLELINE);
+    }
+}
+
+void CLyricusPrefsDlg::OnBgPreviewDrag(int dx, int dy) {
+    if (m_edited.bgImage.empty()) return;
+
+    // ⚠️ 用 BgManualRange 算"可移动范围" —— 它和 ComputeBgPlacement 共用同一份，
+    //    所以预览里拖到底和面板里拖到底是**同一个位置**。
+    //    自己拍一个"拖 N 像素 = 偏移 M%"的话两边会走不一样的距离，
+    //    而那种不一致在只看着一边的时候发现不了。
+    int imgW = 0, imgH = 0;
+    if (!GetBgImageSize(Utf8ToWide(m_edited.bgImage.c_str()), imgW, imgH)) return;
+
+    const PrefsLayout L = CurrentLayout();
+    const int pw = L.bgPreview.right - L.bgPreview.left;
+    const int ph = L.bgPreview.bottom - L.bgPreview.top;
+    if (pw <= 0 || ph <= 0) return;
+
+    BgManual m = CurrentManual();
+    int rangeX = 0, rangeY = 0;
+    BgManualRange(imgW, imgH, pw, ph, m, rangeX, rangeY);
+
+    // 符号：dstX = -rangeX - rangeX*offset/100，所以**往右拖（dx>0）要让
+    // offset 变小**（图往右移）。写反的话拖动方向是反的，
+    // 而那用起来像"鼠标抓不住图"。
+    if (rangeX > 0) {
+        m.offsetXPct -= static_cast<int>(
+                            static_cast<long long>(dx) * 100 / rangeX);
+    }
+    if (rangeY > 0) {
+        m.offsetYPct -= static_cast<int>(
+                            static_cast<long long>(dy) * 100 / rangeY);
+    }
+
+    const BgManual c = ClampBgManual(m);
+    if (c.offsetXPct == m_edited.bgOffsetXPct && c.offsetYPct == m_edited.bgOffsetYPct) {
+        return;   // 已经贴边了，不用重绘
+    }
+    m_edited.bgOffsetXPct = c.offsetXPct;
+    m_edited.bgOffsetYPct = c.offsetYPct;
+    NotifyChanged();
+    Repaint();
+}
+
+void CLyricusPrefsDlg::OnBgPreviewZoom(int delta) {
+    if (m_edited.bgImage.empty() || delta == 0) return;
+
+    BgManual m = CurrentManual();
+    // 每格 10%。用乘除而不是加减是为了"从 100 到 400 感觉一样快" ——
+    // 加减的话在 100% 附近一格跳得很明显，到 400% 附近就几乎不动了。
+    const int step = (delta > 0) ? 10 : -10;
+    m.zoomPct += step;
+
+    const BgManual c = ClampBgManual(m);
+    if (c.zoomPct == m_edited.bgZoomPct) return;   // 已经到上下限
+
+    EnsureManualFit();
+    m_edited.bgZoomPct = c.zoomPct;
+    // ⚠️ 缩放会让"可移动范围"变大，原来的偏移可能已经越界；
+    //    当场夹一次，否则图会在一瞬间被画到区域外（露出一条底色边）。
+    //    下一次拖动也会经过 ClampBgManual，但那一帧已经画出去了。
+    {
+        BgManual m2 = CurrentManual();
+        const BgManual c2 = ClampBgManual(m2);
+        m_edited.bgOffsetXPct = c2.offsetXPct;
+        m_edited.bgOffsetYPct = c2.offsetYPct;
+    }
+    NotifyChanged();
+    Repaint();
+}
+
 void CLyricusPrefsDlg::DrawPresetArea(HDC dc, const PrefsLayout& L) {
     if (empty(L.titlePreset) && empty(L.presetCombo)) return;   // 整体降级了
 
@@ -1056,6 +1233,16 @@ void CLyricusPrefsDlg::DrawPresetArea(HDC dc, const PrefsLayout& L) {
 // ---------------------------------------------------------------------------
 
 void CLyricusPrefsDlg::OnMouseMove(UINT /*flags*/, CPoint pt) {
+    // 拖动预览里的图：按**本次位移**算，不是按"鼠标到哪" ——
+    // 后者会在按下的一瞬间把图跳到鼠标位置（那看着像图"弹"了一下）。
+    if (m_dragPreview) {
+        const int dx = pt.x - m_dragPreviewLast.x;
+        const int dy = pt.y - m_dragPreviewLast.y;
+        m_dragPreviewLast = pt;
+        if (dx != 0 || dy != 0) OnBgPreviewDrag(dx, dy);
+        return;
+    }
+
     // 拖动中：直接把 x 喂给那个滑块。注意是**按记录下来的那个 hit**，
     // 不是重新命中测试 —— 拖出滑块范围（甚至拖到窗口外）时仍然要跟着走，
     // 那正是滑块该有的行为。
@@ -1090,6 +1277,13 @@ void CLyricusPrefsDlg::OnLButtonDown(UINT /*flags*/, CPoint pt) {
     m_active = hit;
     ::SetCapture(m_hWnd);
 
+    // 预览区：开始拖动构图（D-103）
+    if (hit == kHitBgPreview && !m_edited.bgImage.empty()) {
+        m_dragPreview     = true;
+        m_dragPreviewLast = pt;
+        EnsureManualFit();
+    }
+
     // 四个滑块都用同一个起点处理：点哪儿跳到哪儿，而不是只响应拖动。
     if (hit == kHitSlider || hit == kHitBgOpacity || hit == kHitBgBlur || hit == kHitBgDim) {
         m_dragSlider = hit;
@@ -1102,10 +1296,11 @@ void CLyricusPrefsDlg::OnLButtonUp(UINT /*flags*/, CPoint pt) {
     const int hit  = m_active;
     // 松开之前记一下"刚才是不是在拖" —— 拖拽结束时不该再当成一次点击
     // （否则松手会顺带触发按钮动作，滑块拖到一半就把图清了那种）。
-    const bool wasDrag = (m_dragSlider != kHitNone);
+    const bool wasDrag = (m_dragSlider != kHitNone) || m_dragPreview;
 
     m_active     = kHitNone;
     m_dragSlider = kHitNone;
+    m_dragPreview = false;
     if (::GetCapture() == m_hWnd) ::ReleaseCapture();
 
     if (hit == kHitReset) {

@@ -38,7 +38,7 @@
 // WS_VSCROLL：页面比宿主给的容器高，内容得能滚（用户 2026-09-26 报
 // 「加了这一项之后页面太长了，需要一个滚动条」）。SDK 的 preferences_page
 // 不带任何滚动支持，所以这一条和配套的 WM_VSCROLL 都得自己来。
-IDD_LYRICUS_PREFS DIALOGEX 0, 0, 253, 527
+IDD_LYRICUS_PREFS DIALOGEX 0, 0, 253, 662
 STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD | WS_VSCROLL
 FONT 9, "MS Shell Dlg", 400, 0, 0x86
 BEGIN

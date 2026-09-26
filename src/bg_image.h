@@ -53,6 +53,14 @@ const BgBitmap* GetPanelBackground(const std::wstring& path,
                                    BgFit fit, const BgManual& manual,
                                    int blurPx, int dimPct, int opacityPct);
 
+// 读图片的**原始尺寸**（不解码像素，只读元数据）。
+//
+// 【为什么需要单独暴露】首选项的预览控件要把鼠标位移换算成偏移百分比，
+// 而那需要"可移动范围" = (缩放后的图 - 区域) / 2 —— 没有原图尺寸就算不出来。
+// 拿不到范围的话，只能用一个拍脑袋的"拖 100 像素 = 偏移 10%"，
+// 于是**同一个拖动在预览里和面板里走不一样的距离**。
+bool GetBgImageSize(const std::wstring& path, int& outW, int& outH);
+
 // 丢掉缓存。面板销毁、或者用户清了背景图时调用。
 void ClearPanelBackgroundCache();
 

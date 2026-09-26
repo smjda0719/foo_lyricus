@@ -75,6 +75,12 @@ void TestDefaultLayout() {
     // ---- 控件配色（D-093）----
     Check(!IsEmpty(L.titleCtrl),    "「控件配色」标题有位置");
     Check(!IsEmpty(L.ctrlModeBtn),  "模式开关有位置");
+    // ---- 背景图（D-098）与预览（D-103）----
+    Check(!IsEmpty(L.titleBg),      "「背景图」标题有位置");
+    Check(!IsEmpty(L.bgPick),       "「选择图片…」有位置");
+    Check(!IsEmpty(L.bgFit),        "适配方式有位置");
+    Check(!IsEmpty(L.bgPreview),    "★ 预览区有位置（拖动/缩放靠它）");
+    Check(!IsEmpty(L.bgPreviewHint),"预览提示有位置");
     {
         int miss = 0;
         for (int i = 0; i < lyricus::kPrefsCtrlColorCount; ++i) {
@@ -205,6 +211,7 @@ void TestInsideClientArea() {
                     L.ctrlCards[0], L.ctrlCards[1], L.ctrlCards[2], L.ctrlCards[3],
                     L.titleBg, L.bgClear, L.bgPick, L.bgFit,
                     L.bgOpacitySlider, L.bgBlurSlider, L.bgDimSlider,
+                    L.bgPreview, L.bgPreviewHint,
                 };
                 for (const RECT& r : all) {
                     if (IsEmpty(r)) continue;

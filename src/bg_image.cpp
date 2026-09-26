@@ -16,8 +16,17 @@ namespace {
 
 // 上一次请求的参数 + 结果。
 //
-// 只有一个面板，所以缓存**一条**就够 —— 做成多条 LRU 只是徒增复杂度：
-// 内存里多存几份几 MB 的位图，而不会有任何一次命中（参数一变就得重算）。
+// ★ **两个槽**：面板一个、首选项预览一个（D-103）。
+//
+// 【为什么不是一条，也不是通用 LRU】只有这两个使用者，而且各自的尺寸都稳定
+//（面板会被拖动，但那是同一个槽内部参数变化的事）。
+//
+// ⚠️ 一条缓存是不够的：预览区的尺寸和面板不同，两者交替调用的话会互相
+//    覆盖对方的槽、**每次都重算**（而重算一次是几百万次乘加 + 一趟模糊）。
+//    表现为"一边好好的、另一边每帧卡"。
+//
+// 而做成通用 LRU 只是徒增复杂度：内存里多存几份几 MB 的位图，
+// 换不来任何一次命中。
 struct CacheEntry {
     bool         valid = false;
     std::wstring path;
@@ -26,9 +35,11 @@ struct CacheEntry {
     BgManual     manual;                       // 手动构图（D-103）
     int          blur = 0, dim = 0, opacity = 100;
     BgBitmap     bmp;
+    unsigned long long used = 0;               // 最近一次命中的序号（挑淘汰对象用）
 };
 
-CacheEntry   g_cache;
+CacheEntry   g_slots[2];
+unsigned long long g_tick = 0;
 std::wstring g_lastError;
 
 // COM 每线程初始化一次。
@@ -135,23 +146,34 @@ const BgBitmap* GetPanelBackground(const std::wstring& path,
     if (path.empty())          return nullptr;   // 用户没设背景图 —— 不是错误
     if (dstW <= 0 || dstH <= 0) return nullptr;   // 面板还没尺寸
 
-    // 参数没变 -> 直接给缓存。这是整个模块存在的理由：
-    // 面板每秒重绘几十次，而重算一次要几百万次乘加。
-    if (SameParams(g_cache, path, dstW, dstH, fit, manual, blurPx, dimPct, opacityPct)) {
-        return g_cache.bmp.valid() ? &g_cache.bmp : nullptr;
+    // ⚠️ **先查两个槽** —— 命中就直接返回、不动任何状态。
+    //
+    // 这一步不是优化而是正确性：面板每帧都在调（播放时 4 次/秒、悬停 50 次/秒），
+    // 而首选项预览偶尔才调一次。不先查的话两者会交替覆盖对方的槽，
+    // 结果**两边都变成每次都重算**，表现为"一边好好的、另一边每帧卡"。
+    for (CacheEntry& e : g_slots) {
+        if (SameParams(e, path, dstW, dstH, fit, manual, blurPx, dimPct, opacityPct)) {
+            e.used = ++g_tick;
+            return e.bmp.valid() ? &e.bmp : nullptr;
+        }
     }
 
-    // 参数变了：先把缓存标记为失效，这样中途失败不会留下旧图冒充新参数的结果
-    g_cache.valid = false;
-    g_cache.bmp   = BgBitmap{};
-    g_cache.path  = path;
-    g_cache.dstW  = dstW;
-    g_cache.dstH  = dstH;
-    g_cache.fit    = fit;
-    g_cache.manual = manual;
-    g_cache.blur   = blurPx;
-    g_cache.dim   = dimPct;
-    g_cache.opacity = opacityPct;
+    // 没命中：占用**最久没用过**的那个槽
+    CacheEntry& slot =
+        (g_slots[0].used <= g_slots[1].used) ? g_slots[0] : g_slots[1];
+
+    // 参数变了：先把槽标记为失效，这样中途失败不会留下旧图冒充新参数的结果
+    slot.valid = false;
+    slot.bmp   = BgBitmap{};
+    slot.path  = path;
+    slot.dstW  = dstW;
+    slot.dstH  = dstH;
+    slot.fit    = fit;
+    slot.manual = manual;
+    slot.blur   = blurPx;
+    slot.dim   = dimPct;
+    slot.opacity = opacityPct;
+    slot.used  = ++g_tick;
 
     if (!EnsureCom()) {
         g_lastError = L"COM 初始化失败";
@@ -329,18 +351,35 @@ const BgBitmap* GetPanelBackground(const std::wstring& path,
         return nullptr;
     }
 
-    g_cache.bmp   = std::move(bmp);
-    g_cache.valid = true;
+    slot.bmp   = std::move(bmp);
+    slot.valid = true;
 
     DebugLog("背景图：已加载 %ls（图 %dx%d -> 面板 %dx%d，%ls 模糊=%d 压暗=%d 不透明=%d）",
              path.c_str(), imgW, imgH, dstW, dstH,
              place.tile ? L"平铺" : L"缩放", blurPx, dimPct, opacityPct);
 
-    return &g_cache.bmp;
+    return &slot.bmp;
+}
+
+bool GetBgImageSize(const std::wstring& path, int& outW, int& outH) {
+    outW = 0;
+    outH = 0;
+    if (path.empty() || !EnsureCom()) return false;
+
+    CComPtr<IWICImagingFactory> factory;
+    if (FAILED(::CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                                  IID_PPV_ARGS(&factory)))) {
+        return false;
+    }
+    return ReadImageSize(factory, path, outW, outH);
 }
 
 void ClearPanelBackgroundCache() {
-    g_cache = CacheEntry{};
+    // 两个槽一起清 —— 面板和预览用的是同一个图片文件时，只清一个会让
+    // 另一个留着旧图，表现为"点了清除但还看得见"。
+    g_slots[0] = CacheEntry{};
+    g_slots[1] = CacheEntry{};
+    g_tick = 0;
     g_lastError.clear();
 }
 

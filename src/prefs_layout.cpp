@@ -129,6 +129,23 @@ PrefsLayout ComputePrefsLayout(int width, int height, int dpi) {
     }
     y += Sx(14) + Sx(10);
 
+    // 预览区（D-103）。按浮动面板的默认长宽比给高度 ——
+    // 布局函数不知道用户实际把面板拖成了多大，用默认比例是为了
+    // "看个大概构图"。真正的构图比例由面板自己呈现。
+    {
+        const int pw = width - padX * 2;
+        // 460x150 是面板的出厂尺寸，比例约 3.07。宽高比要**夹具**：
+        // 窗口极窄时按比例算出来的高度会小到看不出来，而极宽时会高得离谱。
+        int ph = pw * 150 / 460;
+        const int minH = Sx(80), maxH = Sx(200);
+        if (ph < minH) ph = minH;
+        if (ph > maxH) ph = maxH;
+        out.bgPreview = RECT{ padX, y, padX + pw, y + ph };
+        y += ph + Sx(6);
+        out.bgPreviewHint = RECT{ padX, y, padX + pw, y + Sx(14) };
+        y += Sx(14) + Sx(10);
+    }
+
     // 「选择图片…」按钮：整行，同时兼任"当前路径"的显示位。
     // 单独再放一个只读路径框的话，窄窗口下两个都会被压扁，不如合成一个。
     out.bgPick = RECT{ padX, y, width - padX, y + Sx(26) };
