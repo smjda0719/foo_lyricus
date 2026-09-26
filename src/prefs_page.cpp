@@ -67,6 +67,27 @@ const ColorSlot kColorSlots[kPrefsColorCount] = {
     { &PanelAppearance::bg,      L"面板底色"   },
 };
 
+// 4 个**控件基色**的绑定（D-093）。
+//
+// ⚠️ 顺序必须和 prefs_layout 里那 2x2 的排布一致（从左到右、从上到下）——
+//    和 kColorSlots 同一个约定，改了这边不改那边，位置就对不上。
+//
+// 【为什么只有 4 个】控制条上一共有 11 类颜色（按钮的悬停/按下、图标的
+// 普通/主操作/悬停/按下、滑块的轨道/填充、时间文字、音量图标、浮层底板）。
+// 全暴露给用户太多了 —— 挑色本身就是负担，何况还得保证它们互相搭配。
+// 每组一个基色、组内其余由程序推导，是这个模式能用的前提。
+struct CtrlColorSlot {
+    COLORREF       PanelAppearance::*member;
+    const wchar_t*                    label;
+};
+
+const CtrlColorSlot kCtrlSlots[kPrefsCtrlColorCount] = {
+    { &PanelAppearance::ctrlButton, L"按钮" },
+    { &PanelAppearance::ctrlIcon,   L"图标" },
+    { &PanelAppearance::ctrlSlider, L"滑块" },
+    { &PanelAppearance::ctrlText,   L"文字" },
+};
+
 // 命中目标。色块直接用数组下标（0..5），其余用负值区分 ——
 // 这样返回值能直接当数组下标用，少一层映射。
 constexpr int kHitNone    = -1;
@@ -79,6 +100,13 @@ constexpr int kHitPresetSave   = -6;
 constexpr int kHitPresetDelete = -7;
 constexpr int kHitPresetImport = -8;
 constexpr int kHitPresetExport = -9;
+// 控件配色（D-093）
+constexpr int kHitCtrlMode     = -10;
+
+// 控件基色块用**独立的索引区**，不和上面那 6 个配色色块（0..5）混。
+// 混在一起的话 HitTest 的 `hit < kPrefsColorCount` 判断会把它们误当成配色色块，
+// 于是点控件色块改的是歌词颜色。
+constexpr int kHitCtrlColorBase = 100;
 
 // 布局判定"这块地方画不下"时返回的是空矩形，逐项判空后跳过即可。
 //
@@ -161,6 +189,14 @@ private:
     void DrawResetButton(HDC dc, const RECT& r);
     void DrawFontButton(HDC dc, const RECT& r);
     void DrawPresetArea(HDC dc, const PrefsLayout& L);
+    void DrawCtrlColorArea(HDC dc, const PrefsLayout& L);
+
+    // ---- 控件配色（D-093）----
+    // 点模式开关：自动 <-> 自定义。**从自动切到自定义时要把 4 个基色
+    // 预填成当前推导的结果**，否则一按颜色就跳（见实现里的说明）。
+    void OnCtrlModeToggle();
+    // 取 4 个基色里的某一个：index 0..3
+    void PickCtrlColor(int index);
 
     // ---- 外观预设的动作 ----
     // 全是**立刻生效**的，不走"应用 / 取消"：切一套配色就是要马上看到效果，
@@ -260,6 +296,11 @@ int CLyricusPrefsDlg::HitTest(POINT pt) const {
     if (inside(L.presetDelete)) return kHitPresetDelete;
     if (inside(L.presetImport)) return kHitPresetImport;
     if (inside(L.presetExport)) return kHitPresetExport;
+    // ---- 控件配色（D-093）----
+    if (inside(L.ctrlModeBtn))  return kHitCtrlMode;
+    for (int i = 0; i < kPrefsCtrlColorCount; ++i) {
+        if (inside(L.ctrlCards[i])) return kHitCtrlColorBase + i;
+    }
     return kHitNone;
 }
 
@@ -353,6 +394,7 @@ void CLyricusPrefsDlg::DrawPage(HDC dc, const RECT& rc, const PrefsLayout& L,
     if (!empty(L.reset)) DrawResetButton(dc, L.reset);
     if (!empty(L.fontBtn)) DrawFontButton(dc, L.fontBtn);
     DrawPresetArea(dc, L);
+    DrawCtrlColorArea(dc, L);
 }
 
 void CLyricusPrefsDlg::DrawColorCard(HDC dc, const RECT& card, int index) {
@@ -481,6 +523,113 @@ void CLyricusPrefsDlg::DrawFontButton(HDC dc, const RECT& r) {    // 显示**正
 // 424 逻辑像素高 —— 列表必然盖住下面几行控件，于是要么被客户区裁掉，
 // 要么得再开一个弹窗去处理失焦 / 滚动 / 键盘 / 点到外面关闭。
 // TrackPopupMenu 这几件事全是现成的，而且位置它自己会算。
+// 控件配色区：标题 + 模式开关 + 4 个基色块（D-093）。
+//
+// 【自动模式下那 4 个色块画的是什么】画的是**当前实际生效的颜色**
+//（从面板底色推出来的那 4 个），而不是结构体里存着的那几个 ——
+// 后者在自动模式下**根本不参与绘制**。
+// 画实际值 + 标成禁用，用户才能看懂"现在就是这样，想改请切自定义"。
+void CLyricusPrefsDlg::DrawCtrlColorArea(HDC dc, const PrefsLayout& L) {
+    if (empty(L.titleCtrl) && empty(L.ctrlModeBtn)) return;   // 整体降级了
+
+    const PrefsTheme& T = CurrentTheme();
+    const bool custom = (m_edited.ctrlMode == kCtrlCustom);
+    const int radius = MulDiv(8, L.dpi, 96);
+
+    if (!empty(L.titleCtrl)) {
+        DrawTextIn(dc, L.titleCtrl, L"控件配色", T.text, m_fontBold,
+                   DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    }
+
+    if (!empty(L.ctrlModeBtn)) {
+        const bool hot = (m_hot == kHitCtrlMode);
+        FillRoundRect(dc, L.ctrlModeBtn, MulDiv(6, L.dpi, 96), hot ? T.cardHot : T.cardBg);
+        // 自定义模式下描边用强调色，一眼能看出"现在是你在控制"
+        StrokeRoundRect(dc, L.ctrlModeBtn, MulDiv(6, L.dpi, 96), 1,
+                        custom ? T.accent : T.border);
+        DrawTextIn(dc, L.ctrlModeBtn, custom ? L"自定义" : L"自动推导",
+                   custom ? T.text : T.textDim, m_fontBody,
+                   DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    }
+
+    // 自动模式下的实际颜色（禁用态要显示它们，而不是结构体里那 4 个）
+    const ControlBaseColors autoCols = DeriveControlColors(m_edited.bg);
+    const COLORREF autoShown[kPrefsCtrlColorCount] = {
+        autoCols.button, autoCols.icon, autoCols.slider, autoCols.text
+    };
+
+    for (int i = 0; i < kPrefsCtrlColorCount; ++i) {
+        if (empty(L.ctrlCards[i])) continue;
+
+        const COLORREF c = custom ? (m_edited.*(kCtrlSlots[i].member)) : autoShown[i];
+
+        RECT r = L.ctrlCards[i];
+        const bool hot = custom && (m_hot == kHitCtrlColorBase + i);
+        const bool active = custom && (m_active == kHitCtrlColorBase + i);
+        if (active) OffsetRect(&r, 0, MulDiv(1, L.dpi, 96));
+
+        FillRoundRect(dc, r, radius, c);
+        // ⚠️ 文字色按**色块自己的亮度**选，不看模式 —— 和 DrawColorCard 同一条
+        //    规则（D-075：自绘界面里颜色永远该由它压在上面的那个颜色决定）。
+        StrokeRoundRect(dc, r, radius, hot ? MulDiv(2, L.dpi, 96) : 1,
+                        hot ? T.accent : T.border);
+
+        wchar_t text[16];
+        swprintf_s(text, L"#%02X%02X%02X", GetRValue(c), GetGValue(c), GetBValue(c));
+        // 自动模式下把说明文字压暗：它不是可编辑的值，只是"现在长这样"
+        const COLORREF txtColor = custom
+            ? (ColorLuminance(c) > 128 ? RGB(0, 0, 0) : RGB(255, 255, 255))
+            : T.textDim;
+        DrawTextIn(dc, r, text, txtColor, m_fontBody,
+                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+        if (!empty(L.ctrlCardLabels[i])) {
+            DrawTextIn(dc, L.ctrlCardLabels[i], kCtrlSlots[i].label,
+                       custom ? T.textDim : T.cardHot, m_fontBody,
+                       DT_CENTER | DT_TOP | DT_SINGLELINE);
+        }
+    }
+}
+
+// 模式开关：自动 <-> 自定义（D-093）。
+void CLyricusPrefsDlg::OnCtrlModeToggle() {
+    if (m_edited.ctrlMode == kCtrlAuto) {
+        // ★ 切到自定义时，把 4 个基色**预填成当前自动推导的结果**。
+        //
+        // 【为什么这一步不能省】不填的话它们会保持结构体里的默认值 ——
+        // 而那未必等于当前底色推出来的东西（用户可能先切了「亮色」预设，
+        // 底色早就变了）。结果是一按「自定义」颜色就跳一下，
+        // 用户会以为这个按钮坏了。
+        //
+        // 预填之后切换是**无损**的：他看到的就是刚才那个样子，
+        // 只是从这一刻起可以动它了。
+        const ControlBaseColors cur = DeriveControlColors(m_edited.bg);
+        m_edited.ctrlButton = cur.button;
+        m_edited.ctrlIcon   = cur.icon;
+        m_edited.ctrlSlider = cur.slider;
+        m_edited.ctrlText   = cur.text;
+        m_edited.ctrlMode   = kCtrlCustom;
+    } else {
+        // 切回自动：那 4 个基色**留着不动**（不参与绘制，但下次切回自定义时
+        // 会被重新预填，所以留什么值都无所谓 —— 保留着还能让"自动->自定义->
+        // 自动->自定义"这条路看到自己上次调的色）。
+        m_edited.ctrlMode = kCtrlAuto;
+    }
+    NotifyChanged();
+}
+
+void CLyricusPrefsDlg::PickCtrlColor(int index) {
+    if (index < 0 || index >= kPrefsCtrlColorCount) return;
+    // 自动模式下不给改 —— 那些值不参与绘制，改了也没有效果，
+    // 让它能点只会让人以为"改了没生效"。
+    if (m_edited.ctrlMode != kCtrlCustom) return;
+
+    COLORREF* p = &(m_edited.*(kCtrlSlots[index].member));
+    if (PickColor(*p)) {          // 复用同一个色环对话框
+        NotifyChanged();
+    }
+}
+
 void CLyricusPrefsDlg::DrawPresetArea(HDC dc, const PrefsLayout& L) {
     if (empty(L.titlePreset) && empty(L.presetCombo)) return;   // 整体降级了
 
@@ -601,6 +750,16 @@ void CLyricusPrefsDlg::OnLButtonUp(UINT /*flags*/, CPoint pt) {
     if (hit == kHitPresetDelete) { OnPresetDelete();        Repaint(); return; }
     if (hit == kHitPresetImport) { OnPresetImport();        Repaint(); return; }
     if (hit == kHitPresetExport) { OnPresetExport();        Repaint(); return; }
+
+    // ---- 控件配色（D-093）----
+    // 基色块的索引从 100 起，和上面那 6 个配色色块（0..5）不重叠，
+    // 所以这一段放在它们的判断之前之后都行。
+    if (hit == kHitCtrlMode) { OnCtrlModeToggle(); Repaint(); return; }
+    if (hit >= kHitCtrlColorBase && hit < kHitCtrlColorBase + kPrefsCtrlColorCount) {
+        PickCtrlColor(hit - kHitCtrlColorBase);
+        Repaint();
+        return;
+    }
 
     if (hit >= 0 && hit < kPrefsColorCount) {
         COLORREF* p = &(m_edited.*(kColorSlots[hit].member));
