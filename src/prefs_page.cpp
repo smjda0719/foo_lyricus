@@ -340,7 +340,8 @@ private:
     // 每帧用上一帧的结果递推 —— 递推会把取整误差累积起来，
     // 拖久了图会明显跑偏。
     CPoint m_dragAnchor{};        // 对角手柄的位置（客户区坐标）
-    double m_dragStartDist = 0.0; // 按下时鼠标到锚点的距离
+    CPoint m_dragStartPt{};       // 按下时鼠标的位置
+    double m_dragStartDist = 0.0; // 按下时鼠标到锚点的距离（保底用）
     int    m_dragStartZoom   = 100;
     int    m_dragStartOffX   = 0; // 按下时的 offset
     int    m_dragStartOffY   = 0;
@@ -1343,6 +1344,7 @@ void CLyricusPrefsDlg::BeginBgHandleDrag(int hit, CPoint pt, const PrefsLayout& 
     m_dragStartZoom = m.zoomPct;
     m_dragStartOffX = m.offsetXPct;
     m_dragStartOffY = m.offsetYPct;
+    m_dragStartPt   = pt;
 
     const double dx = pt.x - m_dragAnchor.x;
     const double dy = pt.y - m_dragAnchor.y;
@@ -1356,12 +1358,32 @@ void CLyricusPrefsDlg::BeginBgHandleDrag(int hit, CPoint pt, const PrefsLayout& 
 void CLyricusPrefsDlg::OnBgHandleDrag(CPoint pt) {
     if (m_dragHandle == kHitNone || m_dragStartDist <= 0.0) return;
 
-    // 到**锚点**的距离之比：往外拖 = 离锚点更远 = 放大。
-    // 这个判据对四个角都成立 —— 每个角的"外"都是远离它的对角。
-    const double dx = pt.x - m_dragAnchor.x;
-    const double dy = pt.y - m_dragAnchor.y;
-    const double dist = std::sqrt(dx * dx + dy * dy);
-    const double ratio = dist / m_dragStartDist;
+    // ★ 比例按**分量**算，不按欧氏距离（D-116）。
+    //
+    // 【为什么】用距离的话只有**沿对角线**拖才灵敏：用户横向拖了半天、
+    //    纵向没动，到锚点的距离只变了一点点，图几乎没反应 ——
+    //    感觉就是"缩放不跟手"。
+    //    按分量算则无论往哪个方向拖都有响应。
+    //
+    // 【为什么取两个分量里较大的那个】四个角朝向不同（右下角的"外"是
+    //    +x+y，左上角是 -x-y），固定用某个分量的话有的角灵敏、有的角迟钝。
+    //    取 max 则四个角一致：**谁拖得多听谁的**。
+    const double d0x = std::abs(static_cast<double>(m_dragStartPt.x - m_dragAnchor.x));
+    const double d0y = std::abs(static_cast<double>(m_dragStartPt.y - m_dragAnchor.y));
+    const double d1x = std::abs(static_cast<double>(pt.x - m_dragAnchor.x));
+    const double d1y = std::abs(static_cast<double>(pt.y - m_dragAnchor.y));
+
+    // 某个分量起点就贴着锚点（< 1 像素）时那个分量没有意义，跳过它
+    const double rx = (d0x > 1.0) ? (d1x / d0x) : 0.0;
+    const double ry = (d0y > 1.0) ? (d1y / d0y) : 0.0;
+    double ratio = (rx > ry) ? rx : ry;
+
+    // 两个分量都没法用（鼠标正压在锚点上）-> 退回距离比，至少不会除零
+    if (ratio <= 0.0) {
+        const double dx = pt.x - m_dragAnchor.x;
+        const double dy = pt.y - m_dragAnchor.y;
+        ratio = std::sqrt(dx * dx + dy * dy) / m_dragStartDist;
+    }
 
     BgManual m = CurrentManual();
     m.zoomPct = static_cast<int>(std::lround(m_dragStartZoom * ratio));
