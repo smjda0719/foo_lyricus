@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "version.h"
 
 // ---------------------------------------------------------------------------
 // Lyricus - foobar2000 歌词显示 + 独立操作面板
@@ -10,9 +11,11 @@
 // 组件版本声明。
 // 注意：每个 DLL 只允许有一个 DECLARE_COMPONENT_VERSION —— 声明多个会被
 // foobar2000 当成版本 0，进而认为组件过期（官方注释明确警告过）。
+//
+// 版本号来自 version.h（唯一来源），不在这里写死 —— 理由见那个文件。
 DECLARE_COMPONENT_VERSION(
     "Lyricus",
-    "0.1.0",
+    LYRICUS_VERSION,
     "Lyricus - lyrics display and standalone control panel for foobar2000.\n"
     "独立操作面板（置顶 / Mica / Acrylic）+ 歌词显示面板。"
 );
