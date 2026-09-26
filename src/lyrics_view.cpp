@@ -11,13 +11,17 @@
 namespace lyricus {
 namespace {
 
-HFONT CreateFontNow(int dpi, int pt, bool bold) {
+HFONT CreateFontNow(int dpi, int pt, bool bold, const wchar_t* face) {
     return CreateFontW(-MulDiv(pt, dpi, 72), 0, 0, 0,
                        bold ? FW_SEMIBOLD : FW_NORMAL,
                        FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                        ANTIALIASED_QUALITY,   // 透明底上用 ANTIALIASED，ClearType 依赖不透明背景
-                       DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+                       DEFAULT_PITCH | FF_DONTCARE,
+                       // face 为空 / 空串时回落到默认字体族。
+                       // CreateFontW 拿到空串不会报错，而是**静默挑一个** —— 那样的
+                       // "字体不对"最难查，所以在这里就堵住。
+                       (face != nullptr && *face != L'\0') ? face : L"Segoe UI");
 }
 
 // 字体缓存。
@@ -28,17 +32,22 @@ HFONT CreateFontNow(int dpi, int pt, bool bold) {
 // 而面板**每 250ms 就要重绘一次**（进度条在动），所以这是持续开销，不是偶发。
 //
 // 字体句柄进程内一直留着不释放 —— 就那么几个，不值得为它维护生命周期。
-// 缓存键是 (dpi, 字号, 粗体)：DPI 会随显示器变化，不改这三个参数就不用重建。
+// 缓存键是 (dpi, 字号, 粗体, **字体族**)：
+//   * DPI 会随显示器变化；
+//   * ★ 字体族是 2026-09-26 接宿主字体时加进键里的 —— 不带它的话，
+//     宿主换字体之后同样的 (dpi, 字号, 粗体) 会把**旧字体**拿回来，
+//     表现为"改了 foobar2000 的字体，Lyricus 没反应"。
 //
 // 线程约定：渲染层只在主线程用（和整个工程一致），所以静态 map 不需要加锁。
-HFONT MakeFont(int dpi, int pt, bool bold) {
-    static std::map<std::tuple<int, int, bool>, HFONT> cache;
+HFONT MakeFont(int dpi, int pt, bool bold, const wchar_t* face) {
+    const std::wstring faceKey = (face != nullptr) ? face : L"";
+    static std::map<std::tuple<int, int, bool, std::wstring>, HFONT> cache;
 
-    const auto key = std::make_tuple(dpi, pt, bold);
+    const auto key = std::make_tuple(dpi, pt, bold, faceKey);
     const auto it = cache.find(key);
     if (it != cache.end()) return it->second;
 
-    HFONT f = CreateFontNow(dpi, pt, bold);
+    HFONT f = CreateFontNow(dpi, pt, bold, face);
     cache.emplace(key, f);
     return f;
 }
@@ -171,9 +180,15 @@ int DrawLine(HDC dc, const wchar_t* text, int x, int y, int maxWidth,
 // （460x150 逻辑像素）和 DUI 元素（可能很高）里得到不同字号，用户根本没法
 // 预期自己调的是什么。面板那一级之所以安全，是因为它**显式且有界**
 //（PanelFontScalePct 夹在 80~160），而不是拿 rc 去无限联动。
-int ScalePt(int basePt, int pct, int panelScalePct) {
+// 三级相乘：用户的字号百分比 × 面板宽度缩放 × 宿主字体缩放。
+//
+// 后两级都不是用户直接设的，而是**环境**带来的：
+//   * panelScalePct 来自面板宽度（见 PanelFontScalePct）；
+//   * hostFontPct 来自宿主界面字号（见 HostFontScalePct）。
+// 三级都是显式且有界的，所以不会出现"字号自己乱跑"。
+int ScalePt(int basePt, int pct, int panelScalePct, int hostFontPct) {
     const int user = MulDiv(basePt, pct, 100);
-    const int pt   = MulDiv(user, panelScalePct, 100);
+    const int pt   = MulDiv(MulDiv(user, panelScalePct, 100), hostFontPct, 100);
     return (pt < 1) ? 1 : pt;
 }
 
@@ -229,6 +244,38 @@ int PanelFontScalePct(int panelWidthLogical, int baseWidthLogical) {
     return pct;
 }
 
+// 宿主界面字体的"标准"字号。foobar2000 的默认界面字体是 9pt，拿它当基准 ——
+// 宿主正好是 9pt 时倍率就是 100%，歌词完全按原来的字号走。
+constexpr int kStandardHostPt = 9;
+
+int HostFontScalePct(const LyricsViewTheme& theme) {
+    if (!theme.hasHostFont) return 100;
+
+    // LOGFONT.lfHeight 的符号是有含义的：**负**表示字高（不含内部行距），
+    // **正**表示字符单元高度。宿主两种都可能给，所以取绝对值。
+    int h = theme.hostFont.lfHeight;
+    if (h < 0) h = -h;
+    if (h <= 0) return 100;
+
+    // 换算成 pt 要用 dpi。这里用**我们自己窗口的** dpi —— DUI / CUI 元素
+    // 和宿主在同一块屏上，两者一致；真出现不一致也只影响缩放幅度，
+    // 不会画错（字号另有 [-80%, +60%] 的夹子兜着）。
+    const int dpi    = (theme.dpi > 0) ? theme.dpi : 96;
+    const int hostPt = MulDiv(h, 72, dpi);
+    if (hostPt <= 0) return 100;
+
+    int pct = MulDiv(hostPt, 100, kStandardHostPt);
+    if (pct < 80)  pct = 80;    // 宿主字体特别小，也不把歌词压得更小
+    if (pct > 160) pct = 160;   // 宿主设成 30pt 时不该把歌词撑到屏幕外
+    return pct;
+}
+
+const wchar_t* HostFontFace(const LyricsViewTheme& theme) {
+    if (!theme.hasHostFont) return nullptr;
+    if (theme.hostFont.lfFaceName[0] == L'\0') return nullptr;   // 空串当没有
+    return theme.hostFont.lfFaceName;
+}
+
 LyricsViewResult DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& theme,
                                 const LyricsViewLayout& layout,
                                 const LyricAnimFrame& anim) {
@@ -256,10 +303,15 @@ LyricsViewResult DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& t
 
     const int pct = (layout.fontPct > 0) ? layout.fontPct : 100;
 
-    HFONT fHeader  = MakeFont(dpi, ScalePt(11, pct, layout.panelScalePct), false);   // 曲名：刻意比歌词小，别抢戏
-    HFONT fCurrent = MakeFont(dpi, ScalePt(15, pct, layout.panelScalePct), true);    // 当前歌词行
-    HFONT fBody    = MakeFont(dpi, ScalePt(11, pct, layout.panelScalePct), false);   // 其它歌词行
-    HFONT fSub     = MakeFont(dpi, ScalePt(9,  pct, layout.panelScalePct), false);   // 当前行的翻译（参照行）
+    // 宿主字体：DUI 元素和 CUI 面板会填，独立浮动面板留空。
+    // 留空时 face = nullptr、hostPct = 100，行为与接宿主字体之前**完全一致**。
+    const wchar_t* face    = HostFontFace(theme);
+    const int      hostPct = HostFontScalePct(theme);
+
+    HFONT fHeader  = MakeFont(dpi, ScalePt(11, pct, layout.panelScalePct, hostPct), false, face);   // 曲名：刻意比歌词小，别抢戏
+    HFONT fCurrent = MakeFont(dpi, ScalePt(15, pct, layout.panelScalePct, hostPct), true,  face);   // 当前歌词行
+    HFONT fBody    = MakeFont(dpi, ScalePt(11, pct, layout.panelScalePct, hostPct), false, face);   // 其它歌词行
+    HFONT fSub     = MakeFont(dpi, ScalePt(9,  pct, layout.panelScalePct, hostPct), false, face);   // 当前行的翻译（参照行）
 
     const auto& st = PlaybackState::Get();
     int y = top;
@@ -539,7 +591,10 @@ LyricsViewResult DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& t
 }
 
 HFONT GetCachedUiFont(int dpi, int pt, bool bold) {
-    return MakeFont(dpi, pt, bold);
+    // 控制条的时间文本、图标叠层的标签用。
+    // 这些**刻意不跟随宿主字体** —— 它们是面板自己的控件（按钮、进度条上的数字），
+    // 和"歌词正文用宿主字体的族"不是一回事。face 传 nullptr 走默认字体栈。
+    return MakeFont(dpi, pt, bold, nullptr);
 }
 
 } // namespace lyricus

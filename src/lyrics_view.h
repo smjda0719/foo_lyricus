@@ -29,6 +29,21 @@ struct LyricsViewTheme {
     COLORREF dimText     = RGB(150, 150, 158);
     COLORREF warnText    = RGB(205, 165, 165);
     int      dpi         = 96;
+
+    // 宿主界面字体。**只由 DUI 元素和 CUI 面板填**，独立浮动面板刻意留空 ——
+    // 那个面板有自己的一套字号设置，跟着宿主变会让用户调好的值莫名其妙地跳。
+    //
+    // 【为什么存 LOGFONT 而不是 HFONT】query_font_ex / cui::fonts 给回来的 HFONT
+    // 只在"下一次字体变更回调"之前有效（ui_element.h:151 明写了这一点），
+    // 存下来就是一个随时会悬垂的句柄；LOGFONT 是纯数据，存多久都安全。
+    //
+    // 【和 D-019 那个坑的关系】那条说的是**和 foobar2000 宿主之间**传裸结构体
+    //（对 <CharacterSet> 设置有硬依赖）。这里收发双方 —— dui_element /
+    // cui_panel / lyrics_view —— 全都在 foo_lyricus.dll **内部**，不存在那个问题：
+    // 从宿主拿到的只是一个 HFONT，GetObject 成我们自己的 LOGFONT 之后，
+    // 就再也不依赖宿主的任何东西了。
+    LOGFONTW hostFont{};
+    bool     hasHostFont = false;
 };
 
 // 排版参数。
@@ -135,5 +150,25 @@ HFONT GetCachedUiFont(int dpi, int pt, bool bold);
 //
 // 传 0 或负数返回 100（不缩放）—— 面板刚创建、尺寸还没算出来时会走到这里。
 int PanelFontScalePct(int panelWidthLogical, int baseWidthLogical = 460);
+
+// 宿主字号相对"标准界面字号"的倍率，单位百分比（100 = 不变）。
+//
+// 【为什么要跟】用户把 foobar2000 的界面字体调大，通常说明他看小字费劲 ——
+// 那么嵌在界面里的歌词也该跟着大一点，否则"我把字体调大了"这件事
+// 在 Lyricus 上看起来就像没生效。
+//
+// 【★ 为什么不能直接用宿主的字号】foobar2000 的界面字体常见是 **9pt**，
+// 而歌词是这块区域的主要信息、默认就要 11~15pt。直接照搬会把歌词缩成一小团
+//（实测那样做 DUI 元素里的歌词会明显比原来小）。所以取的是**比值**：
+// 宿主字号 / 9pt，再乘到原有的字号上 —— 用户调大字体，歌词等比变大，
+// 但"歌词比界面字大"这个基本关系不会被破坏。
+//
+// 夹在 [80, 160]：宿主设成 30pt 时不该把歌词撑到屏幕外。
+// theme.hasHostFont 为 false（独立浮动面板）时返回 100。
+int HostFontScalePct(const LyricsViewTheme& theme);
+
+// 从宿主字体里取字体族名；没有宿主字体时返回 nullptr（调用方回落到默认字体）。
+// 单独拎出来是因为渲染层有三处要用，各自判一遍容易漏掉空串的情况。
+const wchar_t* HostFontFace(const LyricsViewTheme& theme);
 
 } // namespace lyricus

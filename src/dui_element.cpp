@@ -332,8 +332,6 @@ void LyricusDui::RefreshTheme() {
     // 这些系数和「哪一项该映射到哪个字段」都需要拿真实主题目视校准一遍
     //（尤其是浅色主题 + 用户自定义高亮色的组合）。
 
-    m_theme = theme;
-
     // 字体同理，但**只留 LOGFONT**：query_font_ex 返回的 HFONT 只在下一次字体
     // 变更回调之前有效（ui_element.h:151），存下来就是一个随时会悬垂的句柄；
     // LOGFONT 是纯数据，随便存。
@@ -348,9 +346,21 @@ void LyricusDui::RefreshTheme() {
             }
         }
     }
-    // TODO(未验证): LyricsViewTheme 目前没有字体字段，所以这份 LOGFONT 快照
-    // 暂时没人消费（DrawLyricsView 自己按 dpi 造字体）。等渲染层要接受宿主字体时，
-    // 在这里 CreateFontIndirect(&m_fontDesc) 现造一个用 —— 别退回存 HFONT。
+
+    // ★ 把宿主字体交给渲染层 —— 2026-09-26 接上的。
+    //
+    // 在这之前这份快照**查了但没人消费**（渲染层自己按 dpi 造 Segoe UI），
+    // 于是 DUI 元素里的歌词和 foobar2000 界面的字体族对不上，
+    // 而且用户在设置里把界面字体调大时，歌词纹丝不动。
+    //
+    // 渲染层只拿它做两件事：**字体族**照用，**字号**按相对 9pt 的比值缩放。
+    // 所以"歌词比界面字大"这个基本关系不会被破坏（详见 HostFontScalePct）。
+    theme.hostFont    = m_fontDesc;
+    theme.hasHostFont = m_hasFontDesc;
+
+    // ⚠️ 必须在填完字体**之后**再赋给 m_theme —— 上面那三行改的是局部变量 theme。
+    m_theme = theme;
+
     // TODO(未验证): 到底该取哪个 ui_font_* 没有定论，先取 ui_font_default
     //（官方 sample 也用它）；若歌词按列表类文本排版，ui_font_lists 可能更合适。
 

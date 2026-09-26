@@ -463,25 +463,17 @@ void LyricusCuiPanel::RefreshTheme() {
     }
 
     m_background = background;
-    m_theme = theme;
-
-    // 背景刷跟着背景色重建（旧刷子立刻作废）。
-    if (m_bgBrush != nullptr) {
-        ::DeleteObject(m_bgBrush);
-        m_bgBrush = nullptr;
-    }
-
     // 字体：同样「拿不到就用默认」—— 没有字体快照时渲染层自己按 dpi 造字体。
     // **只留 LOGFONT 快照，绝不缓存 HFONT**：HFONT 是「回调周期内有效」的句柄
-    //（dui_element.cpp:125-127、304-306 记的是同一件事），存下来就是一个随时
-    // 悬垂的句柄；LOGFONT 是纯数据，存多久都安全。
+    //（dui_element.cpp 记的是同一件事），存下来就是一个随时悬垂的句柄；
+    // LOGFONT 是纯数据，存多久都安全。
     m_hasFontDesc = false;
     if (m_fontsApi.is_valid()) {
         LOGFONTW desc{};
         // 字体类型取 items（列表项目字体）：歌词是「一行一条」的列表式文本。
         // TODO(未验证): font_type_items / font_type_labels / core_default_font_id
         // 三选一没有定论（fonts.h:5-8、fonts.h:37-45），要拿真实配置目视校准；
-        // DUI 侧用的是 ui_font_default（dui_element.cpp:309、321-322）。
+        // DUI 侧用的是 ui_font_default（dui_element.cpp）。
         m_fontsApi->get_font(cui::fonts::font_type_items, desc);
         // 服务在、但返回一份空 LOGFONT 时也当拿不到：CreateFontIndirect 一份全零
         // 描述会得到一个说不清是什么的字体。
@@ -490,9 +482,27 @@ void LyricusCuiPanel::RefreshTheme() {
             m_hasFontDesc = true;
         }
     }
-    // TODO(未验证): LyricsViewTheme 没有字体字段，这份 LOGFONT 暂时没人消费
-    //（DrawLyricsView 自己按 dpi 造字体）。等渲染层接受宿主字体时，在这里
-    // CreateFontIndirect(&m_fontDesc) 现造一个、用完就删 —— 别退回存 HFONT。
+
+    // ★ 把宿主字体交给渲染层 —— 2026-09-26 接上的。
+    //
+    // 在这之前这份快照**查了但没人消费**（渲染层自己按 dpi 造 Segoe UI），
+    // 于是 CUI 面板里的歌词和 Columns UI 的字体对不上，
+    // 而且用户改了 CUI 的字体时歌词纹丝不动。
+    //
+    // 渲染层只拿它做两件事：**字体族**照用，**字号**按相对 9pt 的比值缩放 ——
+    // 所以"歌词比界面字大"这个基本关系不会被破坏（详见 HostFontScalePct）。
+    theme.hostFont    = m_fontDesc;
+    theme.hasHostFont = m_hasFontDesc;
+
+    // ⚠️ 必须在填完字体**之后**再赋给 m_theme —— 上面几行改的是局部变量 theme。
+    m_theme = theme;
+
+    // 背景刷跟着背景色重建（旧刷子立刻作废）。
+    if (m_bgBrush != nullptr) {
+        ::DeleteObject(m_bgBrush);
+        m_bgBrush = nullptr;
+    }
+
     // TODO(未验证): manager::get_font(font_type_t, LOGFONT&) 没有 dpi 参数；
     // 真要按 dpi 取字体，应改用 manager_v2::get_common_font(type, dpi)
     //（fonts.h:108-135），代价是要求 CUI 1.7.0 beta 1 以上。

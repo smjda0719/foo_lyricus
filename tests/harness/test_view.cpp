@@ -477,6 +477,136 @@ void TestPanelFontScale() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// 宿主字体（2026-09-26 接上）
+//
+// 接之前：dui_element / cui_panel 都查了宿主字体存进 m_fontDesc，但**没人消费** ——
+// 渲染层自己按 dpi 造 Segoe UI。于是歌词和界面字体族对不上，
+// 用户在设置里调大界面字体时歌词纹丝不动。
+//
+// 接的时候有一个**必须守住的不变量**：宿主字体只影响**字体族**和**字号的比例**，
+// 不能把歌词缩成和界面一样大 —— foobar2000 的界面字体常见是 9pt，
+// 而歌词是这块区域的主要信息、默认 11~15pt。
+// ---------------------------------------------------------------------------
+
+// 造一个"宿主给了 xx pt 字体"的 theme。lfHeight 按 LOGFONT 的惯例写负值。
+lyricus::LyricsViewTheme ThemeWithHostFont(const wchar_t* face, int pt, int dpi = 96) {
+    lyricus::LyricsViewTheme t;
+    t.dpi         = dpi;
+    t.hasHostFont = true;
+    t.hostFont.lfHeight = -MulDiv(pt, dpi, 72);
+    wcsncpy_s(t.hostFont.lfFaceName, face, _TRUNCATE);
+    return t;
+}
+
+void TestHostFont() {
+    std::printf("\n== 宿主字体 ==\n");
+
+    using lyricus::HostFontScalePct;
+    using lyricus::HostFontFace;
+    using lyricus::LyricsViewTheme;
+
+    // ---- 没有宿主字体：一切照旧 ----
+    {
+        LyricsViewTheme t;
+        Check(HostFontScalePct(t) == 100, "★ 没有宿主字体 -> 100%（行为与接之前完全一致）");
+        Check(HostFontFace(t) == nullptr, "没有宿主字体 -> 字体族为 nullptr（回落到默认）");
+    }
+
+    // ---- 基准字号 ----
+    Check(HostFontScalePct(ThemeWithHostFont(L"Segoe UI", 9)) == 100,
+          "★ 宿主正好 9pt（界面字体常见值）-> 100%，歌词字号完全不变");
+
+    // ---- 宿主调大 ----
+    Check(HostFontScalePct(ThemeWithHostFont(L"Segoe UI", 12)) == 133,
+          "宿主 12pt -> 133%");
+    Check(HostFontScalePct(ThemeWithHostFont(L"Segoe UI", 11)) == 122,
+          "宿主 11pt -> 122%");
+
+    // ---- 宿主调小 ----
+    //
+    // ⚠️ 这里不能写死数值：pt -> lfHeight -> pt 一个来回就要过两次 MulDiv 的
+    //    四舍五入（8pt 实际会变成 11 个逻辑单位再变回 8.25 -> 8），
+    //    所以最终百分比会差 1。差 1 在界面上完全看不出来，但写死会让断言变脆。
+    {
+        const int p = HostFontScalePct(ThemeWithHostFont(L"Segoe UI", 8));
+        Check(p >= 87 && p <= 89, "宿主 8pt -> 约 89%（往返 lfHeight 的舍入允许 ±1）");
+    }
+
+    // ---- ★ 有界：宿主设得再离谱也不失控 ----
+    Check(HostFontScalePct(ThemeWithHostFont(L"Segoe UI", 4))  == 80,
+          "★ 宿主 4pt -> 夹在 80%（不把歌词压得更小）");
+    Check(HostFontScalePct(ThemeWithHostFont(L"Segoe UI", 30)) == 160,
+          "★ 宿主 30pt -> 夹在 160%（不把歌词撑到屏幕外）");
+
+    // ---- lfHeight 的符号：宿主两种写法都可能给 ----
+    {
+        LyricsViewTheme pos, neg;
+        pos.dpi = neg.dpi = 96;
+        pos.hasHostFont = neg.hasHostFont = true;
+        pos.hostFont.lfHeight =  MulDiv(9, 96, 72);    // 正：字符单元高度
+        neg.hostFont.lfHeight = -MulDiv(9, 96, 72);    // 负：字高
+        Check(HostFontScalePct(pos) == HostFontScalePct(neg),
+              "★ lfHeight 正负两种写法给出同一个结果（LOGFONT 的符号是有含义的）");
+    }
+
+    // ---- 垃圾输入不该崩，也不该算出离谱的值 ----
+    {
+        LyricsViewTheme z;
+        z.hasHostFont = true;      // 声称有，但内容全零
+        Check(HostFontScalePct(z) == 100, "★ 声称有字体但那是个全零 LOGFONT -> 100%（不除零）");
+
+        LyricsViewTheme n;
+        n.hasHostFont = true;
+        n.hostFont.lfHeight = 0;
+        Check(HostFontScalePct(n) == 100, "lfHeight = 0 -> 100%");
+    }
+
+    // ---- 字体族 ----
+    Check(wcscmp(HostFontFace(ThemeWithHostFont(L"Consolas", 9)), L"Consolas") == 0,
+          "字体族原样取出");
+
+    {
+        LyricsViewTheme empty;
+        empty.hasHostFont = true;               // 有字体，但名字是空串
+        Check(HostFontFace(empty) == nullptr, "★ 空串的字体名当成没有（否则 CreateFontW 会静默挑一个）");
+    }
+
+    // ---- ★ 最要紧的不变量：宿主字体不让歌词变得比界面字还小 ----
+    //
+    // 这套缩放的全部意义就是"跟一点，但别跟丢了自己"。
+    // 基准 9pt、夹在 [80,160]，所以 15pt 的当前行在任何宿主字号下
+    // 都不会掉到 11pt 以下（那是"歌词比界面字大"的底线）。
+    {
+        int worst = 999;
+        for (int pt = 1; pt <= 40; ++pt) {
+            const int pct = HostFontScalePct(ThemeWithHostFont(L"Segoe UI", pt));
+            const int currentPt = MulDiv(15, pct, 100);   // 当前行的字号
+            if (currentPt < worst) worst = currentPt;
+        }
+        Check(worst >= 12, "★ 1~40pt 全扫：当前行字号最低仍有 12pt（不会被宿主字体带得比界面字还小）");
+        std::printf("      （最差情况当前行 %d pt）\n", worst);
+    }
+
+    // ---- 单调 + 有界 ----
+    {
+        int bad = 0, prev = -1;
+        for (int pt = 1; pt <= 40; ++pt) {
+            const int cur = HostFontScalePct(ThemeWithHostFont(L"X", pt));
+            if (prev >= 0 && cur < prev) ++bad;
+            prev = cur;
+        }
+        Check(bad == 0, "★ 宿主字号 1~40pt 逐档扫描：缩放单调不减");
+
+        int out = 0;
+        for (int pt = -5; pt <= 100; ++pt) {
+            const int p = HostFontScalePct(ThemeWithHostFont(L"X", pt));
+            if (p < 80 || p > 160) ++out;
+        }
+        Check(out == 0, "★ 全范围扫描：返回值恒在 [80,160]");
+    }
+}
+
 void TestNoTrack() {
     std::printf("\n== 没有曲目 / 没有歌词时的兜底 ==\n");
 
@@ -1092,6 +1222,7 @@ int wmain() {
     TestSlideKeepsPrevLine();
     TestFontPct();
     TestPanelFontScale();
+    TestHostFont();
     TestBilingual();
     TestTranslationPrimary();
     TestLongLineEllipsis();
