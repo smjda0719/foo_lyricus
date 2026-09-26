@@ -80,9 +80,4 @@ struct PrefsTheme {
 // 这样页面底色能和首选项窗口严丝合缝地接上。
 PrefsTheme MakePrefsTheme(bool dark, COLORREF bg, COLORREF fg);
 
-// 感知亮度（0..255）。加权而不是简单平均 —— 纯蓝和纯黄的"平均"一样，
-// 人眼看上去差得远。绘制侧判断"这个色块上该压黑字还是白字"也要用它，
-// 所以导出而不是各自实现一份。
-int PrefsLuminance(COLORREF c);
-
 } // namespace lyricus

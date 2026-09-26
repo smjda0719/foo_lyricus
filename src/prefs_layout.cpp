@@ -1,4 +1,5 @@
 #include "prefs_layout.h"
+#include "color_util.h"   // BlendColor / ColorLuminance（与其它自绘处共用同一份）
 
 // ---------------------------------------------------------------------------
 // 首选项页的布局与配色。
@@ -17,31 +18,11 @@ namespace {
 // 逻辑像素 -> 物理像素
 int S(int dpi, int v) { return MulDiv(v, dpi, 96); }
 
-// a 与 b 按 t 混合（t=0 全取 a，t=1 全取 b）。
-//
-// 用它从"背景色"推导出卡片底/悬停/边框：这样无论宿主是纯白、纯黑还是
-// 某个带色调的主题，推导出来的几档都是**同一个色系**，不会打架。
-COLORREF Blend(COLORREF a, COLORREF b, double t) {
-    auto mix = [t](int x, int y) {
-        int v = static_cast<int>(x * (1.0 - t) + y * t + 0.5);
-        if (v < 0) v = 0;
-        if (v > 255) v = 255;
-        return v;
-    };
-    return RGB(mix(GetRValue(a), GetRValue(b)),
-               mix(GetGValue(a), GetGValue(b)),
-               mix(GetBValue(a), GetBValue(b)));
-}
-
 // 卡片区一共两行、每行最多三列。
 constexpr int kCols = 3;
 constexpr int kRows = 2;
 
 } // namespace
-
-int PrefsLuminance(COLORREF c) {
-    return (GetRValue(c) * 299 + GetGValue(c) * 587 + GetBValue(c) * 114) / 1000;
-}
 
 PrefsLayout ComputePrefsLayout(int width, int height, int dpi) {
     PrefsLayout out;
@@ -117,20 +98,20 @@ PrefsTheme MakePrefsTheme(bool dark, COLORREF bg, COLORREF fg) {
     // 宿主偶尔会给一个和 dark 标志不一致的背景（例如 dark=true 但底色其实很浅），
     // 那时按亮度走才不会出现"浅底 + 浅字"这种读不了字的组合。
     // dark 只在亮度处于中间地带（不黑不白）时用来打破平局。
-    const int lum    = PrefsLuminance(bg);
+    const int lum    = ColorLuminance(bg);
     const bool bgDark = (lum < 128) || (lum >= 100 && lum < 160 && dark);
 
     if (bgDark) {
-        t.textDim = Blend(fg, bg, 0.45);
-        t.cardBg  = Blend(bg, RGB(255, 255, 255), 0.08);
-        t.cardHot = Blend(bg, RGB(255, 255, 255), 0.16);
-        t.border  = Blend(bg, RGB(255, 255, 255), 0.22);
+        t.textDim = BlendColor(fg, bg, 0.45);
+        t.cardBg  = BlendColor(bg, RGB(255, 255, 255), 0.08);
+        t.cardHot = BlendColor(bg, RGB(255, 255, 255), 0.16);
+        t.border  = BlendColor(bg, RGB(255, 255, 255), 0.22);
         t.accent  = RGB(76, 160, 235);
     } else {
-        t.textDim = Blend(fg, bg, 0.42);
-        t.cardBg  = Blend(bg, RGB(0, 0, 0), 0.05);
-        t.cardHot = Blend(bg, RGB(0, 0, 0), 0.10);
-        t.border  = Blend(bg, RGB(0, 0, 0), 0.16);
+        t.textDim = BlendColor(fg, bg, 0.42);
+        t.cardBg  = BlendColor(bg, RGB(0, 0, 0), 0.05);
+        t.cardHot = BlendColor(bg, RGB(0, 0, 0), 0.10);
+        t.border  = BlendColor(bg, RGB(0, 0, 0), 0.16);
         t.accent  = RGB(0, 120, 212);
     }
     return t;

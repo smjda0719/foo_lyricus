@@ -6,7 +6,7 @@
 #include "dpi_util.h"
 #include "debug_log.h"
 #include "ui_draw.h"
-#include "prefs_layout.h"   // PrefsLuminance（判"该配黑字还是白字"）
+#include "color_util.h"     // BlendColor / ColorLuminance
 
 #include <cmath>
 #include <cstdio>
@@ -391,7 +391,7 @@ void CColorWheelDlg::DrawButtons(HDC dc, const ColorWheelLayout& L, const HostTh
     //   1. fill 由 T.bg 推导（同一个源，不会跟背景打架）；
     //   2. ★ fg 只看 fill 的亮度，压根不看主题标志 ——
     //      即使将来 fill 的推导被改坏，最坏也只是"不好看"，不会"看不见"。
-    const bool dark = (PrefsLuminance(T.bg) < 128);
+    const bool dark = (ColorLuminance(T.bg) < 128);
 
     auto surface = [&](bool primary, bool hot, bool active) -> COLORREF {
         if (primary) {
@@ -415,7 +415,7 @@ void CColorWheelDlg::DrawButtons(HDC dc, const ColorWheelLayout& L, const HostTh
 
         // ★ 阈值 140：低于它用白字、高于它用近黑字。
         //    140 而不是 128，是因为浅色底上白字比深色底上黑字更早变得难读。
-        const COLORREF fg = (PrefsLuminance(fill) > 140) ? RGB(20, 20, 24)
+        const COLORREF fg = (ColorLuminance(fill) > 140) ? RGB(20, 20, 24)
                                                          : RGB(255, 255, 255);
 
         const int radius = MulDiv(6, L.dpi, 96);

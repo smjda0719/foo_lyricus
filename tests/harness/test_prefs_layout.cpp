@@ -8,8 +8,10 @@
 // 实现一个更现代化的面板」；重做之前先把"不会画歪"这件事固定下来。
 
 #include "prefs_layout.h"
+#include "color_util.h"   // ColorLuminance（从 prefs_layout 移到了公共层）
 
 #include <cstdio>
+#include <cstdlib>        // std::abs（<cstdio> 不提供它）
 
 namespace {
 
@@ -203,42 +205,118 @@ void TestDpiScaling() {
 void TestTheme() {
     std::printf("\n== 主题配色 ==\n");
 
-    using lyricus::PrefsLuminance;
+    using lyricus::ColorLuminance;
 
-    Check(PrefsLuminance(RGB(255, 255, 255)) > 250, "白色的亮度接近 255");
-    Check(PrefsLuminance(RGB(0, 0, 0)) == 0,        "黑色的亮度是 0");
-    Check(PrefsLuminance(RGB(0, 0, 255)) < PrefsLuminance(RGB(0, 255, 0)),
+    Check(ColorLuminance(RGB(255, 255, 255)) > 250, "白色的亮度接近 255");
+    Check(ColorLuminance(RGB(0, 0, 0)) == 0,        "黑色的亮度是 0");
+    Check(ColorLuminance(RGB(0, 0, 255)) < ColorLuminance(RGB(0, 255, 0)),
           "纯绿比纯蓝亮得多（加权而不是平均）");
 
     // 深色主题：底色暗、文字亮，且两者差别足够大
     const auto dark = lyricus::MakePrefsTheme(true, RGB(32, 32, 34), RGB(238, 238, 242));
-    Check(PrefsLuminance(dark.pageBg) < 128, "深色主题的页面底是暗的");
-    Check(PrefsLuminance(dark.text) > 128,   "深色主题的文字是亮的");
-    Check(PrefsLuminance(dark.text) - PrefsLuminance(dark.pageBg) > 100,
+    Check(ColorLuminance(dark.pageBg) < 128, "深色主题的页面底是暗的");
+    Check(ColorLuminance(dark.text) > 128,   "深色主题的文字是亮的");
+    Check(ColorLuminance(dark.text) - ColorLuminance(dark.pageBg) > 100,
           "★ 文字与底的亮度差 > 100（保证读得清）");
-    Check(PrefsLuminance(dark.cardBg) > PrefsLuminance(dark.pageBg),
+    Check(ColorLuminance(dark.cardBg) > ColorLuminance(dark.pageBg),
           "深色下卡片底比页面底**亮**一点（浮起来）");
-    Check(PrefsLuminance(dark.textDim) > PrefsLuminance(dark.pageBg),
+    Check(ColorLuminance(dark.textDim) > ColorLuminance(dark.pageBg),
           "深色下次要文字仍比底亮");
 
     // 浅色主题：反过来
     const auto light = lyricus::MakePrefsTheme(false, RGB(255, 255, 255), RGB(26, 26, 28));
-    Check(PrefsLuminance(light.pageBg) > 200, "浅色主题的页面底是亮的");
-    Check(PrefsLuminance(light.text) < 100,   "浅色主题的文字是暗的");
-    Check(PrefsLuminance(light.text) - PrefsLuminance(light.pageBg) < -100,
+    Check(ColorLuminance(light.pageBg) > 200, "浅色主题的页面底是亮的");
+    Check(ColorLuminance(light.text) < 100,   "浅色主题的文字是暗的");
+    Check(ColorLuminance(light.text) - ColorLuminance(light.pageBg) < -100,
           "★ 文字与底的亮度差 < -100");
-    Check(PrefsLuminance(light.cardBg) < PrefsLuminance(light.pageBg),
+    Check(ColorLuminance(light.cardBg) < ColorLuminance(light.pageBg),
           "浅色下卡片底比页面底**暗**一点");
-    Check(PrefsLuminance(light.textDim) < PrefsLuminance(light.pageBg),
+    Check(ColorLuminance(light.textDim) < ColorLuminance(light.pageBg),
           "浅色下次要文字仍比底暗");
 
     // ⚠️ 关键：以**背景亮度**为准，而不是只信 dark 参数。
     // 万一宿主给了个和标志不一致的底色，也不能出现"浅底浅字"。
     const auto mismatch = lyricus::MakePrefsTheme(true, RGB(250, 250, 250), RGB(20, 20, 20));
-    Check(PrefsLuminance(mismatch.cardBg) < PrefsLuminance(mismatch.pageBg),
+    Check(ColorLuminance(mismatch.cardBg) < ColorLuminance(mismatch.pageBg),
           "★ 声明 dark=true 但底色其实是浅的 -> 按浅色处理，卡片底仍然比底暗");
-    Check(PrefsLuminance(mismatch.text) < PrefsLuminance(mismatch.pageBg),
+    Check(ColorLuminance(mismatch.text) < ColorLuminance(mismatch.pageBg),
           "★ 且文字仍然比底暗（不会出现浅底浅字）");
+}
+
+// ---------------------------------------------------------------------------
+// 颜色工具（BlendColor / ColorLuminance）
+//
+// 这两条本来分散在四个文件里各有一份（dui_element / cui_panel / ui_draw /
+// prefs_layout），2026-09-26 合并进 color_util。这里除了测它本身，
+// 还要**证明合并没改行为** —— 见下面复刻的 float 参考实现。
+// ---------------------------------------------------------------------------
+void TestColorUtil() {
+    std::printf("\n== 颜色工具 ==\n");
+
+    using lyricus::BlendColor;
+    using lyricus::ColorLuminance;   // 上一个用例里的 using 只活在那个函数内
+
+    const COLORREF black = RGB(0, 0, 0);
+    const COLORREF white = RGB(255, 255, 255);
+
+    Check(BlendColor(white, black, 0.0) == white, "t=0 取第一个");
+    Check(BlendColor(white, black, 1.0) == black, "t=1 取第二个");
+    Check(BlendColor(RGB(10, 20, 30), RGB(200, 100, 50), 0.5) == RGB(105, 60, 40),
+          "t=0.5 取中点");
+    Check(BlendColor(white, white, 0.7) == white, "同一个颜色怎么混都不变");
+
+    // ★ 外推：t 为负表示朝第二个颜色的**反方向**推。
+    //   dui_element.cpp 靠 BlendColor(normalText, background, -0.5)
+    //   让当前行比正文色更亮 —— 合并时特意保留了这个能力。
+    const COLORREF base = RGB(100, 100, 100);
+    const COLORREF out  = BlendColor(base, black, -0.5);
+    Check(ColorLuminance(out) > ColorLuminance(base),
+          "★ t=-0.5 朝黑色的反方向外推 -> 比原色更亮");
+    Check(out == RGB(150, 150, 150), "外推的数值也对（100 往反方向推半格 = 150）");
+
+    // 外推很容易越界，必须夹住
+    Check(BlendColor(white, white, -1.0) == white, "★ 外推到超出 255 时被夹住");
+    Check(BlendColor(black, black, 2.0)  == black, "★ 外推到低于 0 时被夹住");
+
+    // 亮度
+    Check(ColorLuminance(RGB(255, 255, 255)) > 250, "白色亮度接近 255");
+    Check(ColorLuminance(RGB(0, 0, 0)) == 0,       "黑色亮度是 0");
+    Check(ColorLuminance(RGB(0, 255, 0)) > ColorLuminance(RGB(0, 0, 255)),
+          "纯绿比纯蓝亮得多（加权而不是平均）");
+
+    // ★ 合并等价性：复刻合并前 dui_element / cui_panel 用的 float 版，
+    //   全范围扫一遍看结果是否一致。合并最怕的就是"看着一样、结果差一点"，
+    //   而这种差值在界面上根本看不出来，只会在某次配色偏一点时冒出来。
+    auto blendFloatRef = [](COLORREF from, COLORREF to, float t) -> COLORREF {
+        const auto mix = [t](BYTE a, BYTE b) -> BYTE {
+            const float v = static_cast<float>(a) +
+                            (static_cast<float>(b) - static_cast<float>(a)) * t;
+            if (v <= 0.0f)   return 0;
+            if (v >= 255.0f) return 255;
+            return static_cast<BYTE>(v + 0.5f);
+        };
+        return RGB(mix(GetRValue(from), GetRValue(to)),
+                   mix(GetGValue(from), GetGValue(to)),
+                   mix(GetBValue(from), GetBValue(to)));
+    };
+
+    int diff = 0, worst = 0;
+    for (int r = 0; r <= 255; r += 17) {
+        for (int t = -10; t <= 30; ++t) {
+            const double tt = t / 20.0;                       // -0.5 .. 1.5
+            const COLORREF a = RGB(r, 255 - r, (r * 7) % 256);
+            const COLORREF b = RGB((r * 3) % 256, 128, 255 - (r % 200));
+            const COLORREF x = BlendColor(a, b, tt);
+            const COLORREF y = blendFloatRef(a, b, static_cast<float>(tt));
+            const int d = std::abs(static_cast<int>(GetRValue(x)) - static_cast<int>(GetRValue(y)))
+                        + std::abs(static_cast<int>(GetGValue(x)) - static_cast<int>(GetGValue(y)))
+                        + std::abs(static_cast<int>(GetBValue(x)) - static_cast<int>(GetBValue(y)));
+            if (d > worst) worst = d;
+            if (d > 2) ++diff;                                // 允许取整差 1/分量
+        }
+    }
+    Check(diff == 0, "★ 与合并前的 float 版逐点一致（误差 <= 1/分量）—— 合并没改行为");
+    std::printf("      （最大分量偏差合计 %d）\n", worst);
 }
 
 } // namespace
@@ -252,6 +330,7 @@ int main() {
     TestDegrade();
     TestDpiScaling();
     TestTheme();
+    TestColorUtil();
     std::printf("\n----------------------------------------\n");
     std::printf("通过 %d，失败 %d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;

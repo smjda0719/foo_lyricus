@@ -68,7 +68,7 @@ $suites = @(
     # 首选项页：全自绘，布局和配色都是纯函数（只依赖 windows.h）。
     # 2026-09-26 重做该页时加的 —— 自绘最典型的 bug 是元素叠在一起，
     # 而那恰好是"给定尺寸 -> 一组矩形"能精确钉住的东西。
-    @{ key='prefs';  name='首选项页布局';  compile=@('test_prefs_layout.cpp','prefs_layout.cpp');       extra=@('prefs_layout.h');       shims=@(); libs='' },
+    @{ key='prefs';  name='首选项页布局';  compile=@('test_prefs_layout.cpp','prefs_layout.cpp','color_util.cpp'); extra=@('prefs_layout.h','color_util.h'); shims=@(); libs='' },
     # 色环取色器：HSV 换算 + 几何 + 命中测试，全是纯数学。
     # 最要紧的是"坐标 <-> 颜色"两个方向必须互逆 —— 点红色就该选中红色。
     @{ key='wheel';  name='色环取色器';    compile=@('test_color_wheel.cpp','color_wheel.cpp');         extra=@('color_wheel.h');        shims=@(); libs='' },

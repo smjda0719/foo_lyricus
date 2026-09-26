@@ -1,6 +1,7 @@
 #include "stdafx.h"
 
 #include "lyrics_view.h"
+#include "color_util.h"   // BlendColor（原先在本文件里有一份，已提到公共层）
 #include "config.h"
 #include "playback_state.h"
 #include "debug_log.h"
@@ -94,23 +95,15 @@ const GUID guid_cui_panel = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,
 
 // 在 from→to 之间线性混合。t 为负表示朝 to 的反方向外推（用来加强对比），
 // 结果按 0..255 夹紧。
+// BlendColor 已提到公共层 color_util.h。
 //
-// 这段和 dui_element.cpp:44-55 是同一份实现，**故意各留一份**：两个 .cpp 都在
-// 匿名命名空间里，各自 internal linkage，不会撞符号。要合成一份就得往公共头
-//（lyrics_view.h）里加东西，而那是另一个文件的职责范围，不在这轮改动里。
-// TODO(未验证): 等第三次需要这个函数时，把它提到公共头里。
-COLORREF BlendColor(COLORREF from, COLORREF to, float t) {
-    const auto mix = [t](BYTE a, BYTE b) -> BYTE {
-        const float v = static_cast<float>(a) +
-                        (static_cast<float>(b) - static_cast<float>(a)) * t;
-        if (v <= 0.0f)   return 0;
-        if (v >= 255.0f) return 255;
-        return static_cast<BYTE>(v + 0.5f);
-    };
-    return RGB(mix(GetRValue(from), GetRValue(to)),
-               mix(GetGValue(from), GetGValue(to)),
-               mix(GetBValue(from), GetBValue(to)));
-}
+// 这段和 dui_element.cpp 里那份原本是**故意各留一份**的（两个 .cpp 都在匿名
+// 命名空间里，internal linkage 不会撞符号），当时的 TODO 写着
+//「等第三次需要这个函数时，把它提到公共头里」。
+// 后来 prefs_layout（配色推导）和 ui_draw（自绘按钮）也要用，第三次到了 ——
+// 抽出来的位置是 color_util.h，而不是当时设想的 lyrics_view.h：
+// 它是纯颜色运算，不归渲染层，而且必须**不依赖 SDK** 才能让
+// prefs_layout 继续进离线单测台。
 
 // ---------------------------------------------------------------------------
 // CUI 面板

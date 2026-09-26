@@ -8,6 +8,7 @@
 #include "prefs_page.h"         // OpenPrefsPage（View 菜单的入口）
 #include "dpi_util.h"           // GetDpiForWindowSafe（与控制面板共用同一份）
 #include "ui_draw.h"            // 圆角矩形/文字/字体/宿主主题（与色环取色器共用）
+#include "color_util.h"         // ColorLuminance（判"该配黑字还是白字"）
 #include "color_picker.h"       // PromptColorWheel（取色走自绘色环）
 
 #include <SDK/preferences_page.h>
@@ -309,7 +310,7 @@ void CLyricusPrefsDlg::DrawColorCard(HDC dc, const RECT& card, int index) {
     // 十六进制值：按色块自身亮度选黑字还是白字，浅色和深色底上都读得清。
     wchar_t text[16];
     swprintf_s(text, L"#%02X%02X%02X", GetRValue(c), GetGValue(c), GetBValue(c));
-    DrawTextIn(dc, r, text, PrefsLuminance(c) > 128 ? RGB(0, 0, 0) : RGB(255, 255, 255),
+    DrawTextIn(dc, r, text, ColorLuminance(c) > 128 ? RGB(0, 0, 0) : RGB(255, 255, 255),
                m_fontBody, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 }
 
@@ -374,7 +375,7 @@ void CLyricusPrefsDlg::DrawResetButton(HDC dc, const RECT& r) {
     // 改成按 fill 判断是为了和 color_picker.cpp 保持同一个模式：
     // 那边出过一次「白色按钮配白色文字」（主题标志与实际取到的颜色不同源），
     // 按填充色判断是那种情况下唯一永远正确的做法。
-    const COLORREF fg = (PrefsLuminance(fill) > 140) ? RGB(20, 20, 24)
+    const COLORREF fg = (ColorLuminance(fill) > 140) ? RGB(20, 20, 24)
                                                      : RGB(255, 255, 255);
     DrawTextIn(dc, box, L"恢复默认", fg, m_fontBody,
                DT_CENTER | DT_VCENTER | DT_SINGLELINE);

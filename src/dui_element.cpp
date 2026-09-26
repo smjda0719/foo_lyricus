@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "lyrics_view.h"
+#include "color_util.h"   // BlendColor（原先在本文件里有一份，已提到公共层）
 #include "config.h"
 #include "playback_state.h"
 #include "debug_log.h"
@@ -45,20 +46,12 @@ constexpr int kPadding96    = 8;
 // 末字节 0x10 在 config.cpp / menu.cpp 里都没被占用。
 const GUID guid_dui_element = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x10}};
 
-// 在 from→to 之间线性混合。t 为负表示朝 to 的反方向外推（用来加强对比），
-// 结果按 0..255 夹紧。
-COLORREF BlendColor(COLORREF from, COLORREF to, float t) {
-    const auto mix = [t](BYTE a, BYTE b) -> BYTE {
-        const float v = static_cast<float>(a) +
-                        (static_cast<float>(b) - static_cast<float>(a)) * t;
-        if (v <= 0.0f)   return 0;
-        if (v >= 255.0f) return 255;
-        return static_cast<BYTE>(v + 0.5f);
-    };
-    return RGB(mix(GetRValue(from), GetRValue(to)),
-               mix(GetGValue(from), GetGValue(to)),
-               mix(GetBValue(from), GetBValue(to)));
-}
+// BlendColor 已提到公共层 color_util.h。
+//
+// 这里原本有一份本地实现（float 版），cui_panel.cpp 里另有一份一模一样的，
+// 那边当时留了句 "等第三次需要这个函数时，把它提到公共头里" ——
+// 后来 prefs_layout 和 ui_draw 也要用，第三次到了，于是抽进 color_util.h。
+// 它和 prefs_layout / color_wheel 一样是**纯函数**，能进离线单测台。
 
 int ClampVisibleLines(int lines) {
     if (lines < kMinVisibleLines) return kMinVisibleLines;
