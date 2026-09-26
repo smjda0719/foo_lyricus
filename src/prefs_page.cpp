@@ -208,6 +208,22 @@ private:
     void UpdateScrollBar();         // 按客户区与内容高度设置滚动条
     bool EnsureVScrollStyle();      // 确保样式里有 WS_VSCROLL（宿主动态抹过它）
     void ScrollTo(int y);           // 夹取后设置并重绘
+
+    // ★ 客户区坐标 -> 内容坐标（D-124）。
+    //
+    // 【为什么值得单独一个函数】这个转换要在 HitTest、OnBgHandleDrag、
+    //    BeginBgHandleDrag 三处做，而**漏掉任何一处**都会让"鼠标位置"和
+    //    "布局算出来的位置"变成两个坐标系 —— D-121 / D-122 连着两次栽在
+    //    这上面（一次是该加没加，一次是只加了一半、记起点那处漏了）。
+    //
+    //    表现还特别有迷惑性：方向看着是对的、只是数值乱，
+    //    于是看起来像"比例没调好"，而不像"坐标系错了"。
+    //
+    //    收进一个函数之后，"忘记转"在语法上就不会发生了 ——
+    //    凡是拿布局矩形和鼠标位置比较的地方，都从这一个入口拿坐标。
+    CPoint ContentPoint(POINT clientPt) const {
+        return CPoint(clientPt.x, clientPt.y + m_scrollY);
+    }
     void OnSize(UINT nType, CSize size);
     void OnMouseMove(UINT flags, CPoint pt);
     void OnLButtonDown(UINT flags, CPoint pt);
@@ -518,7 +534,7 @@ int CLyricusPrefsDlg::HitTest(POINT pt) const {
     // ⚠️ 先把**客户区坐标转成内容坐标** —— 布局是按内容坐标算的。
     //    不转的话，滚下去之后点哪儿都不对，而且偏移多少就错多少
     //   （表现是"滚过一段之后按钮全点不中"，很难联想到是坐标系没换）。
-    pt.y += m_scrollY;
+    pt = ContentPoint(pt);
 
     const PrefsLayout L = CurrentLayout();
 
@@ -1229,6 +1245,39 @@ void CLyricusPrefsDlg::DrawBgPreview(HDC dc, const PrefsLayout& L) {
         }
     }
 
+    // ★ 歌词示意（D-123）。
+    //
+    // 【为什么必须有】预览里只画底板和控件的话，"歌词文字"那一整组颜色
+    //（页眉 / 当前行 / 普通 / 次要 / 警告）改了在预览里**毫无反应** ——
+    //    而那恰恰是用户最常调的一组。用户报"预览窗口的颜色没有变"就是这个：
+    //    他改的颜色根本没有对应的东西可显示。
+    //
+    // 用假文本而不是真歌词：预览不该依赖"现在有没有在播放"，
+    // 而且长度可控，能一次把四种颜色都摆出来。
+    if (L.bgPreview.bottom - L.bgPreview.top > MulDiv(60, dpi, 96)) {
+        const int lineH = MulDiv(20, dpi, 96);
+        const int cx = (L.bgPreview.left + L.bgPreview.right) / 2;
+        int ty = L.bgPreview.top + MulDiv(10, dpi, 96);
+
+        struct DemoLine { const wchar_t* text; COLORREF color; bool bold; };
+        const DemoLine demo[] = {
+            { L"曲名 — 歌手",           m_edited.header,  true  },
+            { L"当前这一行歌词",        m_edited.current, true  },
+            { L"上一行",                m_edited.dim,     false },
+            { L"下一行",                m_edited.normal,  false },
+            { L"歌词未找到",            m_edited.warn,    false },
+        };
+        for (const DemoLine& d : demo) {
+            RECT lr{ L.bgPreview.left, ty, L.bgPreview.right, ty + lineH };
+            // 文字压在图上要看得清，所以带一圈底色描边（和歌词渲染层同一个思路）
+            DrawTextIn(dc, lr, d.text, d.color,
+                       d.bold ? m_fontBold : m_fontBody,
+                       DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            ty += lineH;
+            if (ty > L.bgPreview.bottom) break;
+        }
+    }
+
     // 边框画在最后（先画会被图盖住）
     StrokeRoundRect(dc, L.bgPreview, rad, 1, T.border);
 
@@ -1336,6 +1385,16 @@ void CLyricusPrefsDlg::OnBgPreviewDrag(int dx, int dy) {
 void CLyricusPrefsDlg::BeginBgHandleDrag(int hit, CPoint pt, const PrefsLayout& L) {
     m_dragHandle = hit;
 
+    // ★ 和 OnBgHandleDrag 一样转成**内容坐标**（D-122）。
+    //
+    // 上一版只在那一边转了，这里漏了 —— 于是 m_dragStartPt 是客户区、
+    // pt 是内容坐标，**又**变成两个坐标系。同一个坑踩两次：
+    // 凡是"记下来的鼠标位置"和"后来的鼠标位置"必须来自同一套坐标。
+    //
+    // 具体表现：滚过页面之后拖角，P0 和 P 差一个 scrollY，
+    // 起点到锚点的分量全错，ratio 乱跳（日志里 0.000 → 0.209 → 0.032）。
+    pt = ContentPoint(pt);
+
     // ⚠️ 先切到手动模式 —— 下面算"图在哪"要用 m_edited.bgFit，
     //    切之前算出来的是别的适配方式下的位置，锚点就错了。
     EnsureManualFit();
@@ -1354,6 +1413,8 @@ void CLyricusPrefsDlg::BeginBgHandleDrag(int hit, CPoint pt, const PrefsLayout& 
     m_dragAnchor.x = (ah.left + ah.right) / 2;
     m_dragAnchor.y = (ah.top + ah.bottom) / 2;
 
+
+
     const BgManual m = CurrentManual();
     m_dragStartZoom = m.zoomPct;
     m_dragStartOffX = m.offsetXPct;
@@ -1363,6 +1424,23 @@ void CLyricusPrefsDlg::BeginBgHandleDrag(int hit, CPoint pt, const PrefsLayout& 
 
 void CLyricusPrefsDlg::OnBgHandleDrag(CPoint pt) {
     if (m_dragHandle == kHitNone) return;
+
+    // ★★ 先转成**内容坐标**（D-121）。
+    //
+    // 【为什么必须转】m_dragAnchor 是从 imgRect 算的，而 imgRect 来自
+    //    `L.bgPreview.left + place.dst.left` —— 那是**内容坐标**。
+    //    而 pt 是 WM_MOUSEMOVE 给的**客户区坐标**。两者差一个 m_scrollY。
+    //
+    //    不转的话整套计算都在比较两个不同的坐标系：锚点看起来在
+    //    "图的位置"，鼠标却在"屏幕的位置"，于是
+    //      · 起点到锚点的那两个分量全是错的；
+    //      · 越拖方向越乱，而且滚过页面之后错得更多。
+    //    用户报的"拖左下角往下反而缩小"就是这么来的。
+    //
+    //    HitTest 里早就在做同一件事（`pt.y += m_scrollY`），
+    //    这里漏了 —— 凡是拿布局算出来的矩形和鼠标位置比较的地方，
+    //    都要先统一到内容坐标。
+    pt = ContentPoint(pt);
 
     // ★ 曼哈顿距离，但**分量带符号**（D-119）。
     //
@@ -1390,15 +1468,27 @@ void CLyricusPrefsDlg::OnBgHandleDrag(CPoint pt) {
     const int d1x = (pt.x - m_dragAnchor.x) * sx0;              // 可正可负
     const int d1y = (pt.y - m_dragAnchor.y) * sy0;
 
-    const double m0 = static_cast<double>(d0x) + static_cast<double>(d0y);
-    const double m1 = static_cast<double>(d1x) + static_cast<double>(d1y);
-
-    // 起点压在锚点上时 m0 接近 0，比例会炸 —— 那时保持原样（ratio=1）
-    const double ratio = (m0 > 1.0) ? (m1 / m0) : 1.0;
+    // ★ 比例的分母是**那一方向的跨度**（≈ 图的大小），不是"到锚点的距离"（D-122）。
+    //
+    // 【为什么曼哈顿距离之比太钝】m0 是起点到锚点的**整个行程**
+    //（实测 526），拖 100 像素只让 ratio 变成 1.19 —— 手感上几乎没动。
+    //    而分量比例的分母是 `|P0.x - A.x|`（图在该方向的跨度，实测 221），
+    //    同样拖 100 像素是 1.45，变化明显。
+    //
+    // 【为什么取两个分量里较大的那个】拖右下角时横向和纵向都在动，
+    //    取 max 等于"谁拖得多听谁的"，比固定用某一轴更贴合手感；
+    //    而某个方向完全没动时它的比例恒为 1，不会干扰。
+    //
+    // 符号仍然带（见下），所以越过锚点照样能缩 —— 那是 D-119 修的。
+    const double rx = (d0x > 1) ? (static_cast<double>(d1x) / d0x) : 0.0;
+    const double ry = (d0y > 1) ? (static_cast<double>(d1y) / d0y) : 0.0;
+    const double ratio = (rx > ry) ? rx : ry;
 
     BgManual m = CurrentManual();
     m.zoomPct = static_cast<int>(std::lround(m_dragStartZoom * ratio));
     const BgManual c = ClampBgManual(m);
+
+
     if (c.zoomPct == m_edited.bgZoomPct) return;   // 已经到上下限
 
     // ⚠️ 用**夹取后**的 zoom 算实际比例。用未夹取的 ratio 的话，
@@ -1573,6 +1663,8 @@ void CLyricusPrefsDlg::OnMouseLeave() {
 
 void CLyricusPrefsDlg::OnLButtonDown(UINT /*flags*/, CPoint pt) {
     const int hit = HitTest(pt);
+
+
     if (hit == kHitNone) return;
 
     m_active = hit;
