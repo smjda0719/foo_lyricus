@@ -46,7 +46,7 @@ constexpr int kPrefsWidth96  = 380;
 // ⚠️ 这个值**必须跟着内容走**：它同时是"页面建议尺寸"和"滚动内容高度"，
 //    写小了的话最后那一区会被切掉（测试里那条"所有元素都落在客户区内"
 //    就是钉这个的，它扫的起点正是这个常量 —— 所以常量错了它会红）。
-constexpr int kPrefsHeight96 = 1232;   // 含「面板行为」那一节（D-130，+52）
+constexpr int kPrefsHeight96 = 1262;   // 含「面板行为」(+52) 与「预览比例」那一行(+30)
 
 // 首选项页上所有需要定位的元素。
 //
@@ -111,6 +111,9 @@ struct PrefsLayout {
     RECT bgPreviewHint{};        // 预览下方的操作提示
     RECT bgPick{};               // 「选择图片…」（也显示当前路径）
     RECT bgFit{};                // 适配方式（点击循环，不是下拉）
+    // 预览比例（D-132）：宽高比 ×100。0 = 跟随实际面板。
+    // 用滑块而不是点击循环 —— "面板拖成了 3.42:1"这种值循环不出来。
+    RECT bgAspectLabel{}, bgAspectValue{}, bgAspectSlider{};
     RECT bgOpacityLabel{}, bgOpacityValue{}, bgOpacitySlider{};
     RECT bgBlurLabel{},    bgBlurValue{},    bgBlurSlider{};
     RECT bgDimLabel{},     bgDimValue{},     bgDimSlider{};
@@ -130,7 +133,16 @@ struct PrefsLayout {
 //
 // 【降级】页面很小的时候（宿主给的区域窄）按顺序丢东西：色块从三列变两列、
 // 再变一列；实在放不下才让某些项变空矩形。宁可少画几个也不要叠在一起。
-PrefsLayout ComputePrefsLayout(int width, int height, int dpi);
+// previewAspectPct 是**预览框的宽高比 × 100**（D-132）。
+//
+// 【为什么需要它】预览框从前按浮动面板的**出厂**比例（460x150）算高度，
+// 而用户实际把面板拖成了多大，布局函数不知道 —— 于是预览里的构图
+// 和面板上看到的对不上。用户提的正是这个：
+// 「需要在预览界面给用户提供一个可以改变预览框比例的选项」。
+//
+// 传 0 = 用出厂默认比例（保持旧行为，也方便老测试不改就过）。
+PrefsLayout ComputePrefsLayout(int width, int height, int dpi,
+                               int previewAspectPct = 0);
 
 // 由宿主主题推导出这一页要用的一组颜色。
 //

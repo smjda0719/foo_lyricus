@@ -144,6 +144,17 @@ constexpr int kHitBgPreview = -17;
 //    新编号一律和既有的**留出空档**，代价只是一个数字。
 constexpr int kHitClickThrough = -40;
 
+// 预览比例滑块（D-132）。
+// ⚠️ 取 -50，和上面那个 -40 也**不留相邻** —— 同一个教训（D-113）：
+//    两段编号首尾相接时，边界上那个值会同时属于两边。
+constexpr int kHitBgAspect = -50;
+
+// 预览框宽高比的可调范围（×100）。
+// 50 = 0.5:1（竖着的窄条），800 = 8:1（超宽）。
+// 比这更极端的比例下预览框会变成一条线，反而看不出构图。
+constexpr int kPreviewAspectMin = 50;
+constexpr int kPreviewAspectMax = 800;
+
 // ⚠️ 角手柄用**连续的一段**，且这一段必须和上面那个值**完全不重叠**（D-113）。
 //
 //    原来写成 -20..-17，而 kHitBgPreview 正好是 -17 —— 于是**左下角手柄
@@ -253,6 +264,13 @@ private:
     //
     //    收进一个函数之后，"忘记转"在语法上就不会发生了 ——
     //    凡是拿布局矩形和鼠标位置比较的地方，都从这一个入口拿坐标。
+    // 预览框该用的宽高比 ×100（D-132）。0 = 跟随实际面板尺寸。
+    //
+    // 【为什么可以"跟随"】面板尺寸存在全局 cfg（cfg_panel_w/h），
+    //    读它就能算出用户实际把面板拖成了什么比例 —— 那正是预览该模拟的。
+    //    从前布局函数写死 460/150，于是预览里的构图和面板上看到的对不上。
+    int PreviewAspectPct() const;
+
     CPoint ContentPoint(POINT clientPt) const {
         return CPoint(clientPt.x, clientPt.y + m_scrollY);
     }
@@ -420,8 +438,30 @@ void DrawBehaviorArea(HDC dc, const PrefsLayout& L);
 
 // ---------------------------------------------------------------------------
 
-PrefsLayout CLyricusPrefsDlg::CurrentLayout() const {
-    RECT rc{};
+// 预览框该用的宽高比 ×100（D-132）。0 = 跟随实际面板尺寸。
+//
+// 【为什么可以"跟随"】面板尺寸存在全局 cfg（cfg_panel_w / cfg_panel_h），
+// 读它就知道用户实际把面板拖成了什么比例 —— 而那正是预览该模拟的东西。
+// 从前布局函数里写死 460/150，于是预览里的构图和面板上看到的对不上，
+// 而预览的全部意义就是"所见即所得"。
+int CLyricusPrefsDlg::PreviewAspectPct() const {
+    const int v = static_cast<int>(cfg_prefs_preview_aspect.get());
+    if (v > 0) return v;                      // 用户手动调过，以他为准
+
+    const int pw = static_cast<int>(cfg_panel_w.get());
+    const int ph = static_cast<int>(cfg_panel_h.get());
+    if (pw > 0 && ph > 0) {
+        int a = pw * 100 / ph;
+        // ⚠️ 夹到滑块范围内。面板被拉成极端比例（很扁或很窄）时，
+        //    不夹的话滑块手柄会跑到区间外 —— 看得见但拖不回来。
+        if (a < kPreviewAspectMin) a = kPreviewAspectMin;
+        if (a > kPreviewAspectMax) a = kPreviewAspectMax;
+        return a;
+    }
+    return 460 * 100 / 150;                   // 还没建过面板 -> 出厂比例
+}
+
+PrefsLayout CLyricusPrefsDlg::CurrentLayout() const {    RECT rc{};
     ::GetClientRect(m_hWnd, &rc);
     // ⚠️ 高度传的是**内容高度**，不是客户区高度。
     //
@@ -431,7 +471,7 @@ PrefsLayout CLyricusPrefsDlg::CurrentLayout() const {
     // **内容不动、加个滚动条**（他 2026-09-26 报的正是这个）。
     // 这两件事混在一起时，表现是"窗口一小设置项就不见了"，很难联想到是布局降级。
     return ComputePrefsLayout(rc.right - rc.left, ContentHeightPx(),
-                              static_cast<int>(GetDpiForWindowSafe(m_hWnd)));
+                              static_cast<int>(GetDpiForWindowSafe(m_hWnd)), PreviewAspectPct());
 }
 
 int CLyricusPrefsDlg::ContentHeightPx() const {
@@ -602,6 +642,7 @@ int CLyricusPrefsDlg::HitTest(POINT pt) const {
     if (inside(L.bgOpacitySlider)) return kHitBgOpacity;
     if (inside(L.bgBlurSlider))    return kHitBgBlur;
     if (inside(L.bgDimSlider))     return kHitBgDim;
+    if (inside(L.bgAspectSlider))  return kHitBgAspect;
 
     // ⚠️ 角手柄要**先于**预览区判 —— 手柄贴在图的四角上，
     //    顺序反了的话它们永远会被预览区先吃掉，拖角就变成了平移。
@@ -1180,6 +1221,24 @@ void CLyricusPrefsDlg::DrawBgArea(HDC dc, const PrefsLayout& L) {
     drawOne(L.bgDimLabel, L.bgDimValue, L.bgDimSlider,
             kHitBgDim, m_edited.bgDim, kBgDimMin, kBgDimMax,
             L"压暗（保证歌词可读）", L"%");
+
+    // 预览比例（D-132）。**不走 drawOne** —— 它的值住在独立 cfg 里
+    //（预览框的长宽比只影响这一个页面，不属于"浮动面板外观"那份快照；
+    //  混进去会让每次拖这个滑块都触发一轮面板重绘）。
+    //
+    // 显示成 "3.05:1" 而不是百分比：用户脑子里想的是"我的面板宽是高的几倍"，
+    // 不是"比例码 305"。
+    if (!empty(L.bgAspectSlider)) {
+        const int cur = PreviewAspectPct();
+        DrawTextIn(dc, L.bgAspectLabel, L"预览比例", T.text, m_fontBody,
+                   DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        wchar_t buf[32];
+        swprintf_s(buf, L"%d.%02d:1", cur / 100, cur % 100);
+        DrawTextIn(dc, L.bgAspectValue, buf, T.text, m_fontBody,
+                   DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+        DrawSlider(dc, L.bgAspectSlider, kHitBgAspect, cur,
+                   kPreviewAspectMin, kPreviewAspectMax);
+    }
 }
 
 // 「选择图片…」（D-098）。
@@ -1244,6 +1303,8 @@ bool CLyricusPrefsDlg::PreviewImageRect(const PrefsLayout& L, const BgManual& mI
 BgManual CLyricusPrefsDlg::CurrentManual() const {
     BgManual m;
     m.zoomPct    = m_edited.bgZoomPct;
+    m.locked     = m_edited.bgLocked;
+    m.lockedW    = m_edited.bgLockedW;
     m.offsetXPct = m_edited.bgOffsetXPct;
     m.offsetYPct = m_edited.bgOffsetYPct;
     return ClampBgManual(m);
@@ -1696,7 +1757,8 @@ void CLyricusPrefsDlg::OnLButtonDown(UINT /*flags*/, CPoint pt) {
     }
 
     // 四个滑块都用同一个起点处理：点哪儿跳到哪儿，而不是只响应拖动。
-    if (hit == kHitSlider || hit == kHitBgOpacity || hit == kHitBgBlur || hit == kHitBgDim) {
+    if (hit == kHitSlider || hit == kHitBgOpacity || hit == kHitBgBlur ||
+        hit == kHitBgDim || hit == kHitBgAspect) {
         m_dragSlider = hit;
         SetSliderFromX(hit, pt.x);
     }
@@ -1827,6 +1889,8 @@ AppearancePreset CLyricusPrefsDlg::SnapshotAppearance(const std::wstring& name) 
     p.bgOpacity  = m_edited.bgOpacity;
     // 手动构图（D-103）
     p.bgZoomPct    = m_edited.bgZoomPct;
+    p.bgLocked     = m_edited.bgLocked;
+    p.bgLockedW    = m_edited.bgLockedW;
     p.bgOffsetXPct = m_edited.bgOffsetXPct;
     p.bgOffsetYPct = m_edited.bgOffsetYPct;
     p.fontFace = m_editedFontFace;
@@ -2093,6 +2157,25 @@ void CLyricusPrefsDlg::SetSliderFromX(int hit, int x) {
         r = L.bgBlurSlider;    lo = kBgBlurMin;    hi = kBgBlurMax;    target = &m_edited.bgBlur;    break;
     case kHitBgDim:
         r = L.bgDimSlider;     lo = kBgDimMin;     hi = kBgDimMax;     target = &m_edited.bgDim;     break;
+
+    case kHitBgAspect: {
+        // 预览比例住在一个独立 cfg 里（不属于 PanelAppearance），
+        // 所以走不了下面那套 target 指针 —— 就地算完写回。
+        const RECT sl = L.bgAspectSlider;
+        const int l = sl.left + knobR, rr = sl.right - knobR;
+        if (rr <= l) return;
+        const long long num = static_cast<long long>(x - l) *
+                              (kPreviewAspectMax - kPreviewAspectMin);
+        int v = kPreviewAspectMin + static_cast<int>(num / (rr - l));
+        if (v < kPreviewAspectMin) v = kPreviewAspectMin;
+        if (v > kPreviewAspectMax) v = kPreviewAspectMax;
+        cfg_prefs_preview_aspect = v;
+        // ⚠️ 改比例会改**预览框高度**，于是整页内容高度也跟着变 ——
+        //    不调它的话滚动条范围还是旧的，拖到底会滚过头或者滚不到。
+        UpdateScrollBar();
+        Repaint();
+        return;
+    }
     default:
         return;
     }

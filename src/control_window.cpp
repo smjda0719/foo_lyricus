@@ -1245,6 +1245,8 @@ const BgBitmap* ControlWindow::CurrentBackground(int w, int h) {
     //（「图怎么摆」），而且那边的缓存比对也要一起看，分开传容易漏。
     BgManual manual;
     manual.zoomPct    = ap.bgZoomPct;
+    manual.locked     = ap.bgLocked;
+    manual.lockedW    = ap.bgLockedW;
     manual.offsetXPct = ap.bgOffsetXPct;
     manual.offsetYPct = ap.bgOffsetYPct;
 

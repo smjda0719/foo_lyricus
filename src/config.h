@@ -62,6 +62,15 @@ extern cfg_var_modern::cfg_int  cfg_app_bg_fit;
 extern cfg_var_modern::cfg_int  cfg_app_bg_blur;
 extern cfg_var_modern::cfg_int  cfg_app_bg_dim;
 extern cfg_var_modern::cfg_int  cfg_app_click_through;
+extern cfg_var_modern::cfg_int  cfg_app_bg_locked;
+extern cfg_var_modern::cfg_int  cfg_app_bg_lockedw;
+
+// 预览框的宽高比 × 100（D-132）。0 = 跟随实际面板尺寸。
+//
+// ⚠️ 刻意**不放进 PanelAppearance** —— 那个 struct 是"浮动面板外观"的
+//    完整快照，而这一项只影响首选项页自己的预览框。混进去的代价是
+//    每拖一下这个滑块都会让面板重绘一轮（面板在轮询那份快照）。
+extern cfg_var_modern::cfg_int  cfg_prefs_preview_aspect;
 extern cfg_var_modern::cfg_int  cfg_app_bg_opacity;
 // 手动构图（D-103）。GUID 末字节 0x55~0x57。
 extern cfg_var_modern::cfg_int  cfg_app_bg_zoom;
@@ -284,6 +293,20 @@ struct PanelAppearance {
     int bgOffsetXPct = 0;     // -100..100，0 = 居中
     int bgOffsetYPct = 0;
 
+    // ★ 锁定显示尺寸（D-132）。
+    //
+    // 【为什么需要】上面三个值都是**百分比**，而缩放的基准是 `dstH / imgH`
+    //   （高度铺满）—— 那**依赖面板高度**。于是用户花时间拖好的构图，
+    //   在面板被拉高/拉矮之后就全乱了：同一个 100% 画出不同大小的图。
+    //   用户报的正是「拖好之后面板一缩放，构图就变了」。
+    //
+    // 【存像素是否违反"不存像素"那条规矩】不违反。那条规矩（见 bg_math.h）
+    //   防的是"换机器/换 dpi 时构图偏掉"，而锁定尺寸是用户**明确要求**
+    //   "这张图就按这么大显示" —— 他要的就是绝对值不随环境变。
+    //   默认仍走百分比，只有主动勾了锁才走像素。
+    bool     bgLocked  = false;
+    int      bgLockedW = 0;      // 锁定时的图宽度（物理像素）
+
     bool operator==(const PanelAppearance& o) const {
         return header == o.header && current == o.current && normal  == o.normal &&
                dim    == o.dim    && warn    == o.warn    && bg      == o.bg &&
@@ -296,6 +319,7 @@ struct PanelAppearance {
                bgOpacity == o.bgOpacity &&
                bgZoomPct == o.bgZoomPct &&
                bgOffsetXPct == o.bgOffsetXPct && bgOffsetYPct == o.bgOffsetYPct &&
+               bgLocked == o.bgLocked && bgLockedW == o.bgLockedW &&
                clickThrough == o.clickThrough;
     }
     bool operator!=(const PanelAppearance& o) const { return !(*this == o); }

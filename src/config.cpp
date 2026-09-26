@@ -78,6 +78,17 @@ cfg_var_modern::cfg_int    cfg_app_bg_dim   ({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6
 // 鼠标穿透（D-130）。存 int 而不是 bool —— cfg_var_modern 那套按整数存，
 // 用 int 省得为"0/1"再包一层。读回来按 != 0 判。
 cfg_var_modern::cfg_int    cfg_app_click_through({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x58}}, 0);
+
+// 锁定显示尺寸（D-132）。和 clickThrough 一样用 int 存 0/1。
+cfg_var_modern::cfg_int    cfg_app_bg_locked  ({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x59}}, 0);
+cfg_var_modern::cfg_int    cfg_app_bg_lockedw ({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x5A}}, 0);
+
+// 预览框的宽高比 × 100（D-132）。0 = 跟随实际面板尺寸。
+//
+// ⚠️ 它**不进 PanelAppearance** —— 那是"浮动面板长什么样"的快照，
+//    而这个是"首选项页的预览框怎么画"，只有这一个页面用得上。
+//    混进去会让每次改预览比例都触发一轮面板重绘。
+cfg_var_modern::cfg_int    cfg_prefs_preview_aspect({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x5B}}, 0);
 cfg_var_modern::cfg_int    cfg_app_bg_opacity({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x54}}, 100);
 // 手动构图（D-103）。GUID 末字节 0x55~0x57。
 cfg_var_modern::cfg_int    cfg_app_bg_zoom  ({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x55}}, 100);
@@ -125,6 +136,8 @@ PanelAppearance GetPanelAppearance() {
     a.bgBlur    = ClampInt(static_cast<int>(cfg_app_bg_blur.get()),    kBgBlurMin,    kBgBlurMax);
     a.bgDim     = ClampInt(static_cast<int>(cfg_app_bg_dim.get()),     kBgDimMin,     kBgDimMax);
     a.clickThrough = (cfg_app_click_through.get() != 0);
+    a.bgLocked  = (cfg_app_bg_locked.get() != 0);
+    a.bgLockedW = ClampInt(static_cast<int>(cfg_app_bg_lockedw.get()), 0, kBgLockedWMax);
     a.bgOpacity = ClampInt(static_cast<int>(cfg_app_bg_opacity.get()), kBgOpacityMin, kBgOpacityMax);
 
     // 手动构图（D-103）。用 ClampBgManual 而不是逐个 ClampInt ——
@@ -163,6 +176,8 @@ void SetPanelAppearance(const PanelAppearance& a) {
     cfg_app_bg_blur    = ClampInt(a.bgBlur,    kBgBlurMin,    kBgBlurMax);
     cfg_app_bg_dim     = ClampInt(a.bgDim,     kBgDimMin,     kBgDimMax);
     cfg_app_click_through = a.clickThrough ? 1 : 0;
+    cfg_app_bg_locked  = a.bgLocked ? 1 : 0;
+    cfg_app_bg_lockedw = ClampInt(a.bgLockedW, 0, kBgLockedWMax);
     cfg_app_bg_opacity = ClampInt(a.bgOpacity, kBgOpacityMin, kBgOpacityMax);
 
     // 手动构图（D-103）。同样走 ClampBgManual，让"三点一组"的约束只有一份实现。

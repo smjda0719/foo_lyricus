@@ -93,10 +93,14 @@ AppearancePreset ClampPreset(AppearancePreset p) {
     {
         BgManual m;
         m.zoomPct    = p.bgZoomPct;
+    m.locked     = p.bgLocked;
+    m.lockedW    = p.bgLockedW;
         m.offsetXPct = p.bgOffsetXPct;
         m.offsetYPct = p.bgOffsetYPct;
         const BgManual c = ClampBgManual(m);
         p.bgZoomPct    = c.zoomPct;
+    p.bgLocked     = c.locked;
+    p.bgLockedW    = c.lockedW;
         p.bgOffsetXPct = c.offsetXPct;
         p.bgOffsetYPct = c.offsetYPct;
     }
@@ -267,6 +271,10 @@ std::string FormatPresets(const std::vector<AppearancePreset>& presets) {
             // 会退回默认（居中、100%），构图就和存的时候不是一回事了。
             if (p.bgFit == static_cast<int>(BgFit::Manual)) {
                 s += ";bgZoom=";  s += std::to_string(p.bgZoomPct);
+    // 锁定尺寸（D-132）。只写一次布尔 —— 老版本读到这里会当未知 key 忽略，
+    // 所以加了它们不会让旧版本读不了新预设文件（同一条约定见 preset.h 顶部）。
+    s += ";bgLock=";  s += (p.bgLocked ? "1" : "0");
+    s += ";bgLockW="; s += std::to_string(p.bgLockedW);
                 s += ";bgOffX=";  s += std::to_string(p.bgOffsetXPct);
                 s += ";bgOffY=";  s += std::to_string(p.bgOffsetYPct);
             }
@@ -344,6 +352,11 @@ std::vector<AppearancePreset> ParsePresets(const std::string& text) {
             else if (k == "bgOpacity") ParseInt(v, p.bgOpacity);
             // 手动构图（D-103）。缺省 = 铺满且居中，所以老预设天然兼容。
             else if (k == "bgZoom")    ParseInt(v, p.bgZoomPct);
+        // ⚠️ ParseInt 只吃 int —— 布尔要借一个临时变量，
+        //    直接把 bool 传进去会编译不过（而如果哪天有人给它加了个
+        //    bool 重载，"2" 这种越界值就会静默变成 true）。
+        else if (k == "bgLock")  { int b = 0; ParseInt(v, b); p.bgLocked = (b != 0); }
+        else if (k == "bgLockW")   ParseInt(v, p.bgLockedW);
             else if (k == "bgOffX")    ParseInt(v, p.bgOffsetXPct);
             else if (k == "bgOffY")    ParseInt(v, p.bgOffsetYPct);
             // 其它 key 忽略（见上面的说明）

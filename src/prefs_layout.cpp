@@ -23,7 +23,7 @@ constexpr int kRows = 2;
 
 } // namespace
 
-PrefsLayout ComputePrefsLayout(int width, int height, int dpi) {
+PrefsLayout ComputePrefsLayout(int width, int height, int dpi, int previewAspectPct) {
     PrefsLayout out;
     if (width <= 0 || height <= 0 || dpi <= 0) return out;
     out.dpi = dpi;
@@ -128,14 +128,20 @@ PrefsLayout ComputePrefsLayout(int width, int height, int dpi) {
     }
     y += Sx(14) + Sx(10);
 
-    // 预览区（D-103）。按浮动面板的默认长宽比给高度 ——
-    // 布局函数不知道用户实际把面板拖成了多大，用默认比例是为了
-    // "看个大概构图"。真正的构图比例由面板自己呈现。
+    // 预览区（D-103 / D-132）。
+    //
+    // 比例由 previewAspectPct 给（宽高比 × 100）。传 0 就用面板的出厂比例。
+    //
+    // 【为什么不能写死】从前这里固定 460/150 —— 而用户实际把面板拖成了
+    //   多大，布局函数不知道。于是预览里的构图和面板上看到的对不上，
+    //   而预览的全部意义就是"所见即所得"。用户报的正是这个。
     {
         const int pw = width - padX * 2;
-        // 460x150 是面板的出厂尺寸，比例约 3.07。宽高比要**夹具**：
-        // 窗口极窄时按比例算出来的高度会小到看不出来，而极宽时会高得离谱。
-        int ph = pw * 150 / 460;
+        // 460x150 是面板的出厂尺寸，比例约 3.07。
+        const int aspect = (previewAspectPct > 0) ? previewAspectPct : (460 * 100 / 150);
+        int ph = (aspect > 0) ? (pw * 100 / aspect) : (pw * 150 / 460);
+        // 宽高比要**夹具**：窗口极窄时按比例算出来的高度会小到看不出来，
+        // 而极宽时会高得离谱 —— 两种都会把这一页的其余部分挤没。
         const int minH = Sx(80), maxH = Sx(200);
         if (ph < minH) ph = minH;
         if (ph > maxH) ph = maxH;
@@ -153,6 +159,19 @@ PrefsLayout ComputePrefsLayout(int width, int height, int dpi) {
     // 适配方式：**点击循环**而不是下拉。
     // 四个值，循环点三下就转一圈 —— 比弹菜单少一次交互，也少一份要测的代码。
     out.bgFit = RECT{ padX, y, width - padX, y + Sx(24) };
+    y += Sx(24) + Sx(6);
+
+    // 预览比例（D-132）：宽高比 ×100 的滑块，0 = 跟随实际面板。
+    //
+    // 【为什么用滑块而不是点击循环】面板的比例是用户拖出来的任意值
+    //（实测 945x310 ≈ 3.05），几个预设循环不出来。滑块能连续对准。
+    {
+        const int lblW = Sx(72), valW = Sx(52);
+        out.bgAspectLabel  = RECT{ padX, y, padX + lblW, y + Sx(24) };
+        out.bgAspectValue  = RECT{ width - padX - valW, y, width - padX, y + Sx(24) };
+        out.bgAspectSlider = RECT{ padX + lblW + Sx(8), y,
+                                   width - padX - valW - Sx(8), y + Sx(24) };
+    }
     y += Sx(24) + Sx(14);
 
     // 三个参数滑块。和上面的不透明度滑块用同一套排布（标题左、数值右、滑块整行）。

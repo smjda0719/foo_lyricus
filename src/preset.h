@@ -120,6 +120,10 @@ struct AppearancePreset {
     // 手动构图（D-103）。只在 bgFit == Manual(4) 时参与。
     // 存百分比而不是像素的理由见 bg_math.h 的 BgManual。
     int bgZoomPct    = 100;
+    // 锁定显示尺寸（D-132）。两个字段一起进预设 —— 它们是**构图**的一部分，
+    // 和缩放/偏移同类；不像背景图路径那样是机器相关的（D-098）。
+    bool bgLocked  = false;
+    int  bgLockedW = 0;
     int bgOffsetXPct = 0;
     int bgOffsetYPct = 0;
 };

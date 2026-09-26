@@ -25,7 +25,24 @@ BgManual ClampBgManual(const BgManual& m) {
     if (r.offsetXPct > kBgOffsetMaxPct) r.offsetXPct = kBgOffsetMaxPct;
     if (r.offsetYPct < kBgOffsetMinPct) r.offsetYPct = kBgOffsetMinPct;
     if (r.offsetYPct > kBgOffsetMaxPct) r.offsetYPct = kBgOffsetMaxPct;
+    // 锁定宽度（D-132）。夹到 0 而不是 kBgLockedWMin ——
+    // 0 表示"还没设过"，而此时 locked 若是 true，BgManualScale 会退回到
+    // 百分比模式，不会算出一张 32 像素的图。
+    if (r.lockedW < 0) r.lockedW = 0;
+    if (r.lockedW > kBgLockedWMax) r.lockedW = kBgLockedWMax;
     return r;
+}
+
+double BgManualScale(int imgW, int imgH, int dstH, const BgManual& mIn) {
+    if (imgW <= 0 || imgH <= 0 || dstH <= 0) return 1.0;
+    const BgManual m = ClampBgManual(mIn);
+
+    // 锁定：用绝对宽度。**不乘 dstH** —— 那正是它存在的意义。
+    if (m.locked && m.lockedW > 0) {
+        return static_cast<double>(m.lockedW) / imgW;
+    }
+    // 默认：高度铺满 × 百分比
+    return (static_cast<double>(dstH) / imgH) * (m.zoomPct / 100.0);
 }
 
 void BgManualRange(int imgW, int imgH, int dstW, int dstH, const BgManual& m,
@@ -35,11 +52,10 @@ void BgManualRange(int imgW, int imgH, int dstW, int dstH, const BgManual& m,
     if (imgW <= 0 || imgH <= 0 || dstW <= 0 || dstH <= 0) return;
 
     const BgManual c = ClampBgManual(m);
-    // ⚠️ 基数必须和 ComputeBgPlacement 的 Manual 分支**完全一致**（D-108），
-    //    否则预览里拖到底和实际画出来的位置对不上 ——
-    //    而那种不一致只看着一边的时候发现不了。
-    const double base = static_cast<double>(dstH) / imgH;
-    const double s = base * (c.zoomPct / 100.0);
+    // ⚠️ 缩放因子走 BgManualScale —— 它和 ComputeBgPlacement 的 Manual 分支
+    //    是**同一份实现**（D-108 / D-132）。从前这里各写一遍 base 表达式、
+    //    靠注释提醒"必须保持一致"；现在靠代码结构，想不一致都难。
+    const double s = BgManualScale(imgW, imgH, dstH, c);
 
     // 返回**幅度**（>= 0）：图比区域大时是"能往里挪多少"，
     // 图比区域小时是"能往外挪多少"（D-112）。
@@ -92,8 +108,12 @@ BgPlacement ComputeBgPlacement(int imgW, int imgH, int dstW, int dstH, BgFit fit
         // ⚠️ 代价：宽图左右超出（可以拖，没问题），**窄图会左右露边**
         //    （露出面板底色）。露边是**有意**的 —— 强制"必须盖满"
         //    就回到了 Cover，而用户要的恰恰是"别一上来就放大"。
-        const double base = static_cast<double>(dstH) / imgH;
-        const double s = base * (m.zoomPct / 100.0);
+        //
+        // ⚠️ 这块基准算在 BgManualScale 里（D-132）—— 除了上面这条"高度铺满"，
+        //    它还要处理**锁定尺寸**那种情况：用户主动指定绝对宽度时，
+        //    这个 base 整个不用，图的大小不随面板变。
+        //    两处（这里和 BgManualRange）必须同一份实现，所以抽出去了。
+        const double s = BgManualScale(imgW, imgH, dstH, m);
 
         const int drawW = static_cast<int>(std::lround(imgW * s));
         const int drawH = static_cast<int>(std::lround(imgH * s));
