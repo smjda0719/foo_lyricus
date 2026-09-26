@@ -1364,28 +1364,34 @@ void CLyricusPrefsDlg::BeginBgHandleDrag(int hit, CPoint pt, const PrefsLayout& 
 void CLyricusPrefsDlg::OnBgHandleDrag(CPoint pt) {
     if (m_dragHandle == kHitNone) return;
 
-    // ★ 用**曼哈顿距离**（L1）的比例（D-117）。
+    // ★ 曼哈顿距离，但**分量带符号**（D-119）。
     //
-    // 【为什么不用欧氏距离】只有沿对角线拖才灵敏：用户横向拖了半天、
-    //    纵向没动，到锚点的欧氏距离只变一点点，图几乎没反应 ——
-    //    感觉就是"缩放不跟手"。
+    // 【为什么不能取绝对值】用户发现的：「以右下角的手柄为例，我把手柄拉到
+    //    图片内部，一样会放大，因为曼哈顿距离会抹掉符号」。
+    //    `|dx| + |dy|` 在鼠标越过锚点之后仍然变大，于是本该缩小的操作
+    //    反而在放大。
     //
-    // 【为什么不用"两个分量比例取 max"（我上一版的做法）】
-    //    max 只让**变化最大**的那个分量起作用，另一个被**完全忽略**：
-    //      · "横向放大两倍、同时纵向往回收" -> 纵向那部分白做了；
-    //      · 纵向不动时 ry 恒为 1，还会把结果**卡在 >= 1** ——
-    //        只横向拖就永远缩不小。
+    // 【修法】把两个分量**统一到"从锚点指向初始角"这个正向**：
+    //      sx0 = sign(P0.x - A.x)      —— 初始角在锚点的哪一侧
+    //      d1x = (P.x - A.x) * sx0     —— 越过锚点后变成负数
+    //    于是 ratio 会连续地从 >1 走到 <1 再到 <0，而负数由
+    //    ClampBgManual 的下限接住（图不会翻转）。
     //
-    // 【曼哈顿为什么对】|dx| + |dy| 把两个方向**加起来**：
-    //   哪个方向拖都有响应、两个方向同时拖效果叠加、而且是**单调**的
-    //  （拖得越远越大、收得越近越小），不会出现"某个方向不动就把比例锁住"。
+    // 【为什么保留曼哈顿而不是退回欧氏距离】欧氏距离同样要开方、同样要判符号，
+    //    但它在"只横着拖"时迟钝（见 D-117）。带符号的曼哈顿两个毛病都没有。
     //
-    //  代价是"斜着拖"比"正着拖"灵敏（对角线方向同样的位移会同时计入两轴）——
-    //  但那在各向同性的意义上是自洽的：鼠标走了多少路，图就变多少。
-    const double m0 = std::abs(static_cast<double>(m_dragStartPt.x - m_dragAnchor.x)) +
-                      std::abs(static_cast<double>(m_dragStartPt.y - m_dragAnchor.y));
-    const double m1 = std::abs(static_cast<double>(pt.x - m_dragAnchor.x)) +
-                      std::abs(static_cast<double>(pt.y - m_dragAnchor.y));
+    // 【为什么还要 |dy| 那一项参与】它是"把两个方向的位移加起来"的来源 ——
+    //    斜着拖时两个方向都计入，那正是 D-117 要的性质。
+    const int sx0 = (m_dragStartPt.x >= m_dragAnchor.x) ? 1 : -1;
+    const int sy0 = (m_dragStartPt.y >= m_dragAnchor.y) ? 1 : -1;
+
+    const int d0x = (m_dragStartPt.x - m_dragAnchor.x) * sx0;   // 恒 >= 0
+    const int d0y = (m_dragStartPt.y - m_dragAnchor.y) * sy0;
+    const int d1x = (pt.x - m_dragAnchor.x) * sx0;              // 可正可负
+    const int d1y = (pt.y - m_dragAnchor.y) * sy0;
+
+    const double m0 = static_cast<double>(d0x) + static_cast<double>(d0y);
+    const double m1 = static_cast<double>(d1x) + static_cast<double>(d1y);
 
     // 起点压在锚点上时 m0 接近 0，比例会炸 —— 那时保持原样（ratio=1）
     const double ratio = (m0 > 1.0) ? (m1 / m0) : 1.0;
