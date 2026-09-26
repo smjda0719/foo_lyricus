@@ -76,6 +76,40 @@ PrefsLayout ComputePrefsLayout(int width, int height, int dpi) {
     out.slider = RECT{ padX, y, width - padX, y + sliderH };
     y += sliderH + Sx(14);
 
+    // ---- 控件配色（D-093）----
+    //
+    // 放在外观预设**之前**：它和上面那些配色是一类东西（都是"面板长什么样"），
+    // 而外观预设是"整套快照"的操作，属于另一层。
+    out.titleCtrl = RECT{ padX, y, padX + Sx(120), y + Sx(14) };
+
+    // 模式开关和标题同一行、贴右边 —— 它是个两态切换，单独占一行太浪费。
+    // ⚠️ 放不下就不给位置（保持空矩形，绘制侧会跳过）。
+    const int modeW = Sx(112), modeH = Sx(22);
+    if (padX + Sx(120) + Sx(8) + modeW <= width - padX) {
+        out.ctrlModeBtn = RECT{ width - padX - modeW, y, width - padX, y + modeH };
+    }
+    y += Sx(14) + Sx(10);
+
+    // 2 行 2 列的基色块。复用上面那套 cardH / labelH / gap / rowGap，
+    // 这样两个色块区看起来是同一个体系。
+    {
+        const int cCols = 2;
+        const int cColW = (width - padX * 2 - gap * (cCols - 1)) / cCols;
+        if (cColW >= Sx(48)) {
+            for (int row = 0; row < 2; ++row) {
+                for (int c = 0; c < cCols; ++c) {
+                    const int i = row * cCols + c;
+                    if (i >= kPrefsCtrlColorCount) break;
+                    const int x = padX + c * (cColW + gap);
+                    out.ctrlCards[i]      = RECT{ x, y, x + cColW, y + cardH };
+                    out.ctrlCardLabels[i] = RECT{ x, y + cardH + labelGap,
+                                                  x + cColW, y + cardH + labelGap + labelH };
+                }
+                y += cardH + labelGap + labelH + rowGap;
+            }
+        }
+    }
+
     // ---- 外观预设（D-088）----
     //
     // 放在**主体设置之后、底部按钮之前**。放最后会被切掉：宿主给的区域

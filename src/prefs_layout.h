@@ -24,11 +24,19 @@ namespace lyricus {
 // 颜色项的数量。布局和绘制都依赖它，写两处迟早不一致。
 constexpr int kPrefsColorCount = 6;
 
+// 控件配色的基色数量（D-093）。
+//
+// ⚠️ 刻意**只有 4 个**：控制条上一共有 11 类颜色（按钮的悬停/按下、图标的
+// 普通/主操作/悬停/按下、滑块的轨道/填充、时间文字、音量图标、浮层底板）。
+// 全暴露给用户太多了 —— 挑色本身就是负担，何况还得保证它们互相搭配。
+// 每组一个基色、组内其余由程序推导，是这个模式能用的前提。
+constexpr int kPrefsCtrlColorCount = 4;
+
 // 页面的**建议尺寸**（逻辑像素）。对话框资源按它设，宿主给多大就画多大 ——
 // 布局全部按实际客户区算，不假设固定尺寸。
 constexpr int kPrefsWidth96  = 380;
-// 330 -> 424：加了「外观预设」那一区（标题 + 两行控件，见下表）。
-constexpr int kPrefsHeight96 = 424;
+// 330 -> 424（外观预设区）-> 596（控件配色区，D-093）。
+constexpr int kPrefsHeight96 = 596;
 
 // 首选项页上所有需要定位的元素。
 //
@@ -67,6 +75,17 @@ struct PrefsLayout {
     RECT presetDelete{};                // 删除
     RECT presetImport{};                // 导入
     RECT presetExport{};                // 导出
+
+    // ---- 控件配色（D-093）----
+    //
+    // 排布：标题和模式开关同一行，下面 2x2 的 4 个基色块。
+    //     ◆ 控件配色                    [自动 / 自定义]
+    //     [按钮] [图标]
+    //     [滑块] [文字]
+    RECT titleCtrl{};                   // 小标题：控件配色
+    RECT ctrlModeBtn{};                 // 两态开关（点一下切换「自动 / 自定义」）
+    RECT ctrlCards[kPrefsCtrlColorCount]{};        // 4 个基色块
+    RECT ctrlCardLabels[kPrefsCtrlColorCount]{};
 
     int  dpi = 96;                      // 回传给绘制侧，省得它再查一次
     int  padX = 0;                      // 左右内边距（提示文字要用）

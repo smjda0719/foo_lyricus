@@ -1665,38 +1665,26 @@ void ControlWindow::DrawControls(HDC dc, int dpi) {
     // 这和 D-075「白底白字」是同一类错误：**自绘界面里，颜色永远该由它要压在
     // 上面的那个颜色决定**，而不是由"当前是什么主题"去猜。
     //
-    // 做法和 prefs_layout 的 MakePrefsTheme 同一套：先取一个"远离底色"的方向
-    //（深底就往白走、浅底就往黑走），再让各控件按不同强度混过去。
-    // 深底那几个 t 值是**照着原来的硬编码值反推**的，所以默认预设下观感不变。
-    const COLORREF bg     = m_appearance.bg;
-    const bool     bgDark = (ColorLuminance(bg) < 128);
-    const COLORREF toward = bgDark ? RGB(255, 255, 255) : RGB(0, 0, 0);
-    auto T = [&](double t) { return BlendColor(bg, toward, t); };
-
-    // 控件配色的两种模式（D-093）：
-    //   自动   -> 4 个基色从面板底色推导（任何预设下都看得见）
-    //   自定义 -> 用用户在预设里指定的那 4 个基色
+    // 自动模式那组推导值住在 color_util 的 DeriveControlColors() ——
+    // **首选项页"切到自定义"时预填的也是它**，共用一份才不会在切换时跳色。
     const bool custom = (m_appearance.ctrlMode == kCtrlCustom);
+    const ControlBaseColors autoBase = DeriveControlColors(m_appearance.bg);
 
-    const COLORREF baseButton = custom ? m_appearance.ctrlButton : T(bgDark ? 0.14 : 0.10);
-    const COLORREF baseIcon   = custom ? m_appearance.ctrlIcon   : T(bgDark ? 0.82 : 0.78);
-    const COLORREF baseSlider = custom ? m_appearance.ctrlSlider : T(bgDark ? 0.80 : 0.76);
-    const COLORREF baseText   = custom ? m_appearance.ctrlText   : T(bgDark ? 0.72 : 0.68);
+    const COLORREF baseButton = custom ? m_appearance.ctrlButton : autoBase.button;
+    const COLORREF baseIcon   = custom ? m_appearance.ctrlIcon   : autoBase.icon;
+    const COLORREF baseSlider = custom ? m_appearance.ctrlSlider : autoBase.slider;
+    const COLORREF baseText   = custom ? m_appearance.ctrlText   : autoBase.text;
 
     // ★ 组内其余颜色**始终从基色推导**，自定义模式下也一样。
     //
     // 【为什么不让用户自己填】那样他就得自己保证"悬停色比常态色显眼""按下色
     // 和悬停色能分开"这类关系 —— 那是负担，而且错了就是"鼠标移上去看不出反馈"。
     // 给 4 个基色、其余由程序保证层次，是这个模式能用的前提。
-    //
-    // ⚠️ 变化方向由**基色自己的亮度**决定，不是由面板底色决定。
-    //    自定义模式下用户完全可能在深底上放一个亮按钮 —— 那时"悬停更亮"
-    //    就什么都看不出来。亮的基色往暗走、暗的基色往亮走，两种情况都对。
-    auto Shift = [](COLORREF base, double t) {
-        const COLORREF dir = (ColorLuminance(base) < 128) ? RGB(255, 255, 255)
-                                                          : RGB(0, 0, 0);
-        return BlendColor(base, dir, t);
-    };
+    // 方向由基色自己的亮度定，理由见 ShiftControlColor 的注释。
+    auto Shift = [](COLORREF base, double t) { return ShiftControlColor(base, t); };
+
+    const COLORREF bg     = m_appearance.bg;
+    const bool     bgDark = (ColorLuminance(bg) < 128);
 
     const COLORREF cBtnDown  = Shift(baseButton, 0.45);
     const COLORREF cBtnHot   = Shift(baseButton, 0.25);
@@ -1706,7 +1694,9 @@ void ControlWindow::DrawControls(HDC dc, int dpi) {
     const COLORREF cFill     = baseSlider;
     const COLORREF cTimeText = baseText;
     const COLORREF cVolIcon  = baseIcon;
-    const COLORREF cPopupBg  = custom ? Shift(baseButton, 0.15) : T(bgDark ? 0.09 : 0.07);
+    const COLORREF cPopupBg  = custom ? Shift(baseButton, 0.15)
+                                      : BlendColor(bg, bgDark ? RGB(255,255,255) : RGB(0,0,0),
+                                                   bgDark ? 0.09 : 0.07);
 
     auto buttonBg = [&](CtrlId id, const RECT& r, bool forceHot = false) {
         if (m_active == id)                        FillRoundRect(dc, r, S(8), cBtnDown);
@@ -1898,10 +1888,6 @@ void ControlWindow::DrawIconOverlay(unsigned char* dst, int w, int h, int stride
     //
     // ⚠️ 这里的格式是 0xRRGGBB，**不是** COLORREF 的 0x00BBGGRR ——
     //    所以不能把 RGB() 的结果直接传进来，得换一次字节序。
-    const COLORREF bg     = m_appearance.bg;
-    const bool     bgDark = (ColorLuminance(bg) < 128);
-    const COLORREF toward = bgDark ? RGB(255, 255, 255) : RGB(0, 0, 0);
-    auto T = [&](double t) { return BlendColor(bg, toward, t); };
     auto ToRgb = [](COLORREF c) -> unsigned {
         return (static_cast<unsigned>(GetRValue(c)) << 16) |
                (static_cast<unsigned>(GetGValue(c)) << 8)  |
@@ -1910,16 +1896,16 @@ void ControlWindow::DrawIconOverlay(unsigned char* dst, int w, int h, int stride
 
     // 控件配色两种模式（D-093），和 DrawControls 同一套判断。
     // 这里只用得上「图标基色」那一个 —— 按钮底、滑块、文字都在那边画。
+    // ⚠️ 自动模式那档**必须走 DeriveControlColors**，不能自己再算一遍：
+    //    两处强度稍有不同的话，按钮底和图标就会属于两个"体系"。
     const bool     custom   = (m_appearance.ctrlMode == kCtrlCustom);
-    const COLORREF baseIcon = custom ? m_appearance.ctrlIcon : T(bgDark ? 0.78 : 0.74);
+    const COLORREF baseIcon = custom ? m_appearance.ctrlIcon
+                                     : DeriveControlColors(m_appearance.bg).icon;
 
-    // 变化方向由**基色自己的亮度**决定，不是面板底色 —— 自定义模式下
-    // 用户完全可能在深底上放个亮图标，那时"悬停更亮"就看不出来了。
-    auto Shift = [](COLORREF base, double t) {
-        const COLORREF dir = (ColorLuminance(base) < 128) ? RGB(255, 255, 255)
-                                                          : RGB(0, 0, 0);
-        return BlendColor(base, dir, t);
-    };
+    auto Shift = [](COLORREF base, double t) { return ShiftControlColor(base, t); };
+
+    const COLORREF bg     = m_appearance.bg;
+    const bool     bgDark = (ColorLuminance(bg) < 128);
 
     const unsigned cNormal = ToRgb(baseIcon);                 // 上一首 / 下一首 / 音量
     const unsigned cMain   = ToRgb(Shift(baseIcon, 0.22));    // 播放 / 暂停（主操作）

@@ -72,6 +72,16 @@ void TestDefaultLayout() {
     Check(!IsEmpty(L.presetDelete), "「删除」有位置");
     Check(!IsEmpty(L.presetImport), "「导入」有位置");
     Check(!IsEmpty(L.presetExport), "「导出」有位置");
+    // ---- 控件配色（D-093）----
+    Check(!IsEmpty(L.titleCtrl),    "「控件配色」标题有位置");
+    Check(!IsEmpty(L.ctrlModeBtn),  "模式开关有位置");
+    {
+        int miss = 0;
+        for (int i = 0; i < lyricus::kPrefsCtrlColorCount; ++i) {
+            if (IsEmpty(L.ctrlCards[i]) || IsEmpty(L.ctrlCardLabels[i])) ++miss;
+        }
+        Check(miss == 0, "4 个控件基色块都有位置");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -127,6 +137,23 @@ void TestNothingOverlaps() {
                 if (Overlap(L.presetExport, L.hint))          ++bad;
                 if (Overlap(L.presetExport, L.reset))         ++bad;
                 if (Overlap(L.presetExport, L.fontBtn))       ++bad;
+
+                // ---- 控件配色区（D-093）----
+                if (Overlap(L.titleCtrl,   L.ctrlModeBtn))    ++bad;
+                if (Overlap(L.titleCtrl,   L.slider))         ++bad;
+                if (Overlap(L.ctrlModeBtn, L.slider))         ++bad;
+                if (Overlap(L.titleCtrl,   L.titlePreset))    ++bad;
+                // 区内 4 个色块两两之间
+                for (int i = 0; i < lyricus::kPrefsCtrlColorCount; ++i) {
+                    if (Overlap(L.ctrlCards[i], L.titleCtrl))      ++bad;
+                    if (Overlap(L.ctrlCards[i], L.titlePreset))    ++bad;
+                    if (Overlap(L.ctrlCards[i], L.ctrlModeBtn))    ++bad;
+                    if (Overlap(L.ctrlCardLabels[i], L.titlePreset)) ++bad;
+                    for (int j = i + 1; j < lyricus::kPrefsCtrlColorCount; ++j) {
+                        if (Overlap(L.ctrlCards[i],      L.ctrlCards[j]))      ++bad;
+                        if (Overlap(L.ctrlCardLabels[i], L.ctrlCardLabels[j])) ++bad;
+                    }
+                }
                 for (int i = 0; i < lyricus::kPrefsColorCount; ++i) {
                     if (Overlap(L.presetCombo,  L.cards[i]))      ++bad;
                     if (Overlap(L.presetCombo,  L.cardLabels[i])) ++bad;
@@ -151,9 +178,17 @@ void TestInsideClientArea() {
     std::printf("\n== 元素不越出客户区 ==\n");
 
     int bad = 0, checked = 0;
+    // ⚠️ 起始高度**跟着 kPrefsHeight96 走，不写死**。
+    //
+    // 这个循环的前提是"只扫高度够的档位" —— 而页面每加一区就会长高。
+    // 写死起始值的话，那个前提会在某次改动后**悄悄失效**：
+    // 循环开始扫放不下的档位，报出来的是"布局越界了"，
+    // 而真正的原因是**测试扫错了档位**，会往完全错的方向查。
+    // （加控件配色区时正是这么挂的：页面长到 596，这里还从 500 起扫。）
+    const int hFrom = lyricus::kPrefsHeight96;
     for (int dpi : kDpis) {
         for (int w = 220; w <= 900; w += 7) {
-            for (int h = 500; h <= 700; h += 11) {   // 只扫"高度够"的档
+            for (int h = hFrom; h <= hFrom + 200; h += 11) {
                 const int wp = MulDiv(w, dpi, 96), hp = MulDiv(h, dpi, 96);
                 const PrefsLayout L = LayoutLogical(w, h, dpi);
                 if (IsEmpty(L.cards[0])) continue;
@@ -166,6 +201,8 @@ void TestInsideClientArea() {
                     L.slider, L.hint, L.reset, L.fontBtn,
                     L.titlePreset, L.presetCombo, L.presetSave,
                     L.presetDelete, L.presetImport, L.presetExport,
+                    L.titleCtrl, L.ctrlModeBtn,
+                    L.ctrlCards[0], L.ctrlCards[1], L.ctrlCards[2], L.ctrlCards[3],
                 };
                 for (const RECT& r : all) {
                     if (IsEmpty(r)) continue;
