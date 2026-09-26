@@ -107,6 +107,8 @@
     <ClCompile Include="..\src\lyric.cpp" />
     <ClCompile Include="..\src\playback_state.cpp" />
     <ClCompile Include="..\src\control_window.cpp" />
+    <!-- 控制条的布局数学：抽成纯函数是为了能进离线单测台（见 tests/harness 的 cbar 组）。 -->
+    <ClCompile Include="..\src\control_bar_layout.cpp" />
     <ClCompile Include="..\src\menu.cpp" />
     <ClCompile Include="..\src\initquit.cpp" />
     <ClCompile Include="..\src\svg_icon.cpp" />
@@ -141,6 +143,7 @@
     <ClInclude Include="..\src\lyric.h" />
     <ClInclude Include="..\src\playback_state.h" />
     <ClInclude Include="..\src\control_window.h" />
+    <ClInclude Include="..\src\control_bar_layout.h" />
     <ClInclude Include="..\src\resource.h" />
   </ItemGroup>
 

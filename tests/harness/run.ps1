@@ -26,7 +26,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('all', 'search', 'lyric', 'order', 'online', 'view', 'bench')] [string]$Suite = 'all'
+    [ValidateSet('all', 'search', 'lyric', 'order', 'online', 'view', 'cbar', 'bench')] [string]$Suite = 'all'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -61,6 +61,10 @@ $suites = @(
     # 绘制层这组要用**替身** playback_state.h 覆盖真实那份：
     # 真实那份要读 metadb / playback_control，而绘制层只用几个只读访问器。
     @{ key='view';   name='绘制层布局';    compile=@('test_view.cpp','lyrics_view.cpp','scroll_anim.cpp','lyric.cpp'); extra=@('lyrics_view.h','scroll_anim.h'); shims=@('playback_state.h'); libs='gdi32.lib user32.lib' },
+    # 控制条布局：纯函数，只要 windows.h 的 RECT / MulDiv，不碰 SDK。
+    # 2026-09-26 加的 —— 这段逻辑那天改了两轮（进度条被挤没、空矩形画鬼影），
+    # 两轮都只能靠"算一遍 + 截图看"，所以抽出来让断言钉住。
+    @{ key='cbar';   name='控制条布局';    compile=@('test_control_bar.cpp','control_bar_layout.cpp'); extra=@('control_bar_layout.h'); shims=@(); libs='' },
     # bench 不是测试，是**基准**：它只打印耗时，不判通过与否。
     # 所以默认的 all 会跳过它（不能让"性能数字"影响单测的通过/失败），
     # 要用就显式 -Suite bench。
