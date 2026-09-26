@@ -41,12 +41,14 @@ void BgManualRange(int imgW, int imgH, int dstW, int dstH, const BgManual& m,
     const double base = static_cast<double>(dstH) / imgH;
     const double s = base * (c.zoomPct / 100.0);
 
-    // rx/ry 可能是负的（图比区域窄/矮，会露边）—— 那时**该方向不能拖**，
-    // 所以夹到 0。允许负值的话拖动会反向，而"拖不动"至少是诚实的。
-    const int rx = (static_cast<int>(std::lround(imgW * s)) - dstW) / 2;
-    const int ry = (static_cast<int>(std::lround(imgH * s)) - dstH) / 2;
-    outRangeX = (rx > 0) ? rx : 0;
-    outRangeY = (ry > 0) ? ry : 0;
+    // 返回**幅度**（>= 0）：图比区域大时是"能往里挪多少"，
+    // 图比区域小时是"能往外挪多少"（D-112）。
+    // ⚠️ 两种情形的幅度都必须是正数 —— 图小时返回 0 的话拖动会**完全没反应**，
+    //    而"拖不动"和"已经到边了"在用户那边看着一模一样。
+    const int halfW = (static_cast<int>(std::lround(imgW * s)) - dstW) / 2;
+    const int halfH = (static_cast<int>(std::lround(imgH * s)) - dstH) / 2;
+    outRangeX = (halfW >= 0) ? halfW : -halfW;
+    outRangeY = (halfH >= 0) ? halfH : -halfH;
 }
 
 BgPlacement ComputeBgPlacement(int imgW, int imgH, int dstW, int dstH, BgFit fit,
@@ -95,7 +97,6 @@ BgPlacement ComputeBgPlacement(int imgW, int imgH, int dstW, int dstH, BgFit fit
 
         const int drawW = static_cast<int>(std::lround(imgW * s));
         const int drawH = static_cast<int>(std::lround(imgH * s));
-
         // ⚠️ 给缩放结果**封顶**（D-105）。
         //
         // 手动缩放最大 400%，而 base 本身就可能很大（一张小图铺满大面板）——
@@ -127,18 +128,36 @@ BgPlacement ComputeBgPlacement(int imgW, int imgH, int dstW, int dstH, BgFit fit
             return p;
         }
 
-        int rangeX = 0, rangeY = 0;
-        BgManualRange(imgW, imgH, dstW, dstH, m, rangeX, rangeY);
+        // ★ 可移动幅度用**有符号**的 (图 - 区域) / 2（D-112）。
+        //
+        //   > 0：图比区域大，幅度是"能往里挪多少"——挪到头图仍盖满区域；
+        //   < 0：图比区域小，幅度是"能往外挪多少"——挪到头图仍完全落在区域里；
+        //   = 0：正好一样大，那个方向拖不动（几何上确实没余地）。
+        //
+        // ⚠️ 之前这里只认 > 0 的情形（`range = max(0, half)`），于是
+        //    **图比区域小时那个方向的余量算成 0、拖动直接没有反应** ——
+        //    而"高度铺满"下纵向恰好等于区域高、竖图横向又比区域窄，
+        //    两个方向同时为 0，用户报的"没办法拖动图片"就是这个。
+        //    那种情况下用户本来就该能拖（把图挪到区域里的任意位置），
+        //    只是"挪到头"的含义从"不露边"变成"图还在区域里"。
+        const int halfW = (drawW - dstW) / 2;
+        const int halfH = (drawH - dstH) / 2;
+        const int rangeX = (halfW >= 0) ? halfW : -halfW;
+        const int rangeY = (halfH >= 0) ? halfH : -halfH;
+        // 符号决定 offset 往哪边推：图大时 offset 增大 = 图往左移，
+        // 图小时反过来。少了这个符号，图小的时候拖动方向是反的。
+        const int signX = (halfW >= 0) ? 1 : -1;
+        const int signY = (halfH >= 0) ? 1 : -1;
 
         // 三个锚点（横向，纵向同理）：
-        //   offset = -100 -> dstX = 0            图左边贴住区域左边
-        //   offset =    0 -> dstX = -rangeX      居中
-        //   offset = +100 -> dstX = -2*rangeX    图右边贴住区域右边
+        //   offset = -100 -> 图的一边贴住区域的一边
+        //   offset =    0 -> 居中
+        //   offset = +100 -> 图的另一边贴住区域的另一边
         // 用 long long 算中间量：rangeX 在极端 dpi 下可能到几万，乘 100 之后再
         // 叠加仍在 int 内，但留点余量更稳妥。
-        const int dstX = -rangeX - static_cast<int>(
+        const int dstX = -halfW - signX * static_cast<int>(
                              static_cast<long long>(rangeX) * m.offsetXPct / 100);
-        const int dstY = -rangeY - static_cast<int>(
+        const int dstY = -halfH - signY * static_cast<int>(
                              static_cast<long long>(rangeY) * m.offsetYPct / 100);
 
         // 源**不裁**（整图都参与）：手动模式下"看到图的哪一块"完全由
