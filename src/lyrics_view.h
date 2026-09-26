@@ -65,6 +65,22 @@ struct LyricsViewLayout {
     // 0（默认）= 不裁剪，画到 rc.bottom 为止 —— DUI/CUI 就是这种情况，
     // 它们整个元素都是歌词区。
     int clipBottom   = 0;
+
+    // 面板尺寸对字号的**缩放百分比**（100 = 不缩放）。
+    //
+    // 【为什么是宿主传进来的，而不是渲染层自己按 rc 算】
+    // "面板变大了字该不该跟着大"是**策略**问题，而三种宿主的答案不一样：
+    //   * 浮动面板 —— 尺寸是用户**主动拖出来的**（现在还能拖四角），
+    //     跟着放大符合直觉；由它调 PanelFontScalePct() 算一个传进来。
+    //   * DUI / CUI —— 尺寸由宿主布局决定，用户没预期改个窗口大小歌词就变大，
+    //     留默认值 100 不动。
+    //
+    // 这也正是当初那条「不做按面板高度自动缩放字号」的约束能守住的原因：
+    // 这里的缩放是**显式、有界**的（见 PanelFontScalePct），
+    // 不是渲染层拿 rc 去无限联动。
+    //
+    // 放在最后（clipBottom 之后）同样是聚合初始化的兼容考虑。
+    int panelScalePct = 100;
 };
 
 // 画「曲名 + 歌词」的返回值。
@@ -108,5 +124,16 @@ LyricsViewResult DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& t
 // 【调用方注意】返回的句柄归缓存所有，**不要 DeleteObject**，
 // 也不要 SelectObject 进去之后不还回来。
 HFONT GetCachedUiFont(int dpi, int pt, bool bold);
+
+// 由面板宽度算出一个**温和且有界**的字号缩放百分比，供 LyricsViewLayout
+// 的 panelScalePct 使用。两个参数都按**逻辑像素**（96 dpi 基准）。
+//
+// 【为什么必须有界】浮动面板能被拖得很宽（实测用户拖到过 992 逻辑像素）。
+// 不夹住的话字号会一路涨上去，歌词面板会变得不像歌词面板；
+// 而夹在 [80, 160] 之后，"面板大 -> 字大"的直觉仍然成立，
+// 最扁 0.8 倍、最鼓 1.6 倍，都不至于失控。
+//
+// 传 0 或负数返回 100（不缩放）—— 面板刚创建、尺寸还没算出来时会走到这里。
+int PanelFontScalePct(int panelWidthLogical, int baseWidthLogical = 460);
 
 } // namespace lyricus

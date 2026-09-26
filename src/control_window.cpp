@@ -824,7 +824,13 @@ LRESULT ControlWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         TrackMouseEvent(&tme);
 
         EnsureLayout();
-        const CtrlId id = HitTestControls(pt, nullptr);
+
+        // 顺手记下"鼠标指向的值" —— 悬停也要显示数值标签，而标签画的是
+        // **鼠标指向的那个值**（"点这里会是多少"）。HitTestControls 只在
+        // 进度条 / 音量条 / 音量浮层上会填 ratioOut，其它位置给 0。
+        double hoverRatio = 0.0;
+        const CtrlId id = HitTestControls(pt, &hoverRatio);
+        m_hotRatio = hoverRatio;
 
         // ---- 音量浮层的展开 / 收起 ----
         //
@@ -1148,6 +1154,21 @@ void ControlWindow::DrawTextContent(HDC dc, const RECT& rc) {
     // 底部的控制条改用 clipBottom 排除：它只决定"画到哪儿为止"，
     // 不影响居中基准。这样面板以后支持缩放时，百分比也是跟着面板走的。
     m_layout.clipBottom = m_ctrlBarTop;
+
+    // ---- 面板宽度 -> 字号缩放（#11 / D-066）----
+    //
+    // 【为什么算在这里】它依赖**窗口尺寸**，而尺寸随时会变（用户拖四角）。
+    // 放在"配置变更"那处不行 —— 那只在用户改设置时触发，拖窗口不经过它。
+    // 和上面 clipBottom 一样：绘制前按当前状态刷一下，代价是两次 MulDiv。
+    //
+    // 用**宽度**而不是高度：面板高只决定能放几行（span=0 已经自适应了），
+    // 而"字显得小"这件事来自宽度 —— 拉宽之后一行能塞更多字，字却没变大。
+    {
+        const int dpiSafe  = (dpi > 0) ? dpi : 96;
+        const int logicalW = MulDiv(rc.right - rc.left, 96, dpiSafe);
+        m_layout.panelScalePct = PanelFontScalePct(logicalW, kDefaultW96);
+    }
+
     // 返回值存下来：宽出量和上滑步距要靠它，下一拍喂给动画时间线
     m_lastResult = DrawLyricsView(dc, rc, theme, m_layout, m_animFrame);
     // 控制条
@@ -1626,42 +1647,56 @@ void ControlWindow::DrawControls(HDC dc, int dpi) {
         DrawVerticalSlider(dc, track, v, S(4), RGB(74, 74, 82), RGB(206, 210, 220));
     }
 
-    // ---- 拖拽数值标签 ----
+    // ---- 数值标签（悬停**或**拖拽时显示）----
     //
-    // 【为什么只有拖拽时出现】用户 2026-09-26：「拖拽的时候出现一个数值标签，
-    // 这样方便调节，更何况 foobar2000 用的是 dB，这样更不容易调节」。
-    // 平时不显示是刻意的 —— 常驻的数值会和进度条右侧那个时间重复。
+    // 【为什么要它】用户 2026-09-26：「拖拽的时候出现一个数值标签，这样方便调节，
+    // 更何况 foobar2000 用的是 dB，这样更不容易调节」。音量在 playback_control
+    // 里是 dB（-40..0）的**对数**刻度 —— 光看滑块停在哪，分不出是 -3 还是 -12。
+    //
+    // 【悬停也显示】用户随后补了一句：「鼠标悬停也应该显示，这样方便用户调节」。
+    // 于是它给出的其实是**预览**：「点这里会是多少」。常驻则不做 ——
+    // 那会和进度条右侧那个 `当前 / 总长` 重复。
     //
     // 画在**最后**：它要浮在所有东西之上（含音量浮层）。
-    if (m_draggingProgress || m_draggingVolume) {
+    const bool hoverProgress = (m_hot == CtrlId::Progress);
+    const bool hoverVolume   = (m_hot == CtrlId::VolumeBar ||
+                                m_hot == CtrlId::VolumePopup);
+
+    // 拖拽优先于悬停：拖着的时候鼠标可能已经滑出滑块了，那时位置仍以拖拽为准
+    const bool showProgress = m_draggingProgress || (!m_draggingVolume && hoverProgress);
+    const bool showVolume   = m_draggingVolume   || (!m_draggingProgress && hoverVolume);
+
+    if (showProgress || showVolume) {
         RECT client{};
         if (GetClientRect(m_hwnd, &client)) {
-            if (m_draggingProgress) {
+            if (showProgress) {
+                const double r = m_draggingProgress ? m_dragRatio : m_hotRatio;
                 const RECT& bar = m_rcProgress;
-                const std::wstring label = FormatTime(st.LengthSec() * m_dragRatio);
-                const int cx = bar.left +
-                    static_cast<int>((bar.right - bar.left) * m_dragRatio);
+                const std::wstring label = FormatTime(st.LengthSec() * r);
+                const int cx = bar.left + static_cast<int>((bar.right - bar.left) * r);
                 DrawValueLabel(dc, POINT{ cx, bar.top - S(6) }, LabelSide::Above,
                                label.c_str(), dpi, client);
             } else {
+                const double r = m_draggingVolume ? m_dragRatio : m_hotRatio;
+
                 // 显示的是**将要设置成**的那个 dB 值，不是播放器当前值 ——
                 // 拖动期间并没有真去改播放器（松手才落，见 WM_LBUTTONUP），
                 // 显示当前值会和滑块位置对不上。
-                const double db = -40.0 * (1.0 - m_dragRatio);
                 wchar_t buf[32];
-                swprintf_s(buf, L"%.1f dB", db);
+                swprintf_s(buf, L"%.1f dB", -40.0 * (1.0 - r));
 
-                if (m_dragFromPopup) {
-                    // 浮层贴着面板右沿，标签只能往**左**让
+                // 浮层贴着面板右沿，标签只能往**左**让；横向条则挂在正上方
+                const bool fromPopup = m_draggingVolume ? m_dragFromPopup
+                                                        : (m_hot == CtrlId::VolumePopup);
+                if (fromPopup) {
                     const RECT& bar = m_rcVolumePopup;
                     const int cy = bar.bottom -
-                        static_cast<int>((bar.bottom - bar.top) * m_dragRatio);
+                        static_cast<int>((bar.bottom - bar.top) * r);
                     DrawValueLabel(dc, POINT{ bar.left - S(8), cy }, LabelSide::LeftOf,
                                    buf, dpi, client);
                 } else {
                     const RECT& bar = m_rcVolumeBar;
-                    const int cx = bar.left +
-                        static_cast<int>((bar.right - bar.left) * m_dragRatio);
+                    const int cx = bar.left + static_cast<int>((bar.right - bar.left) * r);
                     DrawValueLabel(dc, POINT{ cx, bar.top - S(6) }, LabelSide::Above,
                                    buf, dpi, client);
                 }

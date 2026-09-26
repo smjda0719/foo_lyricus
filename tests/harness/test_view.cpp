@@ -428,8 +428,53 @@ void TestFontPct() {
     std::printf("     fontPct=100 -> %d 行\n", f100.totalLines);
     std::printf("     fontPct=200 -> %d 行\n", f200.totalLines);
 
-    Check(f60.totalLines > f100.totalLines,  "字号 60%% 能塞下更多行");
-    Check(f200.totalLines < f100.totalLines, "字号 200%% 能塞下的行数更少");
+    Check(f60.totalLines > f100.totalLines,  "字号 60% 能塞下更多行");
+    Check(f200.totalLines < f100.totalLines, "字号 200% 能塞下的行数更少");
+}
+
+// 面板宽度 -> 字号缩放（#11 方案 A）。
+//
+// 这是个**纯函数**，所以直接测它，不必渲染 —— 它回答的只是
+// "给定面板宽度，字号该乘多少"，把渲染层那两级相乘的输入钉住。
+void TestPanelFontScale() {
+    std::printf("\n== 面板宽度 -> 字号缩放 ==\n");
+
+    using lyricus::PanelFontScalePct;
+
+    Check(PanelFontScalePct(460) == 100, "★ 默认宽度 460 -> 100%（默认尺寸下行为完全不变）");
+    Check(PanelFontScalePct(0)   == 100, "宽度 0（尺寸还没算出来）-> 100%，不是 0 也不是负数");
+    Check(PanelFontScalePct(-100) == 100, "负宽度 -> 100%");
+
+    // 夹取 —— 这是"温和"两个字的技术含义
+    Check(PanelFontScalePct(1600) == 160, "★ 很宽 -> 夹在 160%（不会失控）");
+    Check(PanelFontScalePct(920)  == 160, "2 倍宽也停在 160%");
+    Check(PanelFontScalePct(200)  == 80,  "★ 很窄 -> 夹在 80%");
+    Check(PanelFontScalePct(100)  == 80,  "再窄也停在 80%");
+
+    // 中间的线性段
+    Check(PanelFontScalePct(690) == 150, "690（1.5 倍宽）-> 150%");
+    Check(PanelFontScalePct(391) == 85,  "391（0.85 倍宽）-> 85%");
+
+    // 单调：面板变宽，字不会反而变小
+    {
+        int bad = 0, prev = -1;
+        for (int w = 50; w <= 2000; w += 7) {
+            const int cur = PanelFontScalePct(w);
+            if (prev >= 0 && cur < prev) ++bad;
+            prev = cur;
+        }
+        Check(bad == 0, "★ 50~2000 逐档扫描：宽度增加时缩放不减小（单调）");
+    }
+
+    // 有界：任何输入都落在 [80,160]
+    {
+        int out = 0;
+        for (int w = -50; w <= 5000; w += 11) {
+            const int p = PanelFontScalePct(w);
+            if (p < 80 || p > 160) ++out;
+        }
+        Check(out == 0, "★ 全范围扫描：返回值恒在 [80,160] 内（有界就是「温和」的技术含义）");
+    }
 }
 
 void TestNoTrack() {
@@ -1046,6 +1091,7 @@ int wmain() {
     TestResizeAndClip();
     TestSlideKeepsPrevLine();
     TestFontPct();
+    TestPanelFontScale();
     TestBilingual();
     TestTranslationPrimary();
     TestLongLineEllipsis();

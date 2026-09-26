@@ -164,12 +164,16 @@ int DrawLine(HDC dc, const wchar_t* text, int x, int y, int maxWidth,
 
 // 百分比字号 -> 实际 pt。
 //
-// 刻意**不做**「按面板高度自动缩放字号」：字号该由用户拍板，
-// 面板高度影响的是**行数**（见下面 span 那段）。两者混在一起的话，
-// 同一个设置值在独立面板（460x150 逻辑像素）和 DUI 元素（可能很高）里
-// 会得到不同字号，用户根本没法预期自己调的是什么。
-int ScalePt(int basePt, int pct) {
-    const int pt = MulDiv(basePt, pct, 100);
+// **两级相乘**：先乘用户设的 fontPct，再乘面板尺寸带来的 panelScalePct
+//（后者由宿主决定要不要给，见 lyrics_view.h 里那个字段的说明）。
+//
+// 刻意**不让渲染层自己按面板高度缩放字号**：那会让同一个设置值在独立面板
+// （460x150 逻辑像素）和 DUI 元素（可能很高）里得到不同字号，用户根本没法
+// 预期自己调的是什么。面板那一级之所以安全，是因为它**显式且有界**
+//（PanelFontScalePct 夹在 80~160），而不是拿 rc 去无限联动。
+int ScalePt(int basePt, int pct, int panelScalePct) {
+    const int user = MulDiv(basePt, pct, 100);
+    const int pt   = MulDiv(user, panelScalePct, 100);
     return (pt < 1) ? 1 : pt;
 }
 
@@ -213,6 +217,18 @@ const std::wstring* SubTextOf(const LyricDocument& doc, size_t i, bool tlPrimary
 
 } // namespace
 
+int PanelFontScalePct(int panelWidthLogical, int baseWidthLogical) {
+    if (panelWidthLogical <= 0 || baseWidthLogical <= 0) return 100;
+
+    int pct = MulDiv(panelWidthLogical, 100, baseWidthLogical);
+
+    // 夹在 [80, 160]：最扁 0.8 倍、最鼓 1.6 倍。
+    // 面板能被拖得很宽（实测 992 逻辑像素），不夹的话字号会一路涨上去。
+    if (pct < 80)  pct = 80;
+    if (pct > 160) pct = 160;
+    return pct;
+}
+
 LyricsViewResult DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& theme,
                                 const LyricsViewLayout& layout,
                                 const LyricAnimFrame& anim) {
@@ -240,10 +256,10 @@ LyricsViewResult DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& t
 
     const int pct = (layout.fontPct > 0) ? layout.fontPct : 100;
 
-    HFONT fHeader  = MakeFont(dpi, ScalePt(11, pct), false);   // 曲名：刻意比歌词小，别抢戏
-    HFONT fCurrent = MakeFont(dpi, ScalePt(15, pct), true);    // 当前歌词行
-    HFONT fBody    = MakeFont(dpi, ScalePt(11, pct), false);   // 其它歌词行
-    HFONT fSub     = MakeFont(dpi, ScalePt(9,  pct), false);   // 当前行的翻译（参照行）
+    HFONT fHeader  = MakeFont(dpi, ScalePt(11, pct, layout.panelScalePct), false);   // 曲名：刻意比歌词小，别抢戏
+    HFONT fCurrent = MakeFont(dpi, ScalePt(15, pct, layout.panelScalePct), true);    // 当前歌词行
+    HFONT fBody    = MakeFont(dpi, ScalePt(11, pct, layout.panelScalePct), false);   // 其它歌词行
+    HFONT fSub     = MakeFont(dpi, ScalePt(9,  pct, layout.panelScalePct), false);   // 当前行的翻译（参照行）
 
     const auto& st = PlaybackState::Get();
     int y = top;
