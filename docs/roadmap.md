@@ -22,9 +22,9 @@
 | | |
 |---|---|
 | 组件 | `foo_lyricus.dll`，foobar2000 2.x，x64 |
-| 源码 | 57 个文件 / **14900 行** |
-| 决策 | **86 条**（D-001 ~ D-088，`decisions.md`） |
-| 测试 | **10 组 752 项，全绿**（离线，`tests/harness/run.ps1`） |
+| 源码 | 57 个文件 / **15386 行** |
+| 决策 | **87 条**（D-001 ~ D-089，`decisions.md`） |
+| 测试 | **10 组 761 项，全绿**（离线，`tests/harness/run.ps1`） |
 | 打包 | `bin\foo_lyricus.fb2k-component`（脚本 `tools/package.ps1`） |
 
 **五个界面**（全部只在真机上，离屏单测覆盖不到 —— 所以有 `capture-ui.ps1`）：
@@ -127,7 +127,7 @@
 
 | 事项 | 状态 |
 |---|---|
-| **外观预设系统** | 🚧 进行中（D-088）。**纯逻辑层已完成**（`preset.h/.cpp`，preset 组 58 项）：文本表解析 / 增删改 / 单条导入导出 / 内置 4 套。<br>**未做**：`config` 接线（`cfg_appearance_presets` + 应用预设）、首选项页 UI（下拉 + 保存/删除/导入/导出） |
+| **外观预设系统** | ✅ **已完成**（D-088 / D-089）。纯逻辑层 `preset.h/.cpp`（文本表 / 增删改 / 单条导入导出）+ `cfg_appearance_presets` + 首选项页的「外观预设」区（下拉走系统菜单、保存 / 删除 / 导入 / 导出）。<br>**想加字段**：改 `AppearancePreset` + `FormatPresets` / `ParsePresets` 即可，**老预设文件照样能读**（未知 key 忽略、缺的用默认值）。<br>**改内置预设**：`preset.cpp` 的 `BuiltinPresets()`。<br>**改下拉样式**：目前用系统 `TrackPopupMenu`，没自绘。 |
 | **32 位支持** | ❌ 未做。`foobar2000_SDK.lib` / `component_client.lib` / `pfc.lib` **都只有 x64**，要补得先构建它们的 32 位版 |
 | ~~首选项页「字体」按钮的观感~~ | ✅ 已验（2026-09-26） |
 | `#13` 长歌词横滚的**性能测量** | ⏸ 用户确认**没有素材**（曲库里几乎没有超宽行），已正式关闭 |
