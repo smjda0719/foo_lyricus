@@ -106,28 +106,30 @@ BEGIN
 
     LTEXT           "歌词偏移", -1, 7, 28, 54, 10
     CONTROL         "", IDC_SLIDER_OFFSET, "msctls_trackbar32",
-                    TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, 64, 24, 174, 16
-    LTEXT           "+0.0 秒", IDC_LBL_V_OFFSET, 242, 28, 58, 10
+                    TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, 64, 24, 130, 16
+    LTEXT           "+0.0 秒", IDC_LBL_V_OFFSET, 198, 28, 50, 10
 
     LTEXT           "歌词字号", -1, 7, 50, 54, 10
     CONTROL         "", IDC_SLIDER_FONT, "msctls_trackbar32",
-                    TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, 64, 46, 174, 16
-    LTEXT           "", IDC_LBL_V_FONT, 242, 50, 58, 10
+                    TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, 64, 46, 130, 16
+    LTEXT           "", IDC_LBL_V_FONT, 198, 50, 50, 10
+    PUSHBUTTON      "-", IDC_BTN_FONT_DEC, 252, 47, 18, 14
+    PUSHBUTTON      "+", IDC_BTN_FONT_INC, 274, 47, 18, 14
 
     LTEXT           "显示行数", -1, 7, 72, 54, 10
     CONTROL         "", IDC_SLIDER_SPAN, "msctls_trackbar32",
-                    TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, 64, 68, 174, 16
-    LTEXT           "", IDC_LBL_V_SPAN, 242, 72, 58, 10
+                    TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, 64, 68, 130, 16
+    LTEXT           "", IDC_LBL_V_SPAN, 198, 72, 50, 10
 
     LTEXT           "当前行位置", -1, 7, 94, 54, 10
     CONTROL         "", IDC_SLIDER_RATIO, "msctls_trackbar32",
-                    TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, 64, 90, 174, 16
-    LTEXT           "", IDC_LBL_V_RATIO, 242, 94, 58, 10
+                    TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, 64, 90, 130, 16
+    LTEXT           "", IDC_LBL_V_RATIO, 198, 94, 50, 10
 
     LTEXT           "面板不透明度", -1, 7, 116, 54, 10
     CONTROL         "", IDC_SLIDER_ADJ_ALPHA, "msctls_trackbar32",
-                    TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, 64, 112, 174, 16
-    LTEXT           "", IDC_LBL_V_ALPHA, 242, 116, 58, 10
+                    TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, 64, 112, 130, 16
+    LTEXT           "", IDC_LBL_V_ALPHA, 198, 116, 50, 10
 
     LTEXT           "拖动任意一条，面板立刻跟着变 —— 看着调，满意了点确定。\n字号 / 行数 / 行位置 / 不透明度是全局的；歌词偏移只对当前曲目生效并记住。",
                     -1, 7, 136, 293, 24

@@ -45,6 +45,18 @@ using namespace lyricus;
 constexpr int kOffsetMaxMs  = 10000;
 constexpr int kOffsetStepMs = 100;
 
+// 字号的取值范围与微调步进。
+//
+// 滑块和微调按钮**共用**这两个边界 —— 各写一份迟早会不一致，
+// 而"滑块到头了按钮还能再推一格"这种 bug 特别难查。
+constexpr int kFontMin = 50;
+constexpr int kFontMax = 300;
+
+// 微调按钮的步进 = 1，这是"微调"两个字的本意：
+// 大范围交给滑块（拖动 / PageUp / PageDown 一页 10），
+// 按钮只负责在相邻两档之间挑一个。
+constexpr int kFontStep = 1;
+
 int SecToOffsetPos(double sec) {
     int ms = static_cast<int>(sec * 1000.0 + (sec >= 0 ? 0.5 : -0.5));
     if (ms >  kOffsetMaxMs) ms =  kOffsetMaxMs;
@@ -65,6 +77,8 @@ public:
         MSG_WM_HSCROLL(OnHScroll)
         COMMAND_ID_HANDLER_EX(IDC_BTN_OFFSET_ZERO, OnOffsetZero)
         COMMAND_ID_HANDLER_EX(IDC_BTN_DISPLAY_DEF, OnDisplayDefaults)
+        COMMAND_ID_HANDLER_EX(IDC_BTN_FONT_DEC, OnFontDec)
+        COMMAND_ID_HANDLER_EX(IDC_BTN_FONT_INC, OnFontInc)
         COMMAND_ID_HANDLER_EX(IDOK, OnOk)
         COMMAND_ID_HANDLER_EX(IDCANCEL, OnCancel)
     END_MSG_MAP()
@@ -90,7 +104,7 @@ private:
         SetupSlider(IDC_SLIDER_OFFSET, -kOffsetMaxMs / kOffsetStepMs,
                                        kOffsetMaxMs / kOffsetStepMs,
                                        /*page=*/5, /*tickFreq=*/10);
-        SetupSlider(IDC_SLIDER_FONT,  50, 300, /*page=*/10, /*tickFreq=*/50);
+        SetupSlider(IDC_SLIDER_FONT,  kFontMin, kFontMax, /*page=*/10, /*tickFreq=*/50);
         SetupSlider(IDC_SLIDER_SPAN,   0,  30, /*page=*/1,  /*tickFreq=*/5);
         SetupSlider(IDC_SLIDER_RATIO,  0, 100, /*page=*/5,  /*tickFreq=*/10);
         SetupSlider(IDC_SLIDER_ADJ_ALPHA, kMinAlpha, kMaxAlpha, /*page=*/10, /*tickFreq=*/30);
@@ -140,6 +154,30 @@ private:
         }
         RefreshLabels();
     }
+
+    // ---- 字号微调按钮（−1 / +1）----
+    //
+    // 用户 2026-09-26：「可以给用户一个微调旋钮，调节字号大小，放到调节面板里」。
+    // 滑块能覆盖 50~300，但想在 118 和 119 之间挑一个，鼠标拖动基本靠运气 ——
+    // 而字号恰恰是最常微调的那一项（它现在还要和面板宽度一起决定最终字号，
+    // 见 D-066）。
+    //
+    // 【实现上刻意复用 OnHScroll 那条路径】改滑块位置 -> 再交给它分派。
+    // 如果按钮自己直接调 SetLyricFontPct，就变成"滑块走一套、按钮走另一套"，
+    // 将来给字号加逻辑（比如顺手刷新别的控件）时必然漏掉一边。
+    void NudgeFont(int delta) {
+        const int cur  = SliderPos(IDC_SLIDER_FONT);
+        int       next = cur + delta;
+        if (next < kFontMin) next = kFontMin;
+        if (next > kFontMax) next = kFontMax;
+        if (next == cur) return;   // 已经到边界了，别白刷一遍
+
+        SetSliderPos(IDC_SLIDER_FONT, next);
+        OnHScroll(0, 0, GetDlgItem(IDC_SLIDER_FONT));
+    }
+
+    void OnFontDec(UINT, int, CWindow) { NudgeFont(-kFontStep); }
+    void OnFontInc(UINT, int, CWindow) { NudgeFont(+kFontStep); }
 
     // 面板不透明度。
     //

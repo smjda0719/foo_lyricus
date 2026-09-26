@@ -849,11 +849,19 @@ LRESULT ControlWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             RequestRepaint();
         }
 
-        // 鼠标进了浮层之后让图标保持"热" —— 否则图标一熄，看着就像这浮层
-        // 跟它没关系。m_hot 只参与绘制，改它没有副作用。
-        const CtrlId hotId = overPopup ? CtrlId::VolumeIcon : id;
+        // ⚠️ 这里**必须**存真实命中，不能为了"让图标保持高亮"把它替换成 VolumeIcon。
+        //
+        // 【踩过的坑】原本为了让浮层展开时图标不熄，这里写的是
+        //     const CtrlId hotId = overPopup ? CtrlId::VolumeIcon : id;
+        // 当时注释还写着"m_hot 只参与绘制，改它没有副作用" —— **那句话是错的**。
+        // 后来加悬停数值标签时，m_hot 又要用来判断"鼠标是不是在滑块上"，
+        // 被这一覆盖，浮层上的悬停就再也认不出来，表现是
+        // 「横向音量条悬停有标签、纵向浮层没有」（用户 2026-09-26 报的）。
+        //
+        // 现在图标高亮改由 m_volumePopupOpen 单独负责（见 buttonBg / tintFor），
+        // m_hot 恢复成"鼠标真正指着谁"这一件事。
         SetCursor(LoadCursorW(nullptr, (id == CtrlId::None) ? IDC_ARROW : IDC_HAND));
-        if (hotId != m_hot) { m_hot = hotId; RequestRepaint(); }
+        if (id != m_hot) { m_hot = id; RequestRepaint(); }
         return 0;
     }
 
@@ -1545,15 +1553,15 @@ void ControlWindow::DrawControls(HDC dc, int dpi) {
     auto S = [dpi](int v) { return MulDiv(v, dpi, 96); };
     const auto& st = PlaybackState::Get();
 
-    auto buttonBg = [&](CtrlId id, const RECT& r) {
-        if (m_active == id)   FillRoundRect(dc, r, S(8), RGB(72, 82, 96));
-        else if (m_hot == id) FillRoundRect(dc, r, S(8), RGB(58, 62, 72));
+    auto buttonBg = [&](CtrlId id, const RECT& r, bool forceHot = false) {
+        if (m_active == id)                        FillRoundRect(dc, r, S(8), RGB(72, 82, 96));
+        else if (m_hot == id || forceHot)          FillRoundRect(dc, r, S(8), RGB(58, 62, 72));
     };
 
     buttonBg(CtrlId::Prev, m_rcPrev);
     buttonBg(CtrlId::PlayPause, m_rcPlayPause);
     buttonBg(CtrlId::Next, m_rcNext);
-    buttonBg(CtrlId::VolumeIcon, m_rcVolumeIcon);   // 之前漏了，音量按钮一直没有悬停底板
+    buttonBg(CtrlId::VolumeIcon, m_rcVolumeIcon, m_volumePopupOpen);   // 浮层开着时图标也保持高亮
 
     // 分层模式下图标走 DrawIconOverlay（在 alpha 修正之后混合），
     // 这里只在非分层路径上画几何图形兜底。
@@ -1729,9 +1737,14 @@ void ControlWindow::DrawIconOverlay(unsigned char* dst, int w, int h, int stride
 
     // 悬停/按下的反馈 = 底板（DrawControls 里画）+ 图标变亮，两者一起给。
     // active 优先于 hot —— 按住时鼠标必然还在上面，不能只显示悬停态。
+    //
+    // 音量图标额外判一条 m_volumePopupOpen：浮层是从它身上展开的，
+    // 鼠标移进浮层之后 m_hot 就变成 VolumePopup 了（这是**必须**的，
+    // 悬停标签靠它认人），但图标不该因此熄掉 —— 那样看着像浮层和它没关系。
     auto tintFor = [this](CtrlId id, unsigned normal) -> unsigned {
         if (m_active == id) return 0x9CCBFFu;   // 按下：淡蓝
         if (m_hot == id)    return 0xFFFFFFu;   // 悬停：纯白
+        if (id == CtrlId::VolumeIcon && m_volumePopupOpen) return 0xFFFFFFu;
         return normal;
     };
 

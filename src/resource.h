@@ -97,3 +97,11 @@
 #define IDC_LBL_TRACK        1211
 #define IDC_BTN_OFFSET_ZERO  1212
 #define IDC_BTN_DISPLAY_DEF  1213
+
+// 字号的**微调**按钮（−1 / +1）。
+//
+// 用户 2026-09-26：「可以给用户一个微调旋钮，调节字号大小，放到调节面板里」。
+// 滑块能覆盖 50~300 的大范围，但想在 118 和 119 之间挑一个，
+// 鼠标拖动基本靠运气 —— 而字号恰恰是最常微调的那一项。
+#define IDC_BTN_FONT_DEC     1214
+#define IDC_BTN_FONT_INC     1215

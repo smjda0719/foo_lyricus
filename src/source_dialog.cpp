@@ -77,7 +77,13 @@ private:
         return FALSE;   // 自己设了焦点
     }
 
-    CListBox List() { return GetDlgItem(IDC_LIST_SOURCES); }
+    // ⚠️ 必须**显式**构造 CListBox。
+    //
+    // 写成 `return GetDlgItem(...)` 会触发 C4927：GetDlgItem 返回 CWindow，
+    // 要变成 CListBox 得先走 CWindow::operator HWND、再走 CListBox(HWND) ——
+    // 那是**两层**用户定义转换，标准只允许一层。编译器"非法地"替你连做了，
+    // 所以它只是警告；但既然报出来了就别留着。
+    CListBox List() { return CListBox(GetDlgItem(IDC_LIST_SOURCES)); }
 
     // 重建列表并把选中项放回 index（越界则夹到范围内）。
     //
