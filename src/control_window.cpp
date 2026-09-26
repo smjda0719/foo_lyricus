@@ -757,33 +757,16 @@ LRESULT ControlWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
 
     case WM_NCHITTEST: {
-        // ---- 鼠标穿透（D-130）----
+        // ⚠️ 鼠标穿透**不在这个函数里做**（D-130）。
         //
-        // ⚠️ 必须排在**最前面** —— 排在后面的话下面那些分支会先返回 HTCLIENT /
-        //    HTCAPTION / HTBOTTOMRIGHT，穿透就永远轮不到。
+        // 【为什么不返回 HTTRANSPARENT】MSDN 的原文是
+        //   「In a window currently covered by another window
+        //     **in the same thread**」—— 它只在**同线程**的窗口之间传递。
+        //   面板下面通常是别的进程（浏览器、资源管理器），消息谁也接不住：
+        //   面板不响应、下面也没响应。用户实测就是"点哪儿都没反应"。
         //
-        // 【为什么用 HTTRANSPARENT 而不是 WS_EX_TRANSPARENT】
-        //   * 扩展样式是"整窗"开关，而且改了要**重建窗口**才生效
-        //     （我们的分层窗口重建代价不小：要重新 SetLayeredWindowAttributes、
-        //       重新算 DPI、重新铺背景）；
-        //   * 更要紧的是 HTTRANSPARENT 是在这个**消息里**返回的，
-        //     窗口仍然**收得到** WM_NCHITTEST —— 于是能读到修饰键状态，
-        //     这正是"按住 Ctrl 就不穿透"能实现的原因。
-        //     换成扩展样式的话鼠标消息根本不到我们这儿，那条逃生舱就没了。
-        //
-        // 【为什么必须有逃生舱】这是个单向门：打开之后面板完全点不动，
-        //   要关只能去 foobar2000 主窗口开首选项 —— 而主窗口要是也被面板挡着，
-        //   用户就卡死了。Ctrl 让"临时操作一下"不需要任何额外的 UI。
-        //
-        // 用 GetAsyncKeyState 而不是 GetKeyState：后者读的是**消息队列**里的
-        // 键盘状态，而这个窗口因为穿透本来就不该拿到键盘焦点 —— 那种状态下
-        // GetKeyState 返回的东西不可靠。GetAsyncKeyState 读的是全局物理状态，
-        // 正是这里需要的。
-        if (m_appearance.clickThrough &&
-            (::GetAsyncKeyState(VK_CONTROL) & 0x8000) == 0) {
-            return HTTRANSPARENT;
-        }
-
+        //   要**跨进程**穿透只能用扩展样式 WS_EX_TRANSPARENT，
+        //   见 UpdateClickThrough()。
         const POINTS sp = MAKEPOINTS(lp);
         POINT c{ sp.x, sp.y };
         ScreenToClient(hwnd, &c);
@@ -1094,6 +1077,18 @@ LRESULT ControlWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // 下一句才纠正过来：白多一次整帧渲染，而且那一帧是错的（看着闪一下）。
             const bool animChanged = AdvanceAnimation(now);
 
+            // 穿透模式下刷新定时器要跑得更勤（见 UpdateClickThrough 的说明）。
+            // 只在真的开着穿透时提频，平时保持 250ms 省电。
+            {
+                const UINT want = m_appearance.clickThrough ? 40u : kRefreshInterval;
+                if (want != m_refreshInterval) {
+                    m_refreshInterval = want;
+                    SetTimer(hwnd, kRefreshTimerId, want, nullptr);
+                }
+            }
+            // 鼠标穿透（D-130）：在这里**轮询**，不能靠事件 ——
+            // 窗口一旦带上 WS_EX_TRANSPARENT 就收不到任何鼠标消息了。
+            UpdateClickThrough();
             if (lineChanged || stateChanged || cfgChanged || apChanged ||
                 positionDue || animChanged) {
                 m_lastPositionRepaint = now;
@@ -1297,6 +1292,35 @@ void ControlWindow::PaintContent(HDC dc) {
     DeleteDC(mem);
 }
 
+void ControlWindow::UpdateClickThrough() {
+    if (m_hwnd == nullptr) return;
+
+    // 穿透开着、而且没按 Ctrl -> 加 WS_EX_TRANSPARENT。
+    // 按 Ctrl 时临时摘掉，让用户能操作面板（逃生舱）。
+    //
+    // 用 GetAsyncKeyState 而不是 GetKeyState：后者读的是**消息队列**里的
+    // 键盘状态，而窗口带着 WS_EX_TRANSPARENT 时根本收不到键盘消息 ——
+    // 那种状态下 GetKeyState 返回的东西不可靠。GetAsyncKeyState 读的是
+    // 全局物理按键状态，正是这里需要的。
+    const bool ctrlDown = (::GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    const bool want = m_appearance.clickThrough && !ctrlDown;
+    if (want == m_clickThroughApplied) return;
+
+    LONG_PTR ex = GetWindowLongPtrW(m_hwnd, GWL_EXSTYLE);
+    if (want) ex |= WS_EX_TRANSPARENT;
+    else      ex &= ~WS_EX_TRANSPARENT;
+    SetWindowLongPtrW(m_hwnd, GWL_EXSTYLE, ex);
+    m_clickThroughApplied = want;
+
+    // 样式改完要 SWP_FRAMECHANGED 才立刻生效。
+    // ⚠️ NOMOVE / NOSIZE / NOZORDER / NOACTIVATE 四个都要 ——
+    //    少一个就会把置顶窗口挪位置或者抢走焦点。
+    SetWindowPos(m_hwnd, nullptr, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
+                 SWP_NOACTIVATE | SWP_FRAMECHANGED);
+
+    DebugLog("鼠标穿透: %s（Ctrl%s）", want ? "开" : "关", ctrlDown ? "按下" : "未按");
+}
 void ControlWindow::PaintPreview(HDC dc, const RECT& rc,
                                  const PanelAppearance& ap,
                                  const LyricDisplayConfig& cfg, int dpi,

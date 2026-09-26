@@ -66,6 +66,20 @@ private:
     // 触发一次重绘（分层模式下走 RenderLayered，否则走 WM_PAINT）
     void RequestRepaint();
 
+    // 按需加上/去掉 WS_EX_TRANSPARENT（D-130）。
+    //
+    // 【为什么用扩展样式而不是 WM_NCHITTEST 返回 HTTRANSPARENT】
+    //   MSDN 对 HTTRANSPARENT 的说明里有半句很容易漏掉：
+    //   「In a window currently covered by another window **in the same
+    //     thread**」—— 它只在**同线程**的窗口之间传递。面板下面通常是
+    //   别的进程（浏览器、资源管理器），消息谁也接不住：面板不响应、
+    //   下面也没响应。用户实测正是"点哪儿都没反应"。
+    //
+    // 【代价】加了它之后窗口**收不到任何鼠标消息**，所以 Ctrl 逃生舱
+    //   不能再靠 WM_NCHITTEST 读，只能**轮询**（GetAsyncKeyState）。
+    //   这也是为什么穿透模式下刷新定时器要跑得更勤。
+    void UpdateClickThrough();
+
     // ---- 控制条（M2）----
     //
     // VolumePopup 是「横向音量条被降级掉之后，鼠标悬停在音量图标上」展开的
@@ -198,6 +212,15 @@ private:
     // 上一次 UpdateLayeredWindow 成功没有。
     // 初值 true：这样第一次失败会走"好 -> 坏"的翻转，记下那条关键日志。
     bool     m_lastUwlOk        = true;
+
+    // 当前是否已经把 WS_EX_TRANSPARENT 加上去了（D-130）。
+    // 缓存它是因为 SetWindowLongPtr + SetWindowPos 都不便宜，
+    // 而 UpdateClickThrough 会在每次刷新定时器里跑。
+    bool     m_clickThroughApplied = false;
+
+    // 当前的刷新定时器间隔。穿透模式下要提到 40ms —— 250ms 的话
+    // 按下 Ctrl 到面板恢复要等小半秒，逃生舱就没法用了（D-130）。
+    UINT     m_refreshInterval = 0;
 
     // 上一次**因为播放位置变化**而重绘的时刻（GetTickCount64）。
     // 用来把「位置在走」那种重绘节流到每秒一次 —— 见 control_window.cpp 里
