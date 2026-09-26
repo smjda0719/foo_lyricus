@@ -22,9 +22,9 @@
 | | |
 |---|---|
 | 组件 | `foo_lyricus.dll`，foobar2000 2.x，x64 |
-| 源码 | 57 个文件 / **15386 行** |
-| 决策 | **87 条**（D-001 ~ D-089，`decisions.md`） |
-| 测试 | **10 组 761 项，全绿**（离线，`tests/harness/run.ps1`） |
+| 源码 | 57 个文件 / **15416 行** |
+| 决策 | **88 条**（D-001 ~ D-090，`decisions.md`） |
+| 测试 | **10 组 766 项，全绿**（离线，`tests/harness/run.ps1`） |
 | 打包 | `bin\foo_lyricus.fb2k-component`（脚本 `tools/package.ps1`） |
 
 **五个界面**（全部只在真机上，离屏单测覆盖不到 —— 所以有 `capture-ui.ps1`）：
@@ -137,6 +137,8 @@
 |---|---|
 | **外观预设系统** | ✅ **已完成**（D-088 / D-089）。纯逻辑层 `preset.h/.cpp`（文本表 / 增删改 / 单条导入导出）+ `cfg_appearance_presets` + 首选项页的「外观预设」区（下拉走系统菜单、保存 / 删除 / 导入 / 导出）。<br>**想加字段**：改 `AppearancePreset` + `FormatPresets` / `ParsePresets` 即可，**老预设文件照样能读**（未知 key 忽略、缺的用默认值）。<br>**改内置预设**：`preset.cpp` 的 `BuiltinPresets()`。<br>**改下拉样式**：目前用系统 `TrackPopupMenu`，没自绘。 |
 | **32 位支持** | ❌ 未做。`foobar2000_SDK.lib` / `component_client.lib` / `pfc.lib` **都只有 x64**，要补得先构建它们的 32 位版 |
+| `capture-ui.ps1` 的 `prefs` 目标找不到首选项窗口 | ⚠️ 2026-09-26 发现：窗口类名是 `#32770`、标题 `Preferences: Lyricus`，**两者都对**，但 `-Target prefs` 抓到 0 张。脚本的 `#32770` 枚举那段有 bug，待查。<br>**绕过办法**：先用 UIAutomation 拿 hwnd（在 `Descendants` 里找标题以 `Preferences` 开头的、且 `NativeWindowHandle != 0`），再自己调 `PrintWindow(hwnd, dc, 2)`。 |
+| **怎么打开首选项（不用重启播放器）** | `Ctrl+P` 发给**主窗口**即可。两个坑：<br>① **主窗口没有标准菜单**（`GetMenu` 返回 0，是自绘菜单条），所以「枚举菜单找 Preferences 再发 `WM_COMMAND`」这条路不通；<br>② 发按键**用 `keybd_event`，别用 `SendInput`** —— 后者的 `INPUT` 结构含 union，自己拼容易把 `cbSize` 算错（我拼出来 28，Win32 要 40），而它会**静默返回 0**，什么都不发也不报错。 |
 | ~~首选项页「字体」按钮的观感~~ | ✅ 已验（2026-09-26） |
 | `#13` 长歌词横滚的**性能测量** | ⏸ 用户确认**没有素材**（曲库里几乎没有超宽行），已正式关闭 |
 | 背景自定义（QQ 那种磨砂/贴图） | 💤 用户说先不管 |
