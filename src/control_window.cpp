@@ -1296,26 +1296,70 @@ void ControlWindow::LayoutControls(const RECT& rc, int dpi) {
     const int pad = S(20);
     const int top = rc.bottom - S(16) - btn;
 
+    // ---- 左侧：三个走带按钮，宽度固定 ----
     int x = rc.left + pad;
     m_rcPrev      = RECT{ x, top, x + btn, top + btn };  x += btn + gap;
     m_rcPlayPause = RECT{ x, top, x + btn, top + btn };  x += btn + gap;
     m_rcNext      = RECT{ x, top, x + btn, top + btn };  x += btn + gap;
+    const int leftEnd = x;
 
-    const int iconW = S(20);
-    const int volW  = S(70);
-    m_rcVolumeBar  = RECT{ rc.right - pad - volW, top + S(9), rc.right - pad, top + btn - S(9) };
-    m_rcVolumeIcon = RECT{ m_rcVolumeBar.left - gap - iconW, top,
-                           m_rcVolumeBar.left - gap, top + btn };
+    // ---- 右侧：按优先级**降级**，而不是让进度条去死 ----
+    //
+    // 【原先的毛病】这些元素都是写死宽度的，面板一窄，进度条最先被挤没 ——
+    // 判据 `progR > progL + S(40)` 一旦不成立就整条不画。而进度条恰恰是
+    // 控制条上最不该消失的东西：用户 2026-09-26 报「横向拖拽时进度条会压缩，
+    // 在某个地方会消失，现在的窗口就是那个临界点」。实测那一刻面板是
+    // 832 物理像素，判据正好卡在 `340 > 340` 为假 —— 数字和现象严丝合缝。
+    //
+    // 优先级：三个按钮 > **进度条** > 时间 > 音量条。
+    // 音量条**最先**牺牲：滚轮就能调音量（面板早就支持），
+    // 而进度和时间没有替代品。
+    const int iconW   = S(20);
+    const int volW    = S(70);
+    const int timeW   = S(96);
+    const int minProg = S(40);
 
-    const int timeW = S(96);
-    m_rcTime = RECT{ m_rcVolumeIcon.left - gap * 2 - timeW, top,
-                     m_rcVolumeIcon.left - gap * 2, top + btn };
+    const int rightEdge = rc.right - pad;
+    const int avail     = rightEdge - leftEnd;
 
-    // 中间剩下的空间给进度条；窄到放不下就不画（避免和两边重叠）
-    const int progL = x + gap;
-    const int progR = m_rcTime.left - gap * 2;
-    m_rcProgress = (progR > progL + S(40))
-                 ? RECT{ progL, top + S(9), progR, top + btn - S(9) }
+    bool showVolBar = true;
+    bool showTime   = true;
+
+    // 全部显示时右侧要占多宽（含紧邻它左边的那个 gap）
+    int need = gap + volW + gap + iconW + gap * 2 + timeW + gap * 2;
+    if (avail - need < minProg) { showVolBar = false; need -= (gap + volW); }
+    if (avail - need < minProg) { showTime   = false; need -= (timeW + gap * 2); }
+
+    // 按最终决定从右往左摆。⚠️ 被牺牲掉的必须是**空矩形**：
+    // 绘制侧对时间 / 音量图标 / 音量条都是无条件画的，空矩形会让它们在
+    // 客户区左上角画出鬼影（绘制侧已一并补上 `right > left` 保护）。
+    int r = rightEdge;
+    if (showVolBar) {
+        m_rcVolumeBar = RECT{ r - volW, top + S(9), r, top + btn - S(9) };
+        r -= volW + gap;
+    } else {
+        m_rcVolumeBar = RECT{ 0, 0, 0, 0 };
+    }
+
+    // 音量图标（静音开关）不参与降级 —— 它有独立功能，不是音量条的附属装饰。
+    // 但它也不能越到左侧按钮上去：真到那一步（面板窄得离谱）宁可少一个开关，
+    // 也不要画出两个叠在一起的控件。
+    m_rcVolumeIcon = RECT{ r - iconW, top, r, top + btn };
+    if (m_rcVolumeIcon.left < leftEnd + gap) m_rcVolumeIcon = RECT{ 0, 0, 0, 0 };
+    r -= iconW + gap;
+
+    if (showTime) {
+        m_rcTime = RECT{ r - timeW, top, r, top + btn };
+        r -= timeW + gap * 2;
+    } else {
+        m_rcTime = RECT{ 0, 0, 0, 0 };
+    }
+
+    // 中间剩下的**全部**给进度条。上面的降级保证它至少有 minProg 宽；
+    // 面板窄到连三个按钮都摆不下时才真的没有（那时 r 已经越过 progL）。
+    const int progL = leftEnd + gap;
+    m_rcProgress = (r > progL)
+                 ? RECT{ progL, top + S(9), r, top + btn - S(9) }
                  : RECT{ 0, 0, 0, 0 };
 
     m_ctrlBarTop = top - S(6);   // 控制条上沿 = 歌词区的下界
@@ -1414,8 +1458,10 @@ void ControlWindow::DrawControls(HDC dc, int dpi) {
     // 时间
     // 时间。字体走缓存 —— 这行每帧都要画（时间每秒都在变），
     // 原来每帧 CreateFontW 一个再删掉，是白扔的开销。
+    //
+    // ⚠️ 面板窄时 LayoutControls 会把它降级掉（m_rcTime 是空矩形），这里必须跳过。
     HFONT fSmall = GetCachedUiFont(dpi, 10, false);
-    {
+    if (m_rcTime.right > m_rcTime.left) {
         const std::wstring text = FormatTime(st.PositionSec()) + L" / " + FormatTime(st.LengthSec());
         const HGDIOBJ oldFont = SelectObject(dc, fSmall);
         SetTextColor(dc, RGB(190, 190, 198));
@@ -1426,7 +1472,9 @@ void ControlWindow::DrawControls(HDC dc, int dpi) {
     }
 
     // 音量图标（几何图形，不依赖符号字体）；分层模式下同样由图标叠层负责
-    if (!layered) {
+    //
+    // ⚠️ 也要判空：它是从右往左摆的，面板极窄时它会越到 progress 左边去。
+    if (!layered && m_rcVolumeIcon.right > m_rcVolumeIcon.left) {
         const RECT& r = m_rcVolumeIcon;
         const int cy = (r.top + r.bottom) / 2;
         RECT body{ r.left + S(3), cy - S(3), r.left + S(3) + S(5), cy + S(3) };
@@ -1445,7 +1493,10 @@ void ControlWindow::DrawControls(HDC dc, int dpi) {
     }
 
     // 音量条
-    {
+    //
+    // ⚠️ 它是控制条上优先级最低的一个 —— 面板窄到一定程度 LayoutControls 会
+    //    把它整个牺牲掉（滚轮仍能调音量），那时这里是空矩形，跳过。
+    if (m_rcVolumeBar.right > m_rcVolumeBar.left) {
         double v = 1.0 + static_cast<double>(st.VolumeDb()) / 40.0;   // 0dB -> 1.0
         if (m_draggingVolume) v = m_dragRatio;
         if (v < 0.0) v = 0.0;
@@ -1485,6 +1536,9 @@ void ControlWindow::DrawIconOverlay(unsigned char* dst, int w, int h, int stride
     };
 
     auto drawIn = [&](const wchar_t* name, const RECT& r, unsigned rgb) {
+        // 空矩形 = LayoutControls 把这个元素降级掉了。**必须判**：
+        // 不判的话 x/y 会算成负数，在客户区左上角画出一个只露一半的图标。
+        if (r.right <= r.left || r.bottom <= r.top) return;
         const RasterIcon* icon = GetSvgIcon(IconPath(name), iconH);
         if (icon == nullptr) return;   // 文件缺失就静默跳过，不阻塞其它绘制
         const int x = r.left + ((r.right - r.left) - icon->width) / 2;
