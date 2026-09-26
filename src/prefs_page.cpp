@@ -153,6 +153,9 @@ public:
         MSG_WM_SETCURSOR(OnSetCursor)
         MSG_WM_GETDLGCODE(OnGetDlgCode)
         MSG_WM_KEYDOWN(OnKeyDown)
+        MSG_WM_VSCROLL(OnVScroll)
+        MSG_WM_MOUSEWHEEL(OnMouseWheel)
+        MSG_WM_SIZE(OnSize)
     END_MSG_MAP()
 
     // ---- preferences_page_instance 的契约 ----
@@ -173,6 +176,14 @@ private:
     void OnDestroy();
     BOOL OnEraseBkgnd(CDCHandle dc);
     void OnPaint(CDCHandle dc);
+
+    // ---- 滚动（D-094）----
+    void OnVScroll(UINT nSBCode, UINT nPos, CScrollBar pScrollBar);
+    BOOL OnMouseWheel(UINT nFlags, short zDelta, CPoint pt);
+    int  ContentHeightPx() const;   // 内容总高度（物理像素）
+    void UpdateScrollBar();         // 按客户区与内容高度设置滚动条
+    void ScrollTo(int y);           // 夹取后设置并重绘
+    void OnSize(UINT nType, CSize size);
     void OnMouseMove(UINT flags, CPoint pt);
     void OnLButtonDown(UINT flags, CPoint pt);
     void OnLButtonUp(UINT flags, CPoint pt);
@@ -255,6 +266,19 @@ private:
     HFONT m_fontBody  = nullptr;
     HFONT m_fontBold  = nullptr;
     HFONT m_fontSmall = nullptr;
+
+    // ---- 滚动（D-094）----
+    //
+    // 页面内容一共 kPrefsHeight96 逻辑像素高，而宿主给的容器常常装不下 ——
+    // 用户 2026-09-26 报的「加了这个之后页面太长了，需要一个滚动条」。
+    //
+    // ⚠️ 关键在于**布局按内容高度算，不是按客户区高度算**：
+    //    `CurrentLayout()` 从前传的是客户区高度，于是窗口一矮，
+    //    ComputePrefsLayout 就整体降级（色块从三列变两列、控件一个个消失）——
+    //    而真正该发生的是"内容不动、加个滚动条"。
+    //    这两件事混在一起时，表现是"窗口一小，设置项就不见了"，
+    //    而不是"能滚下去看"。
+    int m_scrollY = 0;      // 当前滚动偏移（物理像素，>= 0）
 };
 
 // ---------------------------------------------------------------------------
@@ -262,8 +286,99 @@ private:
 PrefsLayout CLyricusPrefsDlg::CurrentLayout() const {
     RECT rc{};
     ::GetClientRect(m_hWnd, &rc);
-    return ComputePrefsLayout(rc.right - rc.left, rc.bottom - rc.top,
+    // ⚠️ 高度传的是**内容高度**，不是客户区高度。
+    //
+    // 布局回答的是"这些控件怎么排"，和"窗口现在显示到哪一段"是两件事。
+    // 从前传客户区高度，于是窗口一矮 ComputePrefsLayout 就整体降级 ——
+    // 色块从三列变两列、控件按顺序一个个消失。而用户期望的是
+    // **内容不动、加个滚动条**（他 2026-09-26 报的正是这个）。
+    // 这两件事混在一起时，表现是"窗口一小设置项就不见了"，很难联想到是布局降级。
+    return ComputePrefsLayout(rc.right - rc.left, ContentHeightPx(),
                               static_cast<int>(GetDpiForWindowSafe(m_hWnd)));
+}
+
+int CLyricusPrefsDlg::ContentHeightPx() const {
+    const int dpi = static_cast<int>(GetDpiForWindowSafe(m_hWnd));
+    return MulDiv(kPrefsHeight96, (dpi > 0) ? dpi : 96, 96);
+}
+
+void CLyricusPrefsDlg::UpdateScrollBar() {
+    RECT rc{};
+    if (!::GetClientRect(m_hWnd, &rc)) return;
+
+    const int contentH = ContentHeightPx();
+    const int clientH  = rc.bottom - rc.top;
+    const int maxY     = (contentH > clientH) ? (contentH - clientH) : 0;
+
+    SCROLLINFO si{};
+    si.cbSize = sizeof(si);
+    si.fMask  = SIF_RANGE | SIF_PAGE | SIF_POS | SIF_DISABLENOSCROLL;
+    si.nMin   = 0;
+    si.nMax   = contentH - 1;
+    si.nPage  = static_cast<UINT>((clientH > 0) ? clientH : 1);
+    si.nPos   = m_scrollY;
+    // SIF_DISABLENOSCROLL：装得下时**仍然显示**滚动条但置灰。
+    // 不这样做的话它在"刚好装得下"和"差一点"之间来回显示/隐藏，
+    // 而滚动条一出现客户区宽度就变，布局跟着重排 —— 会闪。
+    ::SetScrollInfo(m_hWnd, SB_VERT, &si, TRUE);
+
+    // 内容变矮了（或窗口变高了）就把偏移夹回来，否则会停在空白处
+    if (m_scrollY > maxY) {
+        m_scrollY = maxY;
+        ::SetScrollPos(m_hWnd, SB_VERT, m_scrollY, TRUE);
+    }
+}
+
+void CLyricusPrefsDlg::ScrollTo(int y) {
+    RECT rc{};
+    if (!::GetClientRect(m_hWnd, &rc)) return;
+
+    const int maxY = ContentHeightPx() - (rc.bottom - rc.top);
+    if (y < 0) y = 0;
+    if (y > maxY) y = (maxY > 0) ? maxY : 0;
+    if (y == m_scrollY) return;
+
+    m_scrollY = y;
+    ::SetScrollPos(m_hWnd, SB_VERT, m_scrollY, TRUE);
+    Repaint();
+}
+
+void CLyricusPrefsDlg::OnVScroll(UINT nSBCode, UINT nPos, CScrollBar) {
+    SCROLLINFO si{};
+    si.cbSize = sizeof(si);
+    si.fMask  = SIF_ALL;
+    ::GetScrollInfo(m_hWnd, SB_VERT, &si);
+
+    const int dpi = static_cast<int>(GetDpiForWindowSafe(m_hWnd));
+    const int lineStep = MulDiv(24, (dpi > 0) ? dpi : 96, 96);
+
+    int target = m_scrollY;
+    switch (nSBCode) {
+        case SB_LINEUP:        target -= lineStep; break;
+        case SB_LINEDOWN:      target += lineStep; break;
+        case SB_PAGEUP:        target -= static_cast<int>(si.nPage); break;
+        case SB_PAGEDOWN:      target += static_cast<int>(si.nPage); break;
+        case SB_THUMBTRACK:
+        case SB_THUMBPOSITION: target = static_cast<int>(si.nTrackPos); break;
+        case SB_TOP:           target = 0; break;
+        case SB_BOTTOM:        target = si.nMax; break;
+        default: return;
+    }
+    ScrollTo(target);
+}
+
+BOOL CLyricusPrefsDlg::OnMouseWheel(UINT, short zDelta, CPoint) {
+    // 一格滚轮 = 3 行，和系统别的滚动面板一致
+    const int dpi = static_cast<int>(GetDpiForWindowSafe(m_hWnd));
+    const int step = MulDiv(24 * 3, (dpi > 0) ? dpi : 96, 96);
+    ScrollTo(m_scrollY - (static_cast<int>(zDelta) * step) / WHEEL_DELTA);
+    return TRUE;
+}
+
+void CLyricusPrefsDlg::OnSize(UINT, CSize) {
+    // 宿主改变容器大小时要重算滚动范围 —— 不重算的话，拖过首选项窗口之后
+    // 滚动条的范围还是旧的：要么能滚出一段空白，要么滚不到底。
+    UpdateScrollBar();
 }
 
 PrefsTheme CLyricusPrefsDlg::CurrentTheme() const {
@@ -275,6 +390,11 @@ PrefsTheme CLyricusPrefsDlg::CurrentTheme() const {
 }
 
 int CLyricusPrefsDlg::HitTest(POINT pt) const {
+    // ⚠️ 先把**客户区坐标转成内容坐标** —— 布局是按内容坐标算的。
+    //    不转的话，滚下去之后点哪儿都不对，而且偏移多少就错多少
+    //   （表现是"滚过一段之后按钮全点不中"，很难联想到是坐标系没换）。
+    pt.y += m_scrollY;
+
     const PrefsLayout L = CurrentLayout();
 
     auto inside = [&pt](const RECT& r) {
@@ -315,6 +435,7 @@ BOOL CLyricusPrefsDlg::OnInitDialog(HWND, LPARAM) {
     m_fontSmall = MakeUiFont(dpi, 8,  false);
 
     DebugLog("首选项页：已初始化（全自绘，alpha=%d）", m_edited.alpha);
+    UpdateScrollBar();      // 页面比容器高时把滚动条摆出来（D-094）
     return TRUE;
 }
 
@@ -343,8 +464,23 @@ void CLyricusPrefsDlg::OnPaint(CDCHandle) {
     const HBITMAP bmp = CreateCompatibleBitmap(dc, w, h);
     const HGDIOBJ oldBmp = SelectObject(mem, bmp);
 
-    DrawPage(mem, rc, CurrentLayout(), CurrentTheme());
+    // ★ 滚动（D-094）：把绘图原点往上移 m_scrollY，之后**所有绘制代码
+    //   都不用管滚动** —— 它们本来就在内容坐标系里写，和布局共用同一套坐标。
+    //   比在每一处调用上加偏移可靠得多：后者漏一处就是"某个控件不跟着滚"，
+    //   而这种漏很难发现（要滚到那个位置才看得见）。
+    POINT oldOrg{};
+    ::SetWindowOrgEx(mem, 0, -m_scrollY, &oldOrg);
 
+    // ⚠️ 传给 DrawPage 的 rc 也要换成**内容坐标**下的客户区矩形 ——
+    //    它第一件事就是拿这个矩形铺底。传未偏移的那个的话，
+    //    滚下去之后底部会留出一条没铺到的缝（露出上一帧的内容）。
+    RECT contentRc = rc;
+    contentRc.top    += m_scrollY;
+    contentRc.bottom += m_scrollY;
+
+    DrawPage(mem, contentRc, CurrentLayout(), CurrentTheme());
+
+    ::SetWindowOrgEx(mem, oldOrg.x, oldOrg.y, nullptr);
     BitBlt(dc, 0, 0, w, h, mem, 0, 0, SRCCOPY);
 
     SelectObject(mem, oldBmp);
