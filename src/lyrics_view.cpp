@@ -282,6 +282,37 @@ const wchar_t* EffectiveFontFace(const LyricsViewTheme& theme) {
     return nullptr;
 }
 
+std::wstring DescribeHostFont(const LyricsViewTheme& theme) {
+    if (!theme.hasHostFont && theme.userFontFace[0] == L'\0') return L"无";
+
+    std::wstring out;
+
+    if (theme.hasHostFont) {
+        const wchar_t* face = (theme.hostFont.lfFaceName[0] != L'\0')
+                            ? theme.hostFont.lfFaceName : L"(空)";
+        // lfHeight 负值表示"字高"，正值表示"字符单元高度" —— 两种都取绝对值。
+        int h = theme.hostFont.lfHeight;
+        if (h < 0) h = -h;
+        const int dpi = (theme.dpi > 0) ? theme.dpi : 96;
+        const int pt  = (h > 0) ? MulDiv(h, 72, dpi) : 0;
+
+        wchar_t buf[160];
+        swprintf_s(buf, L"%s %dpt/weight=%ld", face, pt, theme.hostFont.lfWeight);
+        out = buf;
+    } else {
+        out = L"无宿主";
+    }
+
+    // ★ 把用户自定义字体也带上 —— 它是**优先级最高**的那一级，
+    //   不带的话"我明明设了字体，它没生效"在日志里完全看不出来。
+    if (theme.userFontFace[0] != L'\0') {
+        out += L" ｜ 用户指定「";
+        out += theme.userFontFace;
+        out += L"」（压过宿主）";
+    }
+    return out;
+}
+
 LyricsViewResult DrawLyricsView(HDC dc, const RECT& rc, const LyricsViewTheme& theme,
                                 const LyricsViewLayout& layout,
                                 const LyricAnimFrame& anim) {

@@ -808,7 +808,22 @@ LRESULT ControlWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         // 进度条 / 音量条 / 音量浮层上会填 ratioOut，其它位置给 0。
         double hoverRatio = 0.0;
         const CtrlId id = HitTestControls(pt, &hoverRatio);
-        m_hotRatio = hoverRatio;
+
+        // ★ 值变了就**立刻**重绘。
+        //
+        // ⚠️ 这里从前漏了 RequestRepaint —— 于是悬停标签要等下一拍
+        //（逻辑定时器 250ms）才更新，而上面拖动那条路径是即时的。
+        // 两条路径一个即时一个滞后，用起来就像"悬停那套是坏的"。
+        // 用户 2026-09-26 报的「音频和进度条在鼠标悬停时更新不即时」就是这个。
+        //
+        // ⚠️ 但只在**值真的变了**时重绘：鼠标在按钮、歌词、窗口空白处移动时
+        //    hoverRatio 恒为 0（HitTestControls 只在三条控件上填它），
+        //    不加这个判断就变成"鼠标一动就整帧重绘" —— 重绘一次 6~7ms，
+        //    而鼠标每秒能产生上百个 WM_MOUSEMOVE，那是实打实的白烧。
+        if (hoverRatio != m_hotRatio) {
+            m_hotRatio = hoverRatio;
+            RequestRepaint();
+        }
 
         // ---- 音量浮层的展开 / 收起 ----
         //

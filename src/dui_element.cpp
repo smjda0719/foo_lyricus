@@ -378,6 +378,21 @@ void LyricusDui::RefreshTheme() {
         ::DeleteObject(m_bgBrush);
         m_bgBrush = nullptr;
     }
+
+    // 主题刷新的结果记一条 —— 和 cui_panel.cpp 里那条**对称**，两份日志才好对比。
+    //
+    // 【为什么现在才加】从前只有 CUI 打这条，于是"用户设的字体在 DUI 里生效没有"
+    // 在日志里完全查不到，只能靠肉眼比字形 —— 而中文在小字号下看着都差不多。
+    // 用户 2026-09-26 要验这件事时就是卡在这里。
+    //
+    // 只在真正重查时打（宿主的主题/字体变更、或用户改了显示设置），不是热路径。
+    DebugLog("DUI: 主题刷新 background=%06lX text=%06lX current=%06lX dim=%06lX dpi=%d 字体=%s",
+             static_cast<unsigned long>(QueryBackground()),
+             static_cast<unsigned long>(theme.headerText),
+             static_cast<unsigned long>(theme.currentText),
+             static_cast<unsigned long>(theme.dimText),
+             theme.dpi,
+             WideToUtf8(DescribeHostFont(theme).c_str()).c_str());
 }
 
 COLORREF LyricusDui::QueryBackground() const {

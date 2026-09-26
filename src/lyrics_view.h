@@ -2,6 +2,15 @@
 
 #include <windows.h>
 
+// ⚠️ 这两个**必须显式包含**：本头文件自己用了 std::wstring（DescribeHostFont）
+// 和 std::vector（LyricDocument 的行列表经由 scroll_anim.h 进来）。
+// 主构建下 stdafx.h 会间接带上它们，所以一直没暴露；而离线单测台
+// （tests/harness）用的是自己那套 shim 头，没有那份间接包含 ——
+// 于是加 DescribeHostFont 时在那边直接 C2039「"wstring" 不是 "std" 的成员」。
+// 头文件该自足，不该依赖"包含它的那个 .cpp 恰好先包了什么"。
+#include <string>
+#include <vector>
+
 #include "scroll_anim.h"   // LyricAnimFrame
 
 // ---------------------------------------------------------------------------
@@ -187,5 +196,20 @@ int HostFontScalePct(const LyricsViewTheme& theme);
 // 注意这一级**只管字体族**：字号倍率仍然跟宿主走（见 HostFontScalePct），
 // 两个维度是独立的 —— 挑字体不该顺带把字号也锁死。
 const wchar_t* EffectiveFontFace(const LyricsViewTheme& theme);
+
+// 把主题里的字体情况描述成一行短文本，**供日志用**，例如
+//     `微软雅黑 9pt/weight=400`
+//     `方正姚体 14pt/weight=400 (用户指定: 方正姚体)`
+//     `无`
+//
+// 【为什么要它】两个宿主（DUI / CUI）都要打一条主题刷新日志，格式必须一致 ——
+// 各拼一遍迟早会不一样，那就没法对着两份日志比较了。
+//
+// 【为什么值得记】光有「宿主字体=有」回答不了"用户设的字体到底生效没有"：
+// 取字体有三条来源（用户指定 > 宿主 > 默认，见 EffectiveFontFace），
+// 只记"有/无"的话，那三级里任何一级出问题都看不出来。
+// 用户 2026-09-26 想验「设了方正姚体之后 CUI 里是不是真的用了它」，
+// 就是被这条日志挡住的。
+std::wstring DescribeHostFont(const LyricsViewTheme& theme);
 
 } // namespace lyricus

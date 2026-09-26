@@ -515,13 +515,15 @@ void LyricusCuiPanel::RefreshTheme() {
     // 真要按 dpi 取字体，应改用 manager_v2::get_common_font(type, dpi)
     //（fonts.h:108-135），代价是要求 CUI 1.7.0 beta 1 以上。
 
-    DebugLog("CUI: 主题刷新 background=%06lX text=%06lX current=%06lX dim=%06lX dpi=%d 宿主字体=%s",
+    // 字体那一栏从「有/无」改成**实际用的字体名 + 字号 + 用户覆盖** ——
+    // 「有」回答不了"用户设的字体到底生效没有"（取字体有三级来源）。
+    DebugLog("CUI: 主题刷新 background=%06lX text=%06lX current=%06lX dim=%06lX dpi=%d 字体=%s",
              static_cast<unsigned long>(m_background),
              static_cast<unsigned long>(theme.headerText),
              static_cast<unsigned long>(theme.currentText),
              static_cast<unsigned long>(theme.dimText),
              theme.dpi,
-             m_hasFontDesc ? "有" : "无");
+             WideToUtf8(DescribeHostFont(theme).c_str()).c_str());
 }
 
 HBRUSH LyricusCuiPanel::EnsureBackgroundBrush() {
