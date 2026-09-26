@@ -329,6 +329,49 @@ void TestImportExport() {
     }
 }
 
+// ---------------------------------------------------------------------------
+void TestMaxPresets() {
+    std::printf("\n== 条数上限 ==\n");
+
+    // 一直存到超过上限。FormatPresets 的截断逻辑写的是"保留最后 kMaxPresets 条"，
+    // 也就是**从最旧的开始丢** —— 和歌词线索表同一套策略。
+    // ⚠️ 这条以前没测过：上限是 64，而"丢错了方向"（丢最新那批）在界面上
+    //    表现得非常像"保存失败"，但原因完全不同。
+    std::string t;
+    const int total = static_cast<int>(lyricus::kMaxPresets) + 10;
+    for (int i = 0; i < total; ++i) {
+        AppearancePreset p;
+        p.bg = RGB(i & 0xFF, 0, 0);
+        wchar_t name[32];
+        swprintf_s(name, L"P%d", i);
+        t = ApplyPresetEdit(t, name, &p, nullptr);
+    }
+
+    const auto v = ParsePresets(t);
+    Check(v.size() == lyricus::kMaxPresets,
+          "★ 超过上限后表里正好留 kMaxPresets 条（不会无限长）");
+
+    // 最后写进去的那条必须在
+    {
+        wchar_t last[32];
+        swprintf_s(last, L"P%d", total - 1);
+        Check(FindPreset(v, last) != nullptr, "★ 最新存的那条在表里");
+    }
+    Check(FindPreset(v, L"P0") == nullptr,
+          "★ 最旧的那条被丢掉了（丢的是旧的那一端，不是新的）");
+    Check(FindPreset(v, L"P5") == nullptr,
+          "★ 靠前的都被丢干净了");
+
+    // 表长到这里就稳定了：再加也只是替换，不会再涨
+    {
+        AppearancePreset p;
+        p.bg = RGB(0xFF, 0xFF, 0xFF);
+        t = ApplyPresetEdit(t, L"再来一条", &p, nullptr);
+        Check(ParsePresets(t).size() == lyricus::kMaxPresets,
+              "★ 到上限之后继续新增，表长保持不变（稳定，不是每加一条就涨）");
+    }
+}
+
 } // namespace
 
 int main() {
@@ -338,6 +381,7 @@ int main() {
     TestParseTolerance();
     TestApplyEdit();
     TestImportExport();
+    TestMaxPresets();
     std::printf("\n----------------------------------------\n");
     std::printf("通过 %d，失败 %d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;

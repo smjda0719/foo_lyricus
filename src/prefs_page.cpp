@@ -787,7 +787,27 @@ void CLyricusPrefsDlg::OnPresetImport() {
         return;
     }
 
-    // 导入的这条**直接存下来并选中**，不自动应用 —— 用户可能只是想收着，
+    // ★ 同名的话先问一声。
+    //
+    // 【为什么这道确认非有不可】导入是**分享**那条路的主场景 —— 别人发来
+    // 一个叫「暗色」的预设，而用户自己多半也有一套叫「暗色」。直接存下去会
+    // 静默覆盖他那份，而且**没有任何办法察觉**（下拉里还是同一个名字，
+    // 颜色变了也容易以为是自己记错了）。
+    // ⚠️ 默认按钮是「否」：这个对话框是**打断**用户的，误按回车不该毁掉东西。
+    if (FindPreset(GetAppearancePresets(), p.name) != nullptr) {
+        wchar_t ask[512];
+        swprintf_s(ask,
+            L"已经有一套叫「%s」的预设了。\n\n"
+            L"覆盖它？\n\n"
+            L"（选「否」会取消这次导入 —— 你可以先把文件里的名字改掉再来。）",
+            p.name.c_str());
+        if (::MessageBoxW(m_hWnd, ask, L"Lyricus",
+                          MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) {
+            return;
+        }
+    }
+
+    // 存下来并选中，但**不自动应用** —— 用户可能只是想收着，
     // 不想现在的画面被换掉。
     m_presetName = p.name;
     SaveAppearancePreset(p.name, p);
