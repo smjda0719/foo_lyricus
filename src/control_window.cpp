@@ -63,6 +63,56 @@ constexpr UINT     kAnimInterval = 40;   // 25fps
 constexpr int kDefaultW96 = 460;
 constexpr int kDefaultH96 = 150;
 
+// 缩放手柄的命中宽度（96 dpi 下的逻辑像素）。
+//
+// 角落给得比边宽：用户的原话是「拖拽窗口四角缩放」—— 角落是主入口，
+// 大一点好抓；四条边窄一些，免得把控制条两端的按钮吃掉。
+//
+// ⚠️ 这两个值和 WM_NCHITTEST 里的判定**顺序**是一套的：边界判定必须排在
+//    控件之前。反过来的话，贴着底边的控制条会把底下那几像素永远挡住。
+constexpr int kResizeCorner96 = 12;
+constexpr int kResizeEdge96   = 6;
+
+// 面板能被拖到多小（96 dpi 下的逻辑像素）。
+//
+// 【为什么要设下限】缩到极小之后曲名、歌词、控制条会互相压在一起，
+// 而那是**布局数学兜不住**的局面 —— LayoutControls 是按"宽度够放下一整条
+// 控制条"写的。320x120 大致是"还看得清一行歌词 + 控制条完整"的下限。
+constexpr int kMinPanelW96 = 320;
+constexpr int kMinPanelH96 = 120;
+
+// 无边框窗口的「抓边框」判定：这个客户区坐标是不是落在缩放边上？
+// 是就返回对应的 HTxxx，不是返回 HTNOWHERE。
+//
+// 【为什么需要它】面板是 WS_POPUP，没有系统边框可抓 —— 于是整个客户区
+// 只能拖动、不能缩放。把边缘那几像素认出来并返回 HTxxx 之后，系统会进入
+// 它**自己的**缩放循环：拖动、贴边吸附、跨 DPI 显示器时的度量换算全都免费，
+// 我们一行 SetWindowPos 都不用写。
+//
+// 角落要在四边**之前**判：角落区域同时满足两条边，先判边就永远轮不到角落。
+LRESULT HitTestResizeBorder(const POINT& c, const RECT& rc, int corner, int edge) {
+    const bool atL = (c.x < edge);
+    const bool atR = (c.x >= rc.right - edge);
+    const bool atT = (c.y < edge);
+    const bool atB = (c.y >= rc.bottom - edge);
+
+    const bool inL = (c.x < corner);
+    const bool inR = (c.x >= rc.right - corner);
+    const bool inT = (c.y < corner);
+    const bool inB = (c.y >= rc.bottom - corner);
+
+    if (inT && inL) return HTTOPLEFT;
+    if (inT && inR) return HTTOPRIGHT;
+    if (inB && inL) return HTBOTTOMLEFT;
+    if (inB && inR) return HTBOTTOMRIGHT;
+
+    if (atL) return HTLEFT;
+    if (atR) return HTRIGHT;
+    if (atT) return HTTOP;
+    if (atB) return HTBOTTOM;
+    return HTNOWHERE;
+}
+
 bool g_classRegistered = false;
 
 DWORD GetWindowsBuildNumber() {
@@ -361,7 +411,12 @@ bool ControlWindow::EnsureCreated() {
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW,   // 置顶；不出现在任务栏和 Alt-Tab
         kWindowClass,
         kWindowTitle,
-        WS_POPUP,                            // 无边框，外观完全自绘
+        // WS_POPUP：无边框，外观完全自绘。
+        // WS_THICKFRAME：**只为了拿到系统的缩放行为**。没有它的话，
+        // WM_NCHITTEST 里返回 HTBOTTOMRIGHT 系统也不会真的去 resize。
+        // 它带来的那一圈非客户区边框由下面的 WM_NCCALCSIZE 抹掉，
+        // 所以视觉上仍然是一块无边框面板。
+        WS_POPUP | WS_THICKFRAME,
         r.left, r.top, reqW, reqH,
         nullptr, nullptr, instance, this);
 
@@ -381,6 +436,21 @@ bool ControlWindow::EnsureCreated() {
              winDpi, sysDpi);
 
     ApplyBackdrop();
+
+    // ⚠️ 补一次**显式定位**。
+    //
+    // 【为什么必须补】窗口带了 WS_THICKFRAME 才拿得到系统的缩放行为，而它的
+    // 边框会被算进 CreateWindowExW 的尺寸里。实测：请求 920x300、创建出来也
+    // 确实是 920x300（EnsureCreated 那条日志），但**第一次重绘之后**窗口变成了
+    // 872x252 —— 正好少掉两圈 24 物理像素的边框。原因是那一次 GetClientRect
+    // 拿到的还是"含边框的客户区"，而 RenderLayered 会拿它当 psize 去调
+    // UpdateLayeredWindow，等于**用客户区尺寸反过来改了窗口尺寸**。
+    //
+    // 后果是每次启动面板都比配置里的尺寸小一圈 —— 用户拖好的尺寸存了也白存。
+    //
+    // 这一句把窗口钉回请求尺寸，不去赌 WM_NCCALCSIZE 的到达时机。
+    SetWindowPos(m_hwnd, nullptr, r.left, r.top, reqW, reqH,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
 
     // 定时刷新播放位置与当前歌词行
     SetTimer(m_hwnd, kRefreshTimerId, kRefreshInterval, nullptr);
@@ -580,12 +650,50 @@ LRESULT ControlWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         // 不擦背景。让 DWM 材质透出来；自己铺底色会把它盖死。
         return 1;
 
+    case WM_NCCALCSIZE:
+        // 【为什么必须有这一条】窗口加 WS_THICKFRAME 才拿得到系统的缩放行为，
+        // 但它同时会留出一圈非客户区边框。返回 0 表示「客户区 = 整个窗口」——
+        // 边框就此消失，缩放能力保留，外观上仍然是一块完整的自绘面板。
+        //
+        // ⚠️ wParam == TRUE 才是"重新计算客户区"的那一次调用，此时 lp 指向
+        //    NCCALCSIZE_PARAMS；FALSE 时不该动 —— 那条路上根本没有参数可改。
+        if (wp) return 0;
+        break;
+
+    case WM_GETMINMAXINFO: {
+        // 最小尺寸。不设的话能拖成一条缝，那时曲名、歌词、控制条会叠在一起，
+        // 看起来像面板坏了（而且 WM_EXITSIZEMOVE 会把这个尺寸存进配置）。
+        auto* mmi = reinterpret_cast<MINMAXINFO*>(lp);
+        const int dpi = static_cast<int>(GetDpiForWindowSafe(hwnd));
+        mmi->ptMinTrackSize.x = MulDiv(kMinPanelW96, dpi, 96);
+        mmi->ptMinTrackSize.y = MulDiv(kMinPanelH96, dpi, 96);
+        return 0;
+    }
+
     case WM_NCHITTEST: {
-        // 控制条上的控件要吃掉鼠标事件；其余客户区仍然交给拖动窗口。
-        // （M1 时整个客户区都返回 HTCAPTION，加按钮后不改的话点按钮会变成拖窗口。）
         const POINTS sp = MAKEPOINTS(lp);
         POINT c{ sp.x, sp.y };
         ScreenToClient(hwnd, &c);
+
+        // ---- 先判「抓边框」 ----
+        //
+        // ⚠️ 必须排在控件判定**前面**。控制条贴着底边，控件要是先判，
+        //    底下那几像素就永远轮不到缩放。
+        //    代价是控制条两端和底部各让出去几像素 —— 那几像素本来也不是按钮。
+        //
+        // 判出来的 HTxxx 交给系统，由它跑自己的缩放循环（拖动 / 吸附 / DPI 换算）。
+        RECT client{};
+        if (GetClientRect(hwnd, &client)) {
+            const int dpi = static_cast<int>(GetDpiForWindowSafe(hwnd));
+            const LRESULT edge = HitTestResizeBorder(
+                c, client,
+                MulDiv(kResizeCorner96, dpi, 96),
+                MulDiv(kResizeEdge96,  dpi, 96));
+            if (edge != HTNOWHERE) return edge;
+        }
+
+        // 控制条上的控件要吃掉鼠标事件；其余客户区仍然交给拖动窗口。
+        // （M1 时整个客户区都返回 HTCAPTION，加按钮后不改的话点按钮会变成拖窗口。）
         EnsureLayout();
         if (HitTestControls(c, nullptr) != CtrlId::None) return HTCLIENT;
 
