@@ -137,7 +137,8 @@
 |---|---|
 | **外观预设系统** | ✅ **已完成**（D-088 / D-089）。纯逻辑层 `preset.h/.cpp`（文本表 / 增删改 / 单条导入导出）+ `cfg_appearance_presets` + 首选项页的「外观预设」区（下拉走系统菜单、保存 / 删除 / 导入 / 导出）。<br>**想加字段**：改 `AppearancePreset` + `FormatPresets` / `ParsePresets` 即可，**老预设文件照样能读**（未知 key 忽略、缺的用默认值）。<br>**改内置预设**：`preset.cpp` 的 `BuiltinPresets()`。<br>**改下拉样式**：目前用系统 `TrackPopupMenu`，没自绘。 |
 | **32 位支持** | ❌ 未做。`foobar2000_SDK.lib` / `component_client.lib` / `pfc.lib` **都只有 x64**，要补得先构建它们的 32 位版 |
-| `capture-ui.ps1` 的 `prefs` 目标找不到首选项窗口 | ⚠️ 2026-09-26 发现：窗口类名是 `#32770`、标题 `Preferences: Lyricus`，**两者都对**，但 `-Target prefs` 抓到 0 张。脚本的 `#32770` 枚举那段有 bug，待查。<br>**绕过办法**：先用 UIAutomation 拿 hwnd（在 `Descendants` 里找标题以 `Preferences` 开头的、且 `NativeWindowHandle != 0`），再自己调 `PrintWindow(hwnd, dc, 2)`。 |
+| ~~`capture-ui.ps1` 的 `prefs` 目标找不到首选项窗口~~ | ✅ **已修（D-095）**。根因是它用 `AutomationElement.RootElement.FindAll(Children)`，而 **UIAutomation 的顶层列表不含 owned 窗口** —— 首选项（`#32770`）正是挂在主窗口下面的 owned window，**类名和标题都对也枚举不到**。改用 `EnumWindows` + PID 过滤后：`-List` 从 3 个窗口变 4 个，`-Target prefs` 从 0 张变成功。 |
+| **★ 给首选项页截图** | 用 **`.\tools\prefs-shot.ps1 -Open -Scroll`**（D-095 固化的）。<br>链路：`Ctrl+P` 发给主窗口（`keybd_event`）→ `EnumWindows` + 标题找窗 → `PrintWindow(hwnd, dc, 2)` → `SendMessage(WM_VSCROLL)` 翻页。<br>⚠️ **前提：被截的窗口必须处理 `WM_PRINTCLIENT`。** 全自绘窗口不处理它时，`PrintWindow` 只走到默认背景处理 —— **截图里一片空白，而窗口在屏幕上完全正常**。这个坑害我误判过一次。<br>★ 脚本会打印**有内容像素占比**：全白 0% = 没画出来，正常 30~35%。**别只看图判断** —— 一张空白图既可能是窗口没画，也可能是截图方式不对，而排查方向完全相反。<br>⚠️ 用 UIAutomation 的 `TreeScope::Descendants` 遍历会**卡住**（foobar2000 的 UI 树很大），别用。 |
 | **怎么打开首选项（不用重启播放器）** | `Ctrl+P` 发给**主窗口**即可。两个坑：<br>① **主窗口没有标准菜单**（`GetMenu` 返回 0，是自绘菜单条），所以「枚举菜单找 Preferences 再发 `WM_COMMAND`」这条路不通；<br>② 发按键**用 `keybd_event`，别用 `SendInput`** —— 后者的 `INPUT` 结构含 union，自己拼容易把 `cbSize` 算错（我拼出来 28，Win32 要 40），而它会**静默返回 0**，什么都不发也不报错。 |
 | **★ 怎么可靠地给首选项页截图** | 2026-09-26 打通的路子，比 `capture-ui.ps1` 现在走 UIAutomation 的那条**快且稳**：<br>`EnumWindows` + `GetWindowTextW` 找标题以 `Preferences` 开头的窗口（**不要用 `Process.MainWindowHandle`** —— 它会挑中浮动面板，这条已经踩过两次）→ `GetWindowRect` → `PrintWindow(hwnd, dc, 2)`。<br>⚠️ **前提：被截的窗口必须处理 `WM_PRINTCLIENT`。** 全自绘窗口不处理它时，`PrintWindow` 只走到默认的背景处理 —— **截图里内容一片空白，而窗口在屏幕上完全正常**。这个坑害我误判过一次（发了张「滚到底变空白」的图，用户说"是你的截图脚本问题，我实际看没有问题"）。<br>⚠️ 所以：**给任何自绘窗口加截图支持时，先确认它接了 `WM_PRINTCLIENT`**（`prefs_page.cpp` 里有现成例子：把绘制抽成 `PaintTo(dc, rc)`，`WM_PAINT` 和 `WM_PRINTCLIENT` 共用）。<br>⚠️ 用 UIAutomation 的 `TreeScope::Descendants` 遍历会**卡住**（foobar2000 的 UI 树很大），别用。 |
 | ~~首选项页「字体」按钮的观感~~ | ✅ 已验（2026-09-26） |
@@ -153,8 +154,9 @@
 
 | 要验什么 | 用什么 |
 |---|---|
-| **纯逻辑** | `cd tests\harness; .\run.ps1`（9 组 694 项）<br>`-Suite <组名>` 只跑一组；`bench` 是搜索成本基准 |
+| **纯逻辑** | `cd tests\harness; .\run.ps1`（10 组 777 项）<br>`-Suite <组名>` 只跑一组；`bench` 是搜索成本基准 |
 | **界面长什么样** | `.\tools\capture-ui.ps1 -Target all`<br>`-List` 列出所有界面窗口；`-Restart` 先重启 |
+| **首选项页长什么样** | `.\tools\prefs-shot.ps1 -Open -Scroll`（D-095）<br>会打印**有内容像素占比**，全白 0% = 没画出来 |
 | **改完立刻生效** | 守候进程（`tools\watch-install.ps1`）**默认不打断播放**，等你下次关播放器才重启。<br>要立刻重启用 `-Relaunch` |
 | **打包** | `.\tools\package.ps1`（包比源 DLL 新就跳过） |
 

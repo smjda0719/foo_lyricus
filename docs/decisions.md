@@ -245,6 +245,38 @@ LanguageStandard            = stdcpp20
   **缓冲区越界，不是编译错误**，而且只在特定字体回调路径下触发，极难排查。
 - **结论**：这个设置**不能动**。改它之前先看这条。
 
+## D-095 固化 `tools/prefs-shot.ps1` + 修 `capture-ui.ps1` 的窗口枚举
+
+- **起因**：用户 2026-09-26 问「你是用发快捷键的方式吗？还是其他方式」，
+  随后说「固化一下」—— 那套做法当时只是我现敲的命令，没存成文件。
+- **新增 `tools/prefs-shot.ps1`**：一条命令给首选项页出图。链路每一环都
+  换掉了"显然的做法"，理由都写在脚本头部：
+  - **打开**：`Ctrl+P` 发给**主窗口**，用 `keybd_event`。
+    ⚠️ 主窗口**没有标准菜单**（`GetMenu` 返回 0，是自绘菜单条），所以
+    "枚举菜单找 Preferences 再发 `WM_COMMAND`"那条路根本不通。
+    ⚠️ 不用 `SendInput`：它的 `INPUT` 含 union，`cbSize` 拼错会**静默返回 0**。
+  - **找窗**：`EnumWindows` + 标题匹配。
+    ⚠️ 不用 `Process.MainWindowHandle`（会挑中浮动面板，已踩两次）。
+    ⚠️ 不用 UIAutomation 的 `Descendants`（在 foobar2000 上**会卡死**）。
+  - **截图**：`PrintWindow(hwnd, dc, 2)`。⚠️ 前提是窗口接 `WM_PRINTCLIENT`
+    （`prefs_page.cpp` 已加，见 D-094 补充）。
+  - **滚动**：`SendMessage(WM_VSCROLL, SB_TOP / SB_BOTTOM)`，不模拟鼠标。
+  - **★ 每张还输出「有内容像素占比」** —— 这是判断"这张图到底画出来没有"的
+    **客观指标**：全白 = 0%（多半是没接 `WM_PRINTCLIENT`），正常页面 30~35%。
+    当初就是靠 `0.0% -> 33.9%` 的对比确认修好的。
+    **靠看图判断反而容易看走眼** —— 一张空白图既可能是窗口没画，也可能是
+    截图方式不对，而这两种情况的排查方向完全相反。
+- **★ 修 `capture-ui.ps1` 的 `Get-TopLevelWindows`**：它一直抓不到首选项窗口。
+  - **根因**：它用 `AutomationElement.RootElement.FindAll(Children)`，
+    而 **UIAutomation 的顶层列表不含 owned 窗口** ——
+    foobar2000 的首选项（`#32770`）正是挂在主窗口下面的 owned window。
+    **类名和标题都对得上，就是枚举不到**，所以表现成"这个 target 坏了"。
+  - **修法**：改用 `EnumWindows`（真正的顶层窗口，含 owned）+ PID 过滤。
+  - **验证**：`-List` 从 3 个窗口变成 **4 个**（panel / cui / main / **prefs**）；
+    `-Target prefs` 从 0 张变成**成功抓到 1502x1059**。
+- **验证**：`prefs-shot.ps1 -Open -Scroll` 三张都是 32% 内容
+  （一致 = 内容装得下、没滚动，符合当时的窗口尺寸）。
+
 ## D-094 首选项页加滚动条 —— 布局按**内容高度**算，不按客户区高度
 
 - **起因**：用户 2026-09-26「加了这一项之后页面太长了，需要一个滚动条，

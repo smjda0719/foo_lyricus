@@ -112,6 +112,10 @@ public static IntPtr FindFirstChild(IntPtr parent, IntPtr after) {
 [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
 [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr wp, IntPtr lp);
 [DllImport("gdi32.dll")] public static extern bool BitBlt(IntPtr d, int x, int y, int w, int h, IntPtr s, int sx, int sy, int rop);
+// EnumWindows：真正的顶层窗口枚举（含 owned 窗口）—— 见 Get-TopLevelWindows 的说明
+[DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr p);
+[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+public delegate bool EnumProc(IntPtr h, IntPtr p);
 [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
 '@ -ErrorAction Stop
 } catch { }
@@ -168,15 +172,29 @@ function Get-TitleOf([IntPtr]$Hwnd) {
 #   挂在 foobar2000 主窗口下面的 DUI / CUI 元素。实测就是这么漏掉的：
 #   第一次跑只报出"1 个窗口"，而实际上有 3 个。
 #   UIAutomation 的 RootElement 能看到所有顶层窗口，按 ProcessId 过滤即可。
+# ★ 用 EnumWindows，**不用** UIAutomation 的 RootElement.Children。
+#
+# 【为什么换】UIAutomation 的 RootElement.Children **不含 owned 窗口**，
+# 而 foobar2000 的首选项（类名 #32770）正是挂在主窗口下面的 owned window ——
+# 于是 `-Target prefs` 一直抓到 0 张，尽管它的类名和标题都对得上。
+# EnumWindows 给的是**真正的顶层窗口**（含 owned），按 PID 过滤即可。
+#
+# ⚠️ 顺带：UIAutomation 的 `TreeScope::Descendants` 在 foobar2000 上会**卡死**
+#   （UI 树太大，遍历走不完）。所以这个文件里能不碰 UIA 就不碰。
+#
+# 历史（保留，说明为什么一开始用 UIA）：不能只用 Process.MainWindowHandle ——
+# 它只给一个句柄，而且会挑中 LyricusControlPanel（独立置顶窗口），
+# 从它往下找永远找不到挂在主窗口下面的 DUI / CUI 元素。
 function Get-TopLevelWindows([int]$ProcessId) {
     $out = New-Object System.Collections.Generic.List[IntPtr]
-    $cond = New-Object System.Windows.Automation.PropertyCondition(
-        [System.Windows.Automation.AutomationElement]::ProcessIdProperty, $ProcessId)
-    foreach ($e in [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
-            [System.Windows.Automation.TreeScope]::Children, $cond)) {
-        $h = [IntPtr]$e.Current.NativeWindowHandle
-        if ($h -ne [IntPtr]::Zero) { $out.Add($h) }
+    $cb = [LyricusCapture.Native+EnumProc] {
+        param($h, $p)
+        $wpid = 0
+        [void][LyricusCapture.Native]::GetWindowThreadProcessId($h, [ref]$wpid)
+        if ($wpid -eq $ProcessId) { $out.Add($h) }
+        return $true
     }
+    [void][LyricusCapture.Native]::EnumWindows($cb, [IntPtr]::Zero)
     return $out
 }
 
