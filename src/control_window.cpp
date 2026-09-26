@@ -1273,7 +1273,57 @@ void ControlWindow::PaintContent(HDC dc) {
 void ControlWindow::PaintPreview(HDC dc, const RECT& rc,
                                  const PanelAppearance& ap,
                                  const LyricDisplayConfig& cfg, int dpi,
-                                 const LyricsSource* src) {
+                                 const LyricsSource* src, const BgBitmap* bg) {
+    const int w = rc.right - rc.left;
+    const int h = rc.bottom - rc.top;
+    if (dc == nullptr || w <= 0 || h <= 0) return;
+
+    // ★ 整块预览要先合成到**一块 BGRA 缓冲**里（D-129）。
+    //
+    // 【为什么不能直接画到目标 DC】图标走的是 DrawIconOverlay —— 它**直接
+    //    混合到 BGRA 缓冲**上，而不是走 GDI。没有缓冲那一步就没地方落。
+    //    用户报"是没画控件还是控件颜色和背景一致了"就是它：
+    //    DrawControls 只画按钮**底板**（那玩意本来就和背景接近），
+    //    真正的 ◀ ▶ ▶▶ 🔊 图标全在 DrawIconOverlay 里。
+    BITMAPINFO bi{};
+    bi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
+    bi.bmiHeader.biWidth       = w;
+    bi.bmiHeader.biHeight      = -h;   // 负 = 自上而下
+    bi.bmiHeader.biPlanes      = 1;
+    bi.bmiHeader.biBitCount    = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+
+    void* bits = nullptr;
+    HBITMAP dib = ::CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (dib == nullptr || bits == nullptr) return;
+    HDC memDC = ::CreateCompatibleDC(dc);
+    if (memDC == nullptr) { ::DeleteObject(dib); return; }
+    HGDIOBJ oldBmp = ::SelectObject(memDC, dib);
+
+    const size_t n = static_cast<size_t>(w) * static_cast<size_t>(h);
+    unsigned char* px = static_cast<unsigned char*>(bits);
+
+    // 1) 铺面板底色。**alpha 一定要写 255** —— GDI 不写 alpha，
+    //    而下面 DrawIconOverlay 要按 alpha 混合：起点是 0 的话图标会和
+    //    透明黑混在一起，边缘发灰。
+    {
+        const BYTE bb = GetBValue(ap.bg);
+        const BYTE bg = GetGValue(ap.bg);
+        const BYTE br = GetRValue(ap.bg);
+        for (size_t i = 0; i < n; ++i) {
+            px[i * 4 + 0] = bb;
+            px[i * 4 + 1] = bg;
+            px[i * 4 + 2] = br;
+            px[i * 4 + 3] = 255;
+        }
+    }
+
+    // 2) 叠背景图 —— source-over，和浮动面板用**同一个函数**。
+    //    （自己写一遍的话，两边的半透明表现迟早会不一样。）
+    if (bg != nullptr && bg->valid() && bg->bgra.size() >= n * 4) {
+        BlendBgOver(px, bg->bgra.data(), n);
+    }
+
     // 只当状态容器用 —— 不 Create，所以没有窗口、没有窗口类注册。
     ControlWindow tmp;
 
@@ -1301,7 +1351,23 @@ void ControlWindow::PaintPreview(HDC dc, const RECT& rc,
     tmp.m_dragRatio = 0.0;
     tmp.m_hotRatio  = 0.0;
 
-    tmp.DrawTextContent(dc, rc, src);
+    // 3) 曲名 + 歌词 + 控制条（GDI）。
+    //
+    // ⚠️ 传的是**缓冲自己的矩形**（0,0,w,h），不是客户区那个 rc ——
+    //    memDC 的原点在缓冲左上角，用 rc 会把整块内容画到偏移的位置上。
+    const RECT local{ 0, 0, w, h };
+    tmp.DrawTextContent(memDC, local, src);
+
+    // 4) 图标（不走 GDI，直接混合到缓冲上）
+    tmp.DrawIconOverlay(px, w, h, w * 4, dpi);
+
+    // 5) 一次性贴到目标 DC
+    ::StretchDIBits(dc, rc.left, rc.top, w, h, 0, 0, w, h,
+                    bits, &bi, DIB_RGB_COLORS, SRCCOPY);
+
+    ::SelectObject(memDC, oldBmp);
+    ::DeleteDC(memDC);
+    ::DeleteObject(dib);
 }
 
 void ControlWindow::DrawTextContent(HDC dc, const RECT& rc, const LyricsSource* src) {

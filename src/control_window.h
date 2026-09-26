@@ -104,7 +104,7 @@ public:
     static void PaintPreview(HDC dc, const RECT& rc,
                              const PanelAppearance& ap,
                              const LyricDisplayConfig& cfg, int dpi,
-                             const LyricsSource* src);
+                             const LyricsSource* src, const BgBitmap* bg);
 
 private:
     CtrlId HitTestControls(POINT clientPt, double* ratioOut) const;

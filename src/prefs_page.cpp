@@ -1211,123 +1211,42 @@ void CLyricusPrefsDlg::DrawBgPreview(HDC dc, const PrefsLayout& L) {
     const int h = L.bgPreview.bottom - L.bgPreview.top;
     if (w <= 0 || h <= 0) return;
 
-    // ★ 底板用**面板底色**，不是首选项页的主题色（D-118）。
+    // ★ 整块预览交给**面板自己的那套绘制**（D-128 / D-129）。
     //
-    // 【为什么】预览要"所见即所得"—— 用户在这儿要看的是"我这套配色配这张图
-    //    到底什么样"。用主题色的话预览永远是一块浅灰，和面板上真正的效果无关，
-    //    那样底板这一层就白画了（还不如不画）。
-    FillRoundRect(dc, L.bgPreview, rad, m_edited.bg);
+    // 【为什么不再自己画】这个函数我改过四轮：手写歌词示意两版（用户说
+    //    "和真实排版不一样"）、只用 StretchDIBits 贴图（用户说"底板颜色
+    //    还是没变" —— 因为透明区被画成黑盖住了底板）、复用 DrawTextContent
+    //    但漏了图标（用户问"是没画控件还是控件颜色和背景一致了"）。
+    //
+    //    四次都是同一个原因：**手写的近似必然在某处差一点**，而"差一点"
+    //    正是预览最没价值的状态 —— 用户照着它调，然后发现面板上是另一个样子。
+    //
+    // PaintPreview 一次做完：铺底色 -> 叠背景图（source-over，和面板同一个
+    // 函数）-> 歌词 -> 控件 -> **图标**。它内部走的就是浮动面板那份代码，
+    // 整块先合成在 BGRA 缓冲里再贴出来（图标那一步不走 GDI，必须有缓冲）。
+    //
+    // 歌词用固定替身：预览不该依赖"现在有没有在播放"。
+    // 没设图 / 读不到图时传 nullptr —— 那样预览就是"没有背景图"时的样子。
+    const int blurPx = MulDiv(m_edited.bgBlur, dpi, 96);
+    const BgBitmap* bmp = m_edited.bgImage.empty() ? nullptr :
+        GetPanelBackground(Utf8ToWide(m_edited.bgImage.c_str()), w, h,
+                           static_cast<BgFit>(m_edited.bgFit), CurrentManual(),
+                           blurPx, m_edited.bgDim, m_edited.bgOpacity);
 
-    // ⚠️ 从图开始**裁剪到预览框内**（D-110）。
-    //
-    // 图放大之后会超出框（那是正常的，用户就是想让局部更大），
-    // 但四角手柄是贴在**图的角**上的 —— 图一出框，手柄就跑到框外
-    // 压在其他控件上，看着像画错了。
-    //
-    // 裁剪之后超出部分自然消失，而**部分落在框内**的手柄仍然看得见、
-    // 也仍然拖得到（命中测试不裁剪）—— 用户不会因为"图比框大"
-    // 就完全失去缩小的入口。
+    ControlWindow::PaintPreview(dc, L.bgPreview, m_edited,
+                                GetLyricDisplayConfig(), dpi, &PreviewLyrics(), bmp);
+
+    // 边框画在最后（先画会被内容盖住）
+    StrokeRoundRect(dc, L.bgPreview, rad, 1, T.border);
+
+    // 后面提示文字要用（判断是不是"手动"模式）
+    const bool manual = (m_edited.bgFit == static_cast<int>(BgFit::Manual));
+
+    // 四角手柄要裁剪到预览框内 —— 图放大后手柄会跟着出框、压在其他控件上
+    // 看着像画错了；而**部分落在框内**的仍然看得见、也拖得到（命中测试不裁剪）。
     const int savedDC = ::SaveDC(dc);
     ::IntersectClipRect(dc, L.bgPreview.left, L.bgPreview.top,
                         L.bgPreview.right, L.bgPreview.bottom);
-
-    auto centered = [&](const wchar_t* msg) {
-        DrawTextIn(dc, L.bgPreview, msg, T.textDim, m_fontBody,
-                   DT_CENTER | DT_VCENTER | DT_WORDBREAK | DT_NOPREFIX);
-    };
-
-    const bool manual = (m_edited.bgFit == static_cast<int>(BgFit::Manual));
-
-    if (m_edited.bgImage.empty()) {
-        centered(L"选了图片之后，在这里拖动调整");
-    } else {
-        // ⚠️ 用**预览区的尺寸**取图，不是面板的 —— bg_image 有两个缓存槽，
-        //    所以这两个尺寸不会互相挤掉。（只有一条缓存时它们会交替重算，
-        //    表现为"一边好好的、另一边每帧卡"。）
-        const int blurPx = MulDiv(m_edited.bgBlur, dpi, 96);
-        const BgBitmap* bmp = GetPanelBackground(
-            Utf8ToWide(m_edited.bgImage.c_str()), w, h,
-            static_cast<BgFit>(m_edited.bgFit), CurrentManual(),
-            blurPx, m_edited.bgDim, m_edited.bgOpacity);
-
-
-        if (bmp == nullptr) {
-            // 读不到就**如实说**，而不是画一块空白 —— 后者看起来像"没设图"，
-            // 用户会去重新选一遍，而问题其实出在文件本身。
-            centered(L"读不到这张图（文件被移走、或格式不支持）");
-        } else {
-            // ★★ 图要**混合**到底板上，不能直接覆盖（D-125）。
-            //
-            // 【为什么要绕这一圈】bmp 里"图之外的区域"是**透明像素，RGB = 0**。
-            //    而 `StretchDIBits(..., SRCCOPY)` **不看 alpha**，于是那些地方
-            //    被画成**纯黑**、把底板整个盖掉。
-            //
-            //    表现就是：无论把"面板底色"改成什么，预览里那块永远是黑的 ——
-            //    用户报"底板颜色还是没变"正是这个。他看到黑色，
-            //    以为那是底板，其实是透明区。
-            //
-            //    面板那边走的是 BlendBgOver（source-over），预览这边漏了 ——
-            //    **同一个概念两条路径各写一份**，又一次漏掉了一边。
-            //
-            // 先在一块临时缓冲里铺底板再叠图，最后一次性贴上去。
-            // 底板不透明（alpha=255），所以合成结果也是不透明的，
-            // 这正是预览该有的样子（真实面板的不透明度由窗口管，
-            // 预览里体现不了，也不该体现）。
-            const size_t n = static_cast<size_t>(w) * static_cast<size_t>(h);
-            std::vector<unsigned char> canvas(n * 4);
-            const BYTE bb = GetBValue(m_edited.bg);
-            const BYTE bg = GetGValue(m_edited.bg);
-            const BYTE br = GetRValue(m_edited.bg);
-            for (size_t i = 0; i < n; ++i) {
-                canvas[i * 4 + 0] = bb;
-                canvas[i * 4 + 1] = bg;
-                canvas[i * 4 + 2] = br;
-                canvas[i * 4 + 3] = 255;
-            }
-            BlendBgOver(canvas.data(), bmp->bgra.data(), n);
-
-            BITMAPINFO bi{};
-            bi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
-            bi.bmiHeader.biWidth       = w;
-            bi.bmiHeader.biHeight      = -h;   // 负 = 自上而下，否则上下颠倒
-            bi.bmiHeader.biPlanes      = 1;
-            bi.bmiHeader.biBitCount    = 32;
-            bi.bmiHeader.biCompression = BI_RGB;
-            ::StretchDIBits(dc, L.bgPreview.left, L.bgPreview.top, w, h,
-                            0, 0, w, h,
-                            canvas.data(), &bi, DIB_RGB_COLORS, SRCCOPY);
-        }
-    }
-
-    // ★ 整块面板内容交给**面板自己的那份实现**（D-128）。
-    //
-    // 【为什么不再手写】我先后手写过两版"近似排版"（五行平铺、按高度自适应），
-    //    用户两次都说"和真实排版不一样"。那是对的 —— 位置、行距、字号、
-    //    曲名的位置、当前行的垂直基准，每一样都有自己的规则，
-    //    手写的近似**必然**在某处偏一点，而"差一点"正是这类预览最没价值的状态：
-    //    用户会照着它调，然后发现面板上是另一个样子。
-    //
-    //    现在直接调 PaintPreview —— 它内部走的是 DrawTextContent，
-    //    和浮动面板**同一份代码**，所以排版一定一致。
-    //
-    // 歌词用一份固定的替身（不是真歌词）：预览不该依赖"现在有没有在播放"。
-    ControlWindow::PaintPreview(dc, L.bgPreview, m_edited,
-                                GetLyricDisplayConfig(), dpi, &PreviewLyrics());
-
-    // 边框画在最后（先画会被图盖住）
-    StrokeRoundRect(dc, L.bgPreview, rad, 1, T.border);
-
-    // ★ 把**控件也画出来**（D-118）。
-    //
-    // 【为什么】选背景图时真正要判断的是"控件压在这张图上还看得清吗" ——
-    //    只画一张图完全看不出这一点：一张浅色图配浅色控件，
-    //    图本身好看，但控制条会糊成一片。
-    //
-    // 复用面板那份实现（ControlWindow::DrawControlsPreview），
-    // 而不是在这儿重写一遍 —— 两份实现迟早跑偏，
-    // 而"预览里看到的和面板上的不是一回事"是这种预览最糟的失败方式。
-    ControlWindow::DrawControlsPreview(dc, L.bgPreview, m_edited, dpi);
-
     // 裁剪到此为止 —— 下面要画手柄，但手柄也得跟着裁
     //（图超出框时它们在框外，正是要裁掉的那部分）。
     ::RestoreDC(dc, savedDC);
@@ -1355,7 +1274,7 @@ void CLyricusPrefsDlg::DrawBgPreview(HDC dc, const PrefsLayout& L) {
             StrokeRoundRect(dc, h, hRad, MulDiv(1, dpi, 96), RGB(70, 70, 75));
         }
     }
-    ::RestoreDC(dc, savedDC2);
+    ::RestoreDC(dc, savedDC);
 
     if (!empty(L.bgPreviewHint)) {
         // 提示里带上**当前缩放百分比**（D-107）。
