@@ -1764,6 +1764,31 @@ void ControlWindow::ActivateControl(CtrlId id, double ratio) {
     RequestRepaint();
 }
 
+void ControlWindow::DrawControlsPreview(HDC dc, const RECT& rc,
+                                        const PanelAppearance& ap, int dpi) {
+    // 只当状态容器用 —— 不 Create，所以没有窗口、没有窗口类注册。
+    ControlWindow tmp;
+
+    tmp.m_appearance = ap;
+    tmp.m_hwnd       = nullptr;
+
+    // 交互态全默认：没有悬停、没有按下、没有拖动、音量浮层关着。
+    // 那正是预览该显示的样子。
+    //（m_hot/m_active 是 CtrlId 类型，默认值本来就是 None —— 这里显式写出来，
+    //  免得以后有人改了成员的默认值、预览就开始显示"某个按钮是热的"。）
+    tmp.m_hot    = CtrlId::None;
+    tmp.m_active = CtrlId::None;
+    tmp.m_draggingProgress = false;
+    tmp.m_draggingVolume   = false;
+    tmp.m_volumePopupOpen  = false;
+    tmp.m_dragFromPopup    = false;
+    tmp.m_dragRatio = 0.0;
+    tmp.m_hotRatio  = 0.0;
+
+    tmp.LayoutControls(rc, dpi);
+    tmp.DrawControls(dc, dpi);
+}
+
 void ControlWindow::DrawControls(HDC dc, int dpi) {
     auto S = [dpi](int v) { return MulDiv(v, dpi, 96); };
     const auto& st = PlaybackState::Get();

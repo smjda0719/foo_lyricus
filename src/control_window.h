@@ -78,6 +78,23 @@ private:
     void   EnsureLayout();                       // 按当前客户区尺寸重算控件矩形
     void   LayoutControls(const RECT& rc, int dpi);
     void   DrawControls(HDC dc, int dpi);
+
+public:
+    // 把控制条画到**任意 DC** 上（首选项的背景图预览用，D-118）。
+    //
+    // 【为什么放在 ControlWindow 里而不是提成自由函数】DrawControls 依赖
+    // 十几个私有状态（配色、8 个控件矩形、hot/active/拖动中……）。全参数化
+    // 要动 200 行、还容易漏掉一个；而在这里构造一份"全默认"的临时状态再调它，
+    // **实现只有一份**，改动只有一个函数。
+    //
+    // 【为什么预览正好能用"全默认"】预览要显示的就是"什么都没悬停、没按下"
+    // 的样子 —— 那正是默认值。用户看的是配色和背景图搭不搭，不是交互反馈。
+    //
+    // ⚠️ **不建窗口**（不调 Create），只把它当状态容器用。
+    static void DrawControlsPreview(HDC dc, const RECT& rc,
+                                    const PanelAppearance& ap, int dpi);
+
+private:
     CtrlId HitTestControls(POINT clientPt, double* ratioOut) const;
     void   ActivateControl(CtrlId id, double ratio);
 

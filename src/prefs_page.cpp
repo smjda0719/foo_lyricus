@@ -1171,8 +1171,12 @@ void CLyricusPrefsDlg::DrawBgPreview(HDC dc, const PrefsLayout& L) {
     const int h = L.bgPreview.bottom - L.bgPreview.top;
     if (w <= 0 || h <= 0) return;
 
-    // 底板先铺：有图时它会从圆角的四个角露出来，看着像"图嵌在里面"
-    FillRoundRect(dc, L.bgPreview, rad, T.cardBg);
+    // ★ 底板用**面板底色**，不是首选项页的主题色（D-118）。
+    //
+    // 【为什么】预览要"所见即所得"—— 用户在这儿要看的是"我这套配色配这张图
+    //    到底什么样"。用主题色的话预览永远是一块浅灰，和面板上真正的效果无关，
+    //    那样底板这一层就白画了（还不如不画）。
+    FillRoundRect(dc, L.bgPreview, rad, m_edited.bg);
 
     // ⚠️ 从图开始**裁剪到预览框内**（D-110）。
     //
@@ -1227,6 +1231,17 @@ void CLyricusPrefsDlg::DrawBgPreview(HDC dc, const PrefsLayout& L) {
 
     // 边框画在最后（先画会被图盖住）
     StrokeRoundRect(dc, L.bgPreview, rad, 1, T.border);
+
+    // ★ 把**控件也画出来**（D-118）。
+    //
+    // 【为什么】选背景图时真正要判断的是"控件压在这张图上还看得清吗" ——
+    //    只画一张图完全看不出这一点：一张浅色图配浅色控件，
+    //    图本身好看，但控制条会糊成一片。
+    //
+    // 复用面板那份实现（ControlWindow::DrawControlsPreview），
+    // 而不是在这儿重写一遍 —— 两份实现迟早跑偏，
+    // 而"预览里看到的和面板上的不是一回事"是这种预览最糟的失败方式。
+    ControlWindow::DrawControlsPreview(dc, L.bgPreview, m_edited, dpi);
 
     // 裁剪到此为止 —— 下面要画手柄，但手柄也得跟着裁
     //（图超出框时它们在框外，正是要裁掉的那部分）。
