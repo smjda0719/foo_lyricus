@@ -287,7 +287,13 @@ private:
     // 图片在预览区里**实际占的矩形**（客户区坐标）。
     // 四角手柄贴的是它，不是预览框 —— 用户拖的是"这张图的角"（D-108）。
     // 返回 false 表示算不出来（没图、读不到尺寸、尺寸非法）。
-    bool PreviewImageRect(const PrefsLayout& L, RECT& out) const;
+    //
+    // m 可以传一组**假设的**手动参数（拖角时要用它预演"缩放之后图在哪"）——
+    // 传当前值就是"现在图在哪"。
+    bool PreviewImageRect(const PrefsLayout& L, const BgManual& m, RECT& out) const;
+    bool PreviewImageRect(const PrefsLayout& L, RECT& out) const {
+        return PreviewImageRect(L, CurrentManual(), out);
+    }
 
     // 弹一个模态取色器。
     //
@@ -322,21 +328,24 @@ private:
     // 是因为现在有四个滑块；布尔的话每加一个就要多一个标志，
     // 而漏掉"松开时清哪一个"就是滑块粘住鼠标。
     int    m_dragSlider = kHitNone;
-    // 拖角缩放（D-107）要记三个量：按下时的缩放、鼠标到预览中心的距离、
-    // 以及中心本身的客户区坐标（拖动过程中反复用，不重算）。
+    // 拖角缩放（D-107 / D-115）：**以对角那个手柄为锚点**。
     //
-    // ⚠️ 用「到中心的距离之比」而不是「某一轴的位移之比」：四个角方向不同，
-    //    但"离中心越远 = 放得越大"对四个角都成立 —— 一套公式服务四个角，
-    //    而不是四份各自带符号判断的实现。
+    // 【为什么锚点是对角】用户拖右下角时，期望的是"左上角钉住不动、
+    //    右下角跟着鼠标走" —— 那正是图片编辑器的标准交互。
+    //    围绕框心缩放做不到这一点：那样左下和右上也会跟着动，
+    //    看起来像"图在框里漂"。
     //
-    // ⚠️ 中心是**图片矩形的中心**，不是预览框的中心（D-108）：
-    //    手柄贴在图的四角上，配对的中心自然也该是图的中心。
-    //    用框的中心的话，图不居中时（手动构图之后很常见）
-    //    拖角会让图一边缩放一边漂移。
-    int    m_dragHandle      = kHitNone;
+    // 记的是**按下瞬间**的一整套状态（锚点位置、图的大小、offset、
+    // 起点到锚点的距离）。拖动过程中全部以它为基准重算，而不是
+    // 每帧用上一帧的结果递推 —— 递推会把取整误差累积起来，
+    // 拖久了图会明显跑偏。
+    CPoint m_dragAnchor{};        // 对角手柄的位置（客户区坐标）
+    double m_dragStartDist = 0.0; // 按下时鼠标到锚点的距离
     int    m_dragStartZoom   = 100;
-    double m_dragStartDist   = 0.0;
-    CPoint m_dragCenter{};
+    int    m_dragStartOffX   = 0; // 按下时的 offset
+    int    m_dragStartOffY   = 0;
+    RECT   m_dragStartDst{};      // 按下时图的实际矩形（客户区坐标）
+    int    m_dragHandle      = kHitNone;
     bool   m_dragPreview = false;
     CPoint m_dragPreviewLast{};
     bool m_tracking  = false;      // 已登记 TME_LEAVE
@@ -1104,7 +1113,8 @@ void CLyricusPrefsDlg::OnBgPick() {
     NotifyChanged();
 }
 
-bool CLyricusPrefsDlg::PreviewImageRect(const PrefsLayout& L, RECT& out) const {
+bool CLyricusPrefsDlg::PreviewImageRect(const PrefsLayout& L, const BgManual& mIn,
+                                        RECT& out) const {
     out = RECT{ 0, 0, 0, 0 };
     if (m_edited.bgImage.empty()) return false;
 
@@ -1119,9 +1129,10 @@ bool CLyricusPrefsDlg::PreviewImageRect(const PrefsLayout& L, RECT& out) const {
     //    同一组参数，所以这里算出来的矩形和实际画出来的图**一定一致**。
     //    自己另写一套"图该多大"的算法就会有两份真相，
     //    而它们不一致的表现是"手柄和图错开"，看起来像手柄画歪了。
+    const BgManual m = ClampBgManual(mIn);
     const BgPlacement place = ComputeBgPlacement(
         imgW, imgH, pw, ph,
-        static_cast<BgFit>(m_edited.bgFit), CurrentManual());
+        static_cast<BgFit>(m_edited.bgFit), m);
     if (!place.valid) return false;
 
     // place.dst 是"预览区坐标系"的 -> 平移到客户区坐标
@@ -1310,59 +1321,98 @@ void CLyricusPrefsDlg::OnBgPreviewDrag(int dx, int dy) {
 void CLyricusPrefsDlg::BeginBgHandleDrag(int hit, CPoint pt, const PrefsLayout& L) {
     m_dragHandle = hit;
 
+    // ⚠️ 先切到手动模式 —— 下面算"图在哪"要用 m_edited.bgFit，
+    //    切之前算出来的是别的适配方式下的位置，锚点就错了。
+    EnsureManualFit();
+
+    RECT imgRect{};
+    if (!PreviewImageRect(L, imgRect)) return;
+    m_dragStartDst = imgRect;
+
+    // ★ 锚点 = **对角**那个手柄（D-115）。
+    //   拖右下角时钉住左上角，那才是图片编辑器的标准交互；
+    //   围绕框心缩放的话左下和右上也会跟着动，看起来像"图在框里漂"。
+    const int corner = hit - kHitBgHandleBase;
+    const int anchorCorner = (corner + 2) % kBgHandleCount;
+    const int dpi = static_cast<int>(GetDpiForWindowSafe(m_hWnd));
+    const RECT ah = BgPreviewHandle(imgRect, anchorCorner, MulDiv(12, dpi, 96));
+    m_dragAnchor.x = (ah.left + ah.right) / 2;
+    m_dragAnchor.y = (ah.top + ah.bottom) / 2;
+
     const BgManual m = CurrentManual();
     m_dragStartZoom = m.zoomPct;
+    m_dragStartOffX = m.offsetXPct;
+    m_dragStartOffY = m.offsetYPct;
 
-    // ⚠️ 中心取**预览框的中心**，不是图片矩形的中心（D-114）。
-    //
-    // 【为什么不能用图心】图心**会随缩放变化** —— 图一放大，它的中心就移了，
-    //    于是下一次算距离时参考点已经不同，缩放的同时还在"挪"，
-    //    看起来像图一边变大一边跑。
-    //    框心是固定的：缩放只改大小、不改位置，那才是"缩放"该有的样子。
-    //
-    // 【为什么两边必须同一个中心】起点距离和过程中距离都按它算 ——
-    //    换中心等于换尺子，比例就没有意义了。
-    m_dragCenter.x = (L.bgPreview.left + L.bgPreview.right) / 2;
-    m_dragCenter.y = (L.bgPreview.top + L.bgPreview.bottom) / 2;
-
-    const double dx = pt.x - m_dragCenter.x;
-    const double dy = pt.y - m_dragCenter.y;
+    const double dx = pt.x - m_dragAnchor.x;
+    const double dy = pt.y - m_dragAnchor.y;
     m_dragStartDist = std::sqrt(dx * dx + dy * dy);
 
-    // ⚠️ 起点距离太小时比例会炸（除以一个接近 0 的数）。
-    //    窗口被压得极小、或者**图被缩得很小**（手柄靠近框心）时会碰到，
-    //    所以这个下限不是防御性的摆设，D-114 放开缩放下限之后它更容易触发。
+    // 起点距离太小时比例会炸。放开缩放下限（D-114）之后图可以被缩得很小，
+    // 四个手柄都靠近中心，这个下限就不再是防御性的摆设了。
     if (m_dragStartDist < 8.0) m_dragStartDist = 8.0;
-
-    EnsureManualFit();
 }
 
 void CLyricusPrefsDlg::OnBgHandleDrag(CPoint pt) {
     if (m_dragHandle == kHitNone || m_dragStartDist <= 0.0) return;
 
-    const double dx = pt.x - m_dragCenter.x;
-    const double dy = pt.y - m_dragCenter.y;
+    // 到**锚点**的距离之比：往外拖 = 离锚点更远 = 放大。
+    // 这个判据对四个角都成立 —— 每个角的"外"都是远离它的对角。
+    const double dx = pt.x - m_dragAnchor.x;
+    const double dy = pt.y - m_dragAnchor.y;
     const double dist = std::sqrt(dx * dx + dy * dy);
-
-    // 缩放 = 按下时的缩放 × (现在到中心的距离 / 按下时的距离)。
-    // 往外拖 = 离中心更远 = 放大，四个角都成立。
     const double ratio = dist / m_dragStartDist;
 
     BgManual m = CurrentManual();
     m.zoomPct = static_cast<int>(std::lround(m_dragStartZoom * ratio));
-
     const BgManual c = ClampBgManual(m);
     if (c.zoomPct == m_edited.bgZoomPct) return;   // 已经到上下限
 
-    m_edited.bgZoomPct = c.zoomPct;
+    // ⚠️ 用**夹取后**的 zoom 算实际比例。用未夹取的 ratio 的话，
+    //    拖到上下限之后图还会继续长/缩，而数字已经不动了 ——
+    //    那看起来像"图失控了"。
+    const double actual = static_cast<double>(c.zoomPct) / m_dragStartZoom;
 
-    // ⚠️ 缩放会改变"可移动范围"，原来的偏移可能已经越界；
-    //    当场夹一次，否则那一帧图会被画到区域外、露出一条底色边。
-    {
-        const BgManual c2 = ClampBgManual(CurrentManual());
-        m_edited.bgOffsetXPct = c2.offsetXPct;
-        m_edited.bgOffsetYPct = c2.offsetYPct;
-    }
+    // 围绕锚点缩放按下时那个矩形，得到图**应该**落在哪儿
+    const int wantX = m_dragAnchor.x +
+        static_cast<int>(std::lround((m_dragStartDst.left - m_dragAnchor.x) * actual));
+    const int wantY = m_dragAnchor.y +
+        static_cast<int>(std::lround((m_dragStartDst.top - m_dragAnchor.y) * actual));
+
+    // 再把"该在哪儿"反解成 offset。
+    //   dstX = -halfW - rangeX * offset / 100
+    //     => offset = -(dstX + halfW) * 100 / rangeX
+    //
+    // ⚠️ halfW/rangeX 必须按**新的**缩放算 —— 图的大小变了，可移动幅度也跟着变。
+    const PrefsLayout L = CurrentLayout();
+    RECT newRect{};
+    if (!PreviewImageRect(L, c, newRect)) return;
+    const int pw = L.bgPreview.right - L.bgPreview.left;
+    const int ph = L.bgPreview.bottom - L.bgPreview.top;
+    const int drawW = newRect.right - newRect.left;
+    const int drawH = newRect.bottom - newRect.top;
+
+    const int halfW = (drawW - pw) / 2;
+    const int halfH = (drawH - ph) / 2;
+    const int rangeX = (halfW >= 0) ? halfW : -halfW;
+    const int rangeY = (halfH >= 0) ? halfH : -halfH;
+
+    // wantX/wantY 是客户区坐标，而 dstX/dstY 是预览框坐标系 —— 减掉框的左上角
+    const int wantLocalX = wantX - L.bgPreview.left;
+    const int wantLocalY = wantY - L.bgPreview.top;
+
+    // range 为 0 表示那个方向没有可移动的余地，保持按下时的 offset
+    const int offX = (rangeX > 0) ? -(wantLocalX + halfW) * 100 / rangeX : m_dragStartOffX;
+    const int offY = (rangeY > 0) ? -(wantLocalY + halfH) * 100 / rangeY : m_dragStartOffY;
+
+    BgManual m2 = c;
+    m2.offsetXPct = offX;
+    m2.offsetYPct = offY;
+    const BgManual c2 = ClampBgManual(m2);
+
+    m_edited.bgZoomPct    = c2.zoomPct;
+    m_edited.bgOffsetXPct = c2.offsetXPct;
+    m_edited.bgOffsetYPct = c2.offsetYPct;
     NotifyChanged();
     Repaint();
 }
