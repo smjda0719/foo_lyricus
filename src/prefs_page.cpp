@@ -111,9 +111,16 @@ constexpr int kHitBgBlur    = -15;
 constexpr int kHitBgDim     = -16;
 // 预览区（D-103）/ 四角手柄（D-107）
 constexpr int kHitBgPreview = -17;
-// 角手柄用**连续的一段**（-20..-17），这样"这是第几个角"减基准就得到。
-// 四个各写一个常量的话，HitTest 和拖动里都要写四遍 if。
-constexpr int kHitBgHandleBase = -20;
+
+// ⚠️ 角手柄用**连续的一段**，且这一段必须和上面那个值**完全不重叠**（D-113）。
+//
+//    原来写成 -20..-17，而 kHitBgPreview 正好是 -17 —— 于是**左下角手柄
+//    和预览区是同一个编号**。HitTest 里手柄先判、返回 -17，OnLButtonDown
+//    再把它当成预览区处理，结果**左下角手柄永远无效**（拖它是平移，不是缩放）。
+//
+//    这类 bug 特别隐蔽：两条分支各自看都对，只有"这两个常量挨着"这件事错。
+//    所以宁可留出空档，也不要让两套编号首尾相接。
+constexpr int kHitBgHandleBase = -30;
 
 // 控件基色块用**独立的索引区**，不和上面那 6 个配色色块（0..5）混。
 // 混在一起的话 HitTest 的 `hit < kPrefsColorCount` 判断会把它们误当成配色色块，
@@ -1345,6 +1352,7 @@ void CLyricusPrefsDlg::OnBgHandleDrag(CPoint pt) {
     if (c.zoomPct == m_edited.bgZoomPct) return;   // 已经到上下限
 
     m_edited.bgZoomPct = c.zoomPct;
+
     // ⚠️ 缩放会改变"可移动范围"，原来的偏移可能已经越界；
     //    当场夹一次，否则那一帧图会被画到区域外、露出一条底色边。
     {
