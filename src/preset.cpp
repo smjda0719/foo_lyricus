@@ -77,6 +77,8 @@ AppearancePreset ClampPreset(AppearancePreset p) {
     p.alpha        = ClampInt(p.alpha, kPresetMinAlpha, kPresetMaxAlpha);
     p.fontPct      = ClampInt(p.fontPct, kPresetMinFontPct, kPresetMaxFontPct);
     p.backdropMode = ClampInt(p.backdropMode, kPresetMinBackdrop, kPresetMaxBackdrop);
+    // 手改配置写了个 7 之类的值进来，退回自动（安全的那一档）
+    p.ctrlMode     = ClampInt(p.ctrlMode, kCtrlMin, kCtrlMax);
     return p;
 }
 
@@ -212,6 +214,19 @@ std::string FormatPresets(const std::vector<AppearancePreset>& presets) {
             s += ";font="; s += f;
         }
 
+        // 控件配色**只在自定义模式下写出去**。
+        //
+        // 自动模式下那 4 个基色根本不参与绘制（颜色是从面板底色算的），
+        // 把它们写进文件只会让预设变长、还会让人以为它们生效了。
+        // 反过来读的时候缺省就是自动，所以老预设天然兼容。
+        if (p.ctrlMode == kCtrlCustom) {
+            s += ";ctrlMode=1";
+            s += ";ctrlBtn=";    s += ColorToHex(p.ctrlButton);
+            s += ";ctrlIcon=";   s += ColorToHex(p.ctrlIcon);
+            s += ";ctrlSlider="; s += ColorToHex(p.ctrlSlider);
+            s += ";ctrlText=";   s += ColorToHex(p.ctrlText);
+        }
+
         s += '\n';
     }
     return s;
@@ -268,6 +283,13 @@ std::vector<AppearancePreset> ParsePresets(const std::string& text) {
             else if (k == "fontPct") ParseInt(v, p.fontPct);
             else if (k == "backdrop") ParseInt(v, p.backdropMode);
             else if (k == "font")    p.fontFace = v;
+            // 控件配色。缺省就是自动（kCtrlAuto），所以老预设读进来天然兼容 ——
+            // 这正是"只在自定义时才写出去"那个决定的另一半。
+            else if (k == "ctrlMode")   ParseInt(v, p.ctrlMode);
+            else if (k == "ctrlBtn")    HexToColor(v, p.ctrlButton);
+            else if (k == "ctrlIcon")   HexToColor(v, p.ctrlIcon);
+            else if (k == "ctrlSlider") HexToColor(v, p.ctrlSlider);
+            else if (k == "ctrlText")   HexToColor(v, p.ctrlText);
             // 其它 key 忽略（见上面的说明）
         }
 

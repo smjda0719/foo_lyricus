@@ -45,6 +45,10 @@ using lyricus::kPresetMinFontPct;
 using lyricus::kPresetMaxFontPct;
 using lyricus::kPresetMinBackdrop;
 using lyricus::kPresetMaxBackdrop;
+// 控件配色模式（D-093）
+using lyricus::kCtrlAuto;
+using lyricus::kCtrlCustom;
+using lyricus::kCtrlMax;
 
 // ---------------------------------------------------------------------------
 void TestBuiltins() {
@@ -372,6 +376,69 @@ void TestMaxPresets() {
     }
 }
 
+// ---------------------------------------------------------------------------
+void TestControlColors() {
+    std::printf("\n== 控件配色模式（D-093）==\n");
+
+    // 用户 2026-09-26 定的：自动推导与自定义**两个选项并存**，
+    // 「前者系统会自己调节，后者让用户自己更改」。
+    {
+        const AppearancePreset p;
+        Check(p.ctrlMode == kCtrlAuto, "★ 默认是自动模式（从面板底色推导）");
+    }
+
+    // 自动模式下**不写**那 5 个字段 —— 它们不参与绘制，
+    // 写进文件只会让预设变长、还会让人以为它们生效了。
+    {
+        AppearancePreset p;
+        p.name = L"自动的";
+        const std::string line = ExportPreset(p);
+        Check(line.find("ctrlMode") == std::string::npos,
+              "★ 自动模式导出的预设里不含 ctrl* 字段（它们不参与绘制）");
+    }
+
+    // 自定义模式往返
+    {
+        AppearancePreset p;
+        p.name       = L"我的配色";
+        p.ctrlMode   = kCtrlCustom;
+        p.ctrlButton = RGB(0x11, 0x22, 0x33);
+        p.ctrlIcon   = RGB(0x44, 0x55, 0x66);
+        p.ctrlSlider = RGB(0x77, 0x88, 0x99);
+        p.ctrlText   = RGB(0xAA, 0xBB, 0xCC);
+
+        AppearancePreset back;
+        Check(ImportPreset(ExportPreset(p), back), "自定义模式的预设能导出再导入");
+        Check(back.ctrlMode == kCtrlCustom, "★ 模式位往返一致");
+        Check(back.ctrlButton == p.ctrlButton && back.ctrlIcon   == p.ctrlIcon &&
+              back.ctrlSlider == p.ctrlSlider && back.ctrlText   == p.ctrlText,
+              "★ 4 个基色逐字段往返一致");
+    }
+
+    // ★ 向前兼容：没有 ctrlMode 的老预设读进来必须是自动。
+    //   这正是"只在自定义时才写出去"那个决定的另一半 ——
+    //   两条合起来，老预设文件一个字都不用改。
+    {
+        const auto v = ParsePresets("老预设\tbg=1C1C1E;current=FFFFFF;alpha=215\n");
+        Check(v.size() == 1 && v[0].ctrlMode == kCtrlAuto,
+              "★ 没有 ctrlMode 的老预设读进来是自动模式（向前兼容）");
+    }
+
+    // 夹取：手改配置写了个 7，不能让它变成一个没定义的模式
+    {
+        const auto v = ParsePresets("A\tctrlMode=7\n");
+        Check(v.size() == 1 && v[0].ctrlMode == kCtrlMax,
+              "★ ctrlMode 越界被夹到 1（不会变成没定义的模式）");
+    }
+
+    // 自定义那 4 个基色也要挨夹（走的是和别的颜色同一条 HexToColor）
+    {
+        const auto v = ParsePresets("A\tctrlMode=1;ctrlBtn=ZZZZZZ\n");
+        Check(v.size() == 1 && v[0].ctrlButton == RGB(58, 62, 72),
+              "★ 坏的基色值 -> 保持默认（不是变成黑色）");
+    }
+}
+
 } // namespace
 
 int main() {
@@ -382,6 +449,7 @@ int main() {
     TestApplyEdit();
     TestImportExport();
     TestMaxPresets();
+    TestControlColors();
     std::printf("\n----------------------------------------\n");
     std::printf("通过 %d，失败 %d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;

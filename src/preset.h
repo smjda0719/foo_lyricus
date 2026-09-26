@@ -33,6 +33,15 @@
 
 namespace lyricus {
 
+// 控件配色的两种模式（AppearancePreset::ctrlMode）。
+//
+// ⚠️ 定义在 AppearancePreset **之前** —— 它的成员初值要用 kCtrlAuto，
+//    而 C++ 的成员初值表达式是在类定义处求值的，常量必须先可见。
+constexpr int  kCtrlAuto   = 0;   // 从面板底色推导（默认，永远不会配出看不见的组合）
+constexpr int  kCtrlCustom = 1;   // 用预设里那 4 个基色
+constexpr int  kCtrlMin    = 0;
+constexpr int  kCtrlMax    = 1;
+
 // 一套外观预设。
 //
 // 字段刻意**和 PanelAppearance / LyricDisplayConfig 一一对应**，不在这里
@@ -54,8 +63,7 @@ struct AppearancePreset {
     std::string fontFace;
     int         fontPct = 100;               // 字号百分比（50..300）
 
-    // ---- 来自 cfg_backdrop_mode ----
-    // 刻意用 int 而不是 BackdropMode 枚举：那个枚举属于窗口层，
+    // ---- 来自 cfg_backdrop_mode ----    // 刻意用 int 而不是 BackdropMode 枚举：那个枚举属于窗口层，
     // 而这一层要能脱离 SDK 单独编译进单测台。
     //
     // ⚠️ 取值是 **BackdropMode 的原始值**，照抄 config.h 里那份定义：
@@ -67,6 +75,30 @@ struct AppearancePreset {
     //   **默认值是 4**（= 出厂那套）。这里一开始写了 2 并注释成"半透明"，
     //   是照着自己想当然的顺序编的 —— 而枚举里有 5 个值、顺序也不同。
     int backdropMode = 4;
+
+    // ---- 控件配色（D-093）----
+    //
+    // 【为什么要有模式开关】用户 2026-09-26：
+    //   「提供两个选项，自动推导和自定义。前者系统会自己调节，后者让用户自己更改。」
+    //
+    // 自动 = 从面板底色推导 —— **任何预设下都看得见**（那是 D-092 修的东西）；
+    // 自定义 = 用户指定。两者并存而不是二选一：自动保证配不出"看不见"的组合，
+    // 自定义给想要个性的人留口子。
+    int ctrlMode = kCtrlAuto;
+
+    // ⚠️ **只有 4 个基色**，而且仅在自定义模式下参与绘制。
+    //
+    // 控制条上一共有 11 类颜色（按钮的悬停/按下、图标的普通/主操作/悬停/按下、
+    // 滑块的轨道/填充、时间文字、音量图标、浮层底板）。**全暴露给用户太多了** ——
+    // 挑颜色本身就是负担，何况还得保证它们互相搭配。
+    //
+    // 所以每组只给一个基色，组内其余由它推导（见 control_window.cpp 的 ApplyControlColors）。
+    // 这几个默认值是**照默认深底色的推导结果**填的，于是"切到自定义"的起点
+    // 和"自动"看起来一样 —— 用户是在现有配色上微调，而不是从零开始配。
+    COLORREF ctrlButton = RGB(58, 62, 72);     // 按钮底（悬停/按下由它推）
+    COLORREF ctrlIcon   = RGB(200, 200, 208);  // 图标（其它状态由它推）
+    COLORREF ctrlSlider = RGB(206, 210, 220);  // 滑块**填充**（轨道由它推）
+    COLORREF ctrlText   = RGB(190, 190, 198);  // 时间文字
 };
 
 // 内置的几套。**顺序就是它们在下拉里的顺序**（第一套是「默认」）。
@@ -130,5 +162,6 @@ constexpr int  kPresetMaxFontPct  = 300;
 // ⚠️ BackdropMode 有 **5** 个值（见 config.h）：None/Mica/Acrylic/MicaAlt/Translucent。
 constexpr int  kPresetMinBackdrop = 0;
 constexpr int  kPresetMaxBackdrop = 4;
+// 控件配色的模式常量定义在文件开头（AppearancePreset 的成员初值要用它）。
 
 } // namespace lyricus
