@@ -541,12 +541,24 @@ int CLyricusPrefsDlg::HitTest(POINT pt) const {
         const int dpi = static_cast<int>(GetDpiForWindowSafe(m_hWnd));
         const int visSize = MulDiv(12, dpi, 96);
         const int hitSize = BgPreviewHandleHitSize(visSize);
-        const int grow = (hitSize - visSize) / 2;
+
+        // ★★ 命中区是**以角为中心的一个小方块**，不是"从手柄往外扩"（D-109）。
+        //
+        // 【为什么】手柄本身画在框内（12 像素见方），再往外扩一圈的话，
+        // 命中区就变成从角向**里**伸进去 20 像素 —— 而图往往本来就不到
+        // 40 像素宽（预览框不高），于是**四个手柄的命中区几乎盖满整张图**，
+        // 点哪儿都是缩放、根本拖不动图。
+        //    用户报的正是这个："现在没办法拖动图片，默认会选到手柄缩放"。
+        //
+        // 以角为中心则命中区一半在里、一半在外，四个角加起来只占图的四小角，
+        // 中间大片区域留给平移。
+        const int half = hitSize / 2;
         for (int i = 0; i < kBgHandleCount; ++i) {
-            // 命中框比视觉框大一圈，并且以角为中心向外扩 ——
-            // 不然用户得把鼠标完全压在框内那半个手柄上才点得中。
-            RECT h = BgPreviewHandle(imgRect, i, visSize);
-            InflateRect(&h, grow, grow);
+            const RECT vis = BgPreviewHandle(imgRect, i, visSize);
+            if (empty(vis)) continue;
+            const int cx = (vis.left + vis.right) / 2;
+            const int cy = (vis.top + vis.bottom) / 2;
+            const RECT h{ cx - half, cy - half, cx + half, cy + half };
             if (inside(h)) return kHitBgHandleBase + i;
         }
     }
@@ -1411,13 +1423,18 @@ void CLyricusPrefsDlg::OnMouseMove(UINT /*flags*/, CPoint pt) {
     }
 
     const int hit = HitTest(pt);
-    // 角手柄用**斜向缩放箭头**（左上/右下是 ↖↘，右上/左下是 ↗↙）——
-    // 光标是唯一的"这里可以拖"的提示，用普通箭头的话没人会去试。
+    // 角手柄用**斜向缩放箭头** —— 光标是唯一的"这里可以拖"的提示，
+    // 用普通箭头没人会去试。
+    //
+    // ⚠️ 两个光标名的映射**和我一开始以为的相反**（D-109）：
+    //    `IDC_SIZENWSE` 画出来是 ↗↙，`IDC_SIZENESW` 才是 ↖↘。
+    //    我按名字反着配的，结果四个角全反了。
+    //    所以这里按**实际图形**配：左上/右下（↖↘）用 NESW。
     HCURSOR cur = LoadCursorW(nullptr, hit == kHitNone ? IDC_ARROW : IDC_HAND);
     if (hit >= kHitBgHandleBase && hit < kHitBgHandleBase + kBgHandleCount) {
         const int corner = hit - kHitBgHandleBase;
-        const bool nwse = (corner == 0 || corner == 2);   // 左上 / 右下
-        cur = LoadCursorW(nullptr, nwse ? IDC_SIZENWSE : IDC_SIZENESW);
+        const bool slashNESW = (corner == 0 || corner == 2);   // 左上 / 右下 = ↖↘
+        cur = LoadCursorW(nullptr, slashNESW ? IDC_SIZENESW : IDC_SIZENWSE);
     }
     SetCursor(cur);
     if (hit != m_hot) { m_hot = hit; Repaint(); }
