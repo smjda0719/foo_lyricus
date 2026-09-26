@@ -1219,10 +1219,17 @@ const BgBitmap* ControlWindow::CurrentBackground(int w, int h) {
     const int dpi    = static_cast<int>(GetDpiForWindowSafe(m_hwnd));
     const int blurPx = MulDiv(ap.bgBlur, (dpi > 0) ? dpi : 96, 96);
 
+    // 手动构图（D-103）。三个值打包传给 bg_image —— 它们是一组语义
+    //（「图怎么摆」），而且那边的缓存比对也要一起看，分开传容易漏。
+    BgManual manual;
+    manual.zoomPct    = ap.bgZoomPct;
+    manual.offsetXPct = ap.bgOffsetXPct;
+    manual.offsetYPct = ap.bgOffsetYPct;
+
     // 读不到图时 GetPanelBackground 返回 nullptr，这里如实往下传 ——
     // 调用方按"没有背景图"处理，回到纯色底。日志里已经有原因了。
     return GetPanelBackground(Utf8ToWide(ap.bgImage.c_str()), w, h,
-                              static_cast<BgFit>(ap.bgFit), blurPx,
+                              static_cast<BgFit>(ap.bgFit), manual, blurPx,
                               ap.bgDim, ap.bgOpacity);
 }
 

@@ -1198,6 +1198,10 @@ AppearancePreset CLyricusPrefsDlg::SnapshotAppearance(const std::wstring& name) 
     p.bgBlur     = m_edited.bgBlur;
     p.bgDim      = m_edited.bgDim;
     p.bgOpacity  = m_edited.bgOpacity;
+    // 手动构图（D-103）
+    p.bgZoomPct    = m_edited.bgZoomPct;
+    p.bgOffsetXPct = m_edited.bgOffsetXPct;
+    p.bgOffsetYPct = m_edited.bgOffsetYPct;
     p.fontFace = m_editedFontFace;
     // 这两项不在本页上，从配置读当前值
     p.fontPct      = GetLyricDisplayConfig().fontPct;

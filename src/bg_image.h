@@ -40,15 +40,18 @@ struct BgBitmap {
 // 取背景图。**同一个参数组合只算一次**，结果留在内部缓存里。
 //
 // 参数任一变化都会触发重算：路径、目标尺寸（用户拖窗口）、适配方式、
-// 模糊半径、压暗、不透明度。
+// 手动构图（拖动/缩放）、模糊半径、压暗、不透明度。
+//
+// ⚠️ `manual` 也参与缓存比对 —— 漏掉它的话用户在预览里拖了半天，
+//    面板纹丝不动，而代码看着每一步都对。
 //
 // 失败（路径为空、文件不存在、解码失败、尺寸非法）返回 **nullptr** ——
 // 调用方按"没有背景图"处理，也就是回到纯色底。
 // 失败原因可以用 LastBgError() 取到，写日志用。
 const BgBitmap* GetPanelBackground(const std::wstring& path,
                                    int dstW, int dstH,
-                                   BgFit fit, int blurPx,
-                                   int dimPct, int opacityPct);
+                                   BgFit fit, const BgManual& manual,
+                                   int blurPx, int dimPct, int opacityPct);
 
 // 丢掉缓存。面板销毁、或者用户清了背景图时调用。
 void ClearPanelBackgroundCache();

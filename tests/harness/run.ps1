@@ -78,7 +78,7 @@ $suites = @(
     @{ key='hint';   name='歌词线索表';    compile=@('test_folder_hint.cpp','folder_hint_table.cpp','lyric.cpp'); extra=@('folder_hint_table.h'); shims=@(); libs='' },
     # 外观预设：文本表解析、增删改、单条导入导出。难点全在**容错**上 ——
     # 缺字段、多字段、坏值、BOM、CRLF、前后空行，这些在界面上试不出来。
-    @{ key='preset'; name='外观预设';      compile=@('test_preset.cpp','preset.cpp','lyric.cpp'); extra=@('preset.h'); shims=@(); libs='' },
+    @{ key='preset'; name='外观预设';      compile=@('test_preset.cpp','preset.cpp','lyric.cpp','bg_math.cpp'); extra=@('preset.h'); shims=@(); libs='' },
     @{ key='bg';     name='面板背景图';    compile=@('test_bg.cpp','bg_math.cpp');            extra=@('bg_math.h'); shims=@(); libs='' },
     # bench 不是测试，是**基准**：它只打印耗时，不判通过与否。
     # 所以默认的 all 会跳过它（不能让"性能数字"影响单测的通过/失败），

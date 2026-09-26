@@ -86,6 +86,20 @@ AppearancePreset ClampPreset(AppearancePreset p) {
     p.bgBlur    = ClampInt(p.bgBlur,    kBgBlurMin,    kBgBlurMax);
     p.bgDim     = ClampInt(p.bgDim,     kBgDimMin,     kBgDimMax);
     p.bgOpacity = ClampInt(p.bgOpacity, kBgOpacityMin, kBgOpacityMax);
+
+    // 手动构图（D-103）。走 ClampBgManual 而不是逐个夹 ——
+    // 三个值是一组语义（"图必须盖住区域"），分开夹容易漏掉某一个，
+    // 而漏掉的那个会让画面露出一条底色边。
+    {
+        BgManual m;
+        m.zoomPct    = p.bgZoomPct;
+        m.offsetXPct = p.bgOffsetXPct;
+        m.offsetYPct = p.bgOffsetYPct;
+        const BgManual c = ClampBgManual(m);
+        p.bgZoomPct    = c.zoomPct;
+        p.bgOffsetXPct = c.offsetXPct;
+        p.bgOffsetYPct = c.offsetYPct;
+    }
     return p;
 }
 
@@ -248,6 +262,14 @@ std::string FormatPresets(const std::vector<AppearancePreset>& presets) {
             s += ";bgBlur=";    s += std::to_string(p.bgBlur);
             s += ";bgDim=";     s += std::to_string(p.bgDim);
             s += ";bgOpacity="; s += std::to_string(p.bgOpacity);
+            // 手动构图（D-103）。和别的字段一样：只在设了图时才写。
+            // 三个值是一组，一起写出去 —— 只写其中一个的话读回来另外两个
+            // 会退回默认（居中、100%），构图就和存的时候不是一回事了。
+            if (p.bgFit == static_cast<int>(BgFit::Manual)) {
+                s += ";bgZoom=";  s += std::to_string(p.bgZoomPct);
+                s += ";bgOffX=";  s += std::to_string(p.bgOffsetXPct);
+                s += ";bgOffY=";  s += std::to_string(p.bgOffsetYPct);
+            }
         }
 
         s += '\n';
@@ -320,6 +342,10 @@ std::vector<AppearancePreset> ParsePresets(const std::string& text) {
             else if (k == "bgBlur")    ParseInt(v, p.bgBlur);
             else if (k == "bgDim")     ParseInt(v, p.bgDim);
             else if (k == "bgOpacity") ParseInt(v, p.bgOpacity);
+            // 手动构图（D-103）。缺省 = 铺满且居中，所以老预设天然兼容。
+            else if (k == "bgZoom")    ParseInt(v, p.bgZoomPct);
+            else if (k == "bgOffX")    ParseInt(v, p.bgOffsetXPct);
+            else if (k == "bgOffY")    ParseInt(v, p.bgOffsetYPct);
             // 其它 key 忽略（见上面的说明）
         }
 

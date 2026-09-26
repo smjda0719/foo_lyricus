@@ -199,6 +199,10 @@ void ApplyAppearancePreset(const AppearancePreset& p) {
     a.bgBlur     = p.bgBlur;
     a.bgDim      = p.bgDim;
     a.bgOpacity  = p.bgOpacity;
+    // 手动构图（D-103）
+    a.bgZoomPct    = p.bgZoomPct;
+    a.bgOffsetXPct = p.bgOffsetXPct;
+    a.bgOffsetYPct = p.bgOffsetYPct;
     SetPanelAppearance(a);
 
     // ---- 字体族与字号 ----

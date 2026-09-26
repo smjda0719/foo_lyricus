@@ -23,6 +23,7 @@ struct CacheEntry {
     std::wstring path;
     int          dstW = 0, dstH = 0;
     BgFit        fit = BgFit::Cover;
+    BgManual     manual;                       // 手动构图（D-103）
     int          blur = 0, dim = 0, opacity = 100;
     BgBitmap     bmp;
 };
@@ -51,10 +52,17 @@ bool EnsureCom() {
 }
 
 bool SameParams(const CacheEntry& e, const std::wstring& path, int dstW, int dstH,
-                BgFit fit, int blur, int dim, int opacity) {
+                BgFit fit, const BgManual& manual,
+                int blur, int dim, int opacity) {
+    // ⚠️ manual 的三个值必须一起比 —— 它们是「构图」这一件事的三个分量，
+    //    漏比任何一个都会让「拖了没反应」，而拖动的正是被漏掉的那个。
     return e.valid && e.path == path &&
            e.dstW == dstW && e.dstH == dstH &&
-           e.fit == fit && e.blur == blur && e.dim == dim && e.opacity == opacity;
+           e.fit == fit &&
+           e.manual.zoomPct    == manual.zoomPct &&
+           e.manual.offsetXPct == manual.offsetXPct &&
+           e.manual.offsetYPct == manual.offsetYPct &&
+           e.blur == blur && e.dim == dim && e.opacity == opacity;
 }
 
 // 把一块已缩放的 BGRA 数据贴进目标缓冲。
@@ -120,8 +128,8 @@ bool ReadImageSize(IWICImagingFactory* factory, const std::wstring& path,
 
 const BgBitmap* GetPanelBackground(const std::wstring& path,
                                    int dstW, int dstH,
-                                   BgFit fit, int blurPx,
-                                   int dimPct, int opacityPct) {
+                                   BgFit fit, const BgManual& manual,
+                                   int blurPx, int dimPct, int opacityPct) {
     g_lastError.clear();
 
     if (path.empty())          return nullptr;   // 用户没设背景图 —— 不是错误
@@ -129,7 +137,7 @@ const BgBitmap* GetPanelBackground(const std::wstring& path,
 
     // 参数没变 -> 直接给缓存。这是整个模块存在的理由：
     // 面板每秒重绘几十次，而重算一次要几百万次乘加。
-    if (SameParams(g_cache, path, dstW, dstH, fit, blurPx, dimPct, opacityPct)) {
+    if (SameParams(g_cache, path, dstW, dstH, fit, manual, blurPx, dimPct, opacityPct)) {
         return g_cache.bmp.valid() ? &g_cache.bmp : nullptr;
     }
 
@@ -139,8 +147,9 @@ const BgBitmap* GetPanelBackground(const std::wstring& path,
     g_cache.path  = path;
     g_cache.dstW  = dstW;
     g_cache.dstH  = dstH;
-    g_cache.fit   = fit;
-    g_cache.blur  = blurPx;
+    g_cache.fit    = fit;
+    g_cache.manual = manual;
+    g_cache.blur   = blurPx;
     g_cache.dim   = dimPct;
     g_cache.opacity = opacityPct;
 
@@ -165,7 +174,7 @@ const BgBitmap* GetPanelBackground(const std::wstring& path,
         return nullptr;
     }
 
-    const BgPlacement place = ComputeBgPlacement(imgW, imgH, dstW, dstH, fit);
+    const BgPlacement place = ComputeBgPlacement(imgW, imgH, dstW, dstH, fit, manual);
     if (!place.valid) {
         g_lastError = L"图片尺寸或面板尺寸非法";
         DebugLog("背景图：%ls（图 %dx%d -> 目标 %dx%d）",

@@ -75,6 +75,10 @@ cfg_var_modern::cfg_int    cfg_app_bg_fit   ({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6
 cfg_var_modern::cfg_int    cfg_app_bg_blur  ({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x52}}, 0);
 cfg_var_modern::cfg_int    cfg_app_bg_dim   ({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x53}}, 0);
 cfg_var_modern::cfg_int    cfg_app_bg_opacity({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x54}}, 100);
+// 手动构图（D-103）。GUID 末字节 0x55~0x57。
+cfg_var_modern::cfg_int    cfg_app_bg_zoom  ({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x55}}, 100);
+cfg_var_modern::cfg_int    cfg_app_bg_offx  ({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x56}}, 0);
+cfg_var_modern::cfg_int    cfg_app_bg_offy  ({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x57}}, 0);
 
 int ClampAlpha(int v) {
     if (v < kMinAlpha) return kMinAlpha;
@@ -117,6 +121,20 @@ PanelAppearance GetPanelAppearance() {
     a.bgBlur    = ClampInt(static_cast<int>(cfg_app_bg_blur.get()),    kBgBlurMin,    kBgBlurMax);
     a.bgDim     = ClampInt(static_cast<int>(cfg_app_bg_dim.get()),     kBgDimMin,     kBgDimMax);
     a.bgOpacity = ClampInt(static_cast<int>(cfg_app_bg_opacity.get()), kBgOpacityMin, kBgOpacityMax);
+
+    // 手动构图（D-103）。用 ClampBgManual 而不是逐个 ClampInt ——
+    // 三个值是一组语义（"图必须盖住区域"），分开夹容易漏掉某一个，
+    // 而漏掉的那个会让画面露出一条底色边。
+    {
+        BgManual m;
+        m.zoomPct    = static_cast<int>(cfg_app_bg_zoom.get());
+        m.offsetXPct = static_cast<int>(cfg_app_bg_offx.get());
+        m.offsetYPct = static_cast<int>(cfg_app_bg_offy.get());
+        const BgManual c = ClampBgManual(m);
+        a.bgZoomPct    = c.zoomPct;
+        a.bgOffsetXPct = c.offsetXPct;
+        a.bgOffsetYPct = c.offsetYPct;
+    }
     return a;
 }
 
@@ -140,6 +158,18 @@ void SetPanelAppearance(const PanelAppearance& a) {
     cfg_app_bg_blur    = ClampInt(a.bgBlur,    kBgBlurMin,    kBgBlurMax);
     cfg_app_bg_dim     = ClampInt(a.bgDim,     kBgDimMin,     kBgDimMax);
     cfg_app_bg_opacity = ClampInt(a.bgOpacity, kBgOpacityMin, kBgOpacityMax);
+
+    // 手动构图（D-103）。同样走 ClampBgManual，让"三点一组"的约束只有一份实现。
+    {
+        BgManual m;
+        m.zoomPct    = a.bgZoomPct;
+        m.offsetXPct = a.bgOffsetXPct;
+        m.offsetYPct = a.bgOffsetYPct;
+        const BgManual c = ClampBgManual(m);
+        cfg_app_bg_zoom = c.zoomPct;
+        cfg_app_bg_offx = c.offsetXPct;
+        cfg_app_bg_offy = c.offsetYPct;
+    }
 }
 
 // ---------------------------------------------------------------------------

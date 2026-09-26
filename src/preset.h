@@ -116,6 +116,12 @@ struct AppearancePreset {
     int bgBlur    = 0;     // 磨砂半径（96dpi 逻辑像素）
     int bgDim     = 0;     // 压暗 % —— 保证歌词能读清
     int bgOpacity = 100;   // 图片不透明度 %
+
+    // 手动构图（D-103）。只在 bgFit == Manual(4) 时参与。
+    // 存百分比而不是像素的理由见 bg_math.h 的 BgManual。
+    int bgZoomPct    = 100;
+    int bgOffsetXPct = 0;
+    int bgOffsetYPct = 0;
 };
 
 // 内置的几套。**顺序就是它们在下拉里的顺序**（第一套是「默认」）。

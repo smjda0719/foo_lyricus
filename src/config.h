@@ -51,6 +51,22 @@ extern cfg_var_modern::cfg_int  cfg_app_ctrl_icon;
 extern cfg_var_modern::cfg_int  cfg_app_ctrl_slider;
 extern cfg_var_modern::cfg_int  cfg_app_ctrl_text;
 
+// 背景图（D-098）。GUID 末字节 0x50~0x54。
+//
+// ⚠️ 这几个是加背景图那轮漏掉的 —— 当时只有 config.cpp 自己在读写，
+//    没声明也能编译，于是没人发现。等有了第二个使用者（预览控件）才会
+//    报"未声明的标识符"，而那时离改动已经隔了几轮。
+//    加字段时顺手把 extern 也写上，别等编译器替你发现。
+extern cfg_var_modern::cfg_string cfg_app_bg_image;
+extern cfg_var_modern::cfg_int  cfg_app_bg_fit;
+extern cfg_var_modern::cfg_int  cfg_app_bg_blur;
+extern cfg_var_modern::cfg_int  cfg_app_bg_dim;
+extern cfg_var_modern::cfg_int  cfg_app_bg_opacity;
+// 手动构图（D-103）。GUID 末字节 0x55~0x57。
+extern cfg_var_modern::cfg_int  cfg_app_bg_zoom;
+extern cfg_var_modern::cfg_int  cfg_app_bg_offx;
+extern cfg_var_modern::cfg_int  cfg_app_bg_offy;
+
 // 手动指定的歌词，**按曲目记住**。
 //
 // 存储格式：每条一行，「曲目 URL <TAB> 歌词路径」。
@@ -245,6 +261,15 @@ struct PanelAppearance {
     int bgDim     = 0;     // 压暗 % 0..90 —— 保证歌词能读清
     int bgOpacity = 100;   // 图片不透明度 % 0..100
 
+    // 手动构图（D-103）。只在 bgFit == Manual(4) 时参与绘制。
+    //
+    // ⚠️ 存**百分比**而不是像素：面板尺寸会变（拖窗口、换 dpi、换预设里的
+    //    面板大小），存像素的话用户拖一次窗口构图就整体偏掉，
+    //    而且偏得没规律 —— 看起来像"图的定位坏了"。见 bg_math.h 的 BgManual。
+    int bgZoomPct    = 100;   // 100 = 刚好铺满（下限）
+    int bgOffsetXPct = 0;     // -100..100，0 = 居中
+    int bgOffsetYPct = 0;
+
     bool operator==(const PanelAppearance& o) const {
         return header == o.header && current == o.current && normal  == o.normal &&
                dim    == o.dim    && warn    == o.warn    && bg      == o.bg &&
@@ -254,7 +279,9 @@ struct PanelAppearance {
                ctrlSlider == o.ctrlSlider && ctrlText   == o.ctrlText &&
                bgImage  == o.bgImage  && bgFit     == o.bgFit &&
                bgBlur   == o.bgBlur   && bgDim     == o.bgDim &&
-               bgOpacity == o.bgOpacity;
+               bgOpacity == o.bgOpacity &&
+               bgZoomPct == o.bgZoomPct &&
+               bgOffsetXPct == o.bgOffsetXPct && bgOffsetYPct == o.bgOffsetYPct;
     }
     bool operator!=(const PanelAppearance& o) const { return !(*this == o); }
 };

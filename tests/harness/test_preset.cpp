@@ -54,6 +54,10 @@ using lyricus::kCtrlMax;
 using lyricus::kBgFitMax;
 using lyricus::kBgBlurMax;
 using lyricus::kBgDimMax;
+// 手动构图（D-103）
+using lyricus::kBgZoomMinPct;
+using lyricus::kBgOffsetMinPct;
+using lyricus::kBgOffsetMaxPct;
 
 // ---------------------------------------------------------------------------
 void TestBuiltins() {
@@ -507,6 +511,54 @@ void TestBackground() {
         Check(ImportPreset(ExportPreset(p), back), "含分号的路径不会让字段截断");
         Check(back.bgImage.find(';') == std::string::npos,
               "★ 路径里的分号被换掉了（否则后面的字段全丢）");
+    }
+
+    // ---- 手动构图（D-103）----
+
+    // 三个值是一组：只在 Manual 模式下写出去。
+    // 分开写的话读回来另外两个会退回默认，构图就和存的时候不是一回事了。
+    {
+        AppearancePreset p;
+        p.name      = L"拖过的";
+        p.bgImage   = "C:/pics/bg.jpg";
+        p.bgFit     = 4;   // Manual
+        p.bgZoomPct = 175;
+        p.bgOffsetXPct = -40;
+        p.bgOffsetYPct = 25;
+
+        AppearancePreset back;
+        Check(ImportPreset(ExportPreset(p), back), "手动构图的预设能导出再导入");
+        Check(back.bgZoomPct == 175 && back.bgOffsetXPct == -40 && back.bgOffsetYPct == 25,
+              "★ 手动构图三个值一起往返（一个都不能丢）");
+    }
+
+    // 非 Manual 模式不写那三个字段 —— 它们不参与绘制
+    {
+        AppearancePreset p;
+        p.name    = L"自动的";
+        p.bgImage = "C:/pics/bg.jpg";
+        p.bgFit   = 0;   // Cover
+        const std::string line = ExportPreset(p);
+        Check(line.find("bgZoom") == std::string::npos,
+              "★ 非 Manual 模式不写 bgZoom（那几个值不参与绘制）");
+    }
+
+    // ★ 向前兼容：老预设读进来 = 铺满且居中
+    {
+        const auto v = ParsePresets("老预设\tbgImage=x.jpg;bgFit=4\n");
+        Check(v.size() == 1, "老预设仍能解析");
+        Check(v[0].bgZoomPct == 100 && v[0].bgOffsetXPct == 0 && v[0].bgOffsetYPct == 0,
+              "★ 没有 bgZoom/bgOffX/bgOffY 的老预设 -> 铺满且居中（向前兼容）");
+    }
+
+    // 夹取走 ClampBgManual：缩放下限 100、偏移 ±100
+    {
+        const auto v = ParsePresets("A\tbgImage=x.jpg;bgZoom=5;bgOffX=9999;bgOffY=-9999\n");
+        Check(v.size() == 1, "越界的手动参数仍能解析");
+        Check(v[0].bgZoomPct == kBgZoomMinPct,
+              "★ bgZoom=5 被夹到 100（再小会露出没图盖住的边）");
+        Check(v[0].bgOffsetXPct == kBgOffsetMaxPct && v[0].bgOffsetYPct == kBgOffsetMinPct,
+              "★ 偏移被夹到 ±100");
     }
 }
 
