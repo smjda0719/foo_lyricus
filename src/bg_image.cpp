@@ -1,0 +1,342 @@
+#include "bg_image.h"
+
+#include "debug_log.h"
+
+#include <windows.h>
+#include <wincodec.h>
+
+#include <atlbase.h>   // CComPtr
+
+#include <algorithm>
+#include <cstring>
+
+namespace lyricus {
+
+namespace {
+
+// 上一次请求的参数 + 结果。
+//
+// 只有一个面板，所以缓存**一条**就够 —— 做成多条 LRU 只是徒增复杂度：
+// 内存里多存几份几 MB 的位图，而不会有任何一次命中（参数一变就得重算）。
+struct CacheEntry {
+    bool         valid = false;
+    std::wstring path;
+    int          dstW = 0, dstH = 0;
+    BgFit        fit = BgFit::Cover;
+    int          blur = 0, dim = 0, opacity = 100;
+    BgBitmap     bmp;
+};
+
+CacheEntry   g_cache;
+std::wstring g_lastError;
+
+// COM 每线程初始化一次。
+//
+// ⚠️ 用 COINIT_APARTMENTTHREADED 而不是 MULTITHREADED：
+//    foobar2000 主线程是 STA。在已经初始化为 STA 的线程上请求 MTA 会返回
+//    RPC_E_CHANGED_MODE 并且**失败**；反过来（已 STA 再请求 STA）只返回
+//    S_FALSE，那只是"已经初始化过"，完全可以继续用。
+//    所以 STA 是这里唯一安全的选择。
+bool EnsureCom() {
+    static bool s_tried = false;
+    static bool s_ok    = false;
+    if (s_tried) return s_ok;
+    s_tried = true;
+
+    const HRESULT hr = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    // S_OK / S_FALSE 都算可用。RPC_E_CHANGED_MODE 说明这个线程已经是 MTA ——
+    // WIC 不要求 STA，所以也放行。
+    s_ok = SUCCEEDED(hr) || hr == RPC_E_CHANGED_MODE;
+    return s_ok;
+}
+
+bool SameParams(const CacheEntry& e, const std::wstring& path, int dstW, int dstH,
+                BgFit fit, int blur, int dim, int opacity) {
+    return e.valid && e.path == path &&
+           e.dstW == dstW && e.dstH == dstH &&
+           e.fit == fit && e.blur == blur && e.dim == dim && e.opacity == opacity;
+}
+
+// 把一块已缩放的 BGRA 数据贴进目标缓冲。
+// offsetX/Y 是左上角；Tile 模式下会反复贴满。
+void BlitInto(std::vector<unsigned char>& dst, int dstW, int dstH,
+              const unsigned char* src, int srcW, int srcH,
+              int offsetX, int offsetY, bool tile) {
+    if (src == nullptr || srcW <= 0 || srcH <= 0) return;
+
+    if (!tile) {
+        // 逐行拷贝，顺带处理越界：Contain 时图完全在界内，但 Cover 经过
+        // 浮点舍入后可能比目标宽/高 1 像素，那时只能裁掉。
+        //
+        // ⚠️ 这里**手写比较**而不是 std::max/min —— windows.h 把它们定义成了
+        //    宏，`std::max(a,b)` 会被预处理器拆成 `std::(((a)>(b))?(a):(b))`，
+        //    报 C2589（bg_math.cpp 里踩过一次，项目里也早有记录）。
+        //    这两行逻辑本来就简单，写开反而更清楚。
+        for (int y = 0; y < srcH; ++y) {
+            const int dy = offsetY + y;
+            if (dy < 0 || dy >= dstH) continue;
+
+            const int dstX0 = (offsetX > 0) ? offsetX : 0;
+            const int srcX0 = (offsetX > 0) ? 0 : -offsetX;
+            int copyW = srcW - srcX0;
+            if (dstX0 + copyW > dstW) copyW = dstW - dstX0;
+            if (copyW <= 0) continue;
+
+            std::memcpy(dst.data() + (static_cast<size_t>(dy) * dstW + dstX0) * 4,
+                        src + (static_cast<size_t>(y) * srcW + srcX0) * 4,
+                        static_cast<size_t>(copyW) * 4);
+        }
+        return;
+    }
+
+    // 平铺：从左上角开始按原尺寸反复贴，超出目标区域的部分由逐行拷贝裁掉
+    for (int y = offsetY; y < dstH; y += srcH) {
+        for (int x = offsetX; x < dstW; x += srcW) {
+            BlitInto(dst, dstW, dstH, src, srcW, srcH, x, y, false);
+        }
+    }
+}
+
+// 从文件名解码出原图尺寸（不解像素），用来算 place。
+bool ReadImageSize(IWICImagingFactory* factory, const std::wstring& path,
+                   int& outW, int& outH) {
+    CComPtr<IWICBitmapDecoder> decoder;
+    HRESULT hr = factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ,
+                                                    WICDecodeMetadataCacheOnLoad, &decoder);
+    if (FAILED(hr)) return false;
+
+    CComPtr<IWICBitmapFrameDecode> frame;
+    if (FAILED(decoder->GetFrame(0, &frame))) return false;
+
+    UINT w = 0, h = 0;
+    if (FAILED(frame->GetSize(&w, &h)) || w == 0 || h == 0) return false;
+
+    outW = static_cast<int>(w);
+    outH = static_cast<int>(h);
+    return true;
+}
+
+} // namespace
+
+const BgBitmap* GetPanelBackground(const std::wstring& path,
+                                   int dstW, int dstH,
+                                   BgFit fit, int blurPx,
+                                   int dimPct, int opacityPct) {
+    g_lastError.clear();
+
+    if (path.empty())          return nullptr;   // 用户没设背景图 —— 不是错误
+    if (dstW <= 0 || dstH <= 0) return nullptr;   // 面板还没尺寸
+
+    // 参数没变 -> 直接给缓存。这是整个模块存在的理由：
+    // 面板每秒重绘几十次，而重算一次要几百万次乘加。
+    if (SameParams(g_cache, path, dstW, dstH, fit, blurPx, dimPct, opacityPct)) {
+        return g_cache.bmp.valid() ? &g_cache.bmp : nullptr;
+    }
+
+    // 参数变了：先把缓存标记为失效，这样中途失败不会留下旧图冒充新参数的结果
+    g_cache.valid = false;
+    g_cache.bmp   = BgBitmap{};
+    g_cache.path  = path;
+    g_cache.dstW  = dstW;
+    g_cache.dstH  = dstH;
+    g_cache.fit   = fit;
+    g_cache.blur  = blurPx;
+    g_cache.dim   = dimPct;
+    g_cache.opacity = opacityPct;
+
+    if (!EnsureCom()) {
+        g_lastError = L"COM 初始化失败";
+        DebugLog("背景图：%ls", g_lastError.c_str());
+        return nullptr;
+    }
+
+    CComPtr<IWICImagingFactory> factory;
+    if (FAILED(::CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                                  IID_PPV_ARGS(&factory)))) {
+        g_lastError = L"拿不到 WIC 工厂";
+        DebugLog("背景图：%ls", g_lastError.c_str());
+        return nullptr;
+    }
+
+    int imgW = 0, imgH = 0;
+    if (!ReadImageSize(factory, path, imgW, imgH)) {
+        g_lastError = L"打不开图片（不存在 / 格式不支持）";
+        DebugLog("背景图：%ls —— %ls", g_lastError.c_str(), path.c_str());
+        return nullptr;
+    }
+
+    const BgPlacement place = ComputeBgPlacement(imgW, imgH, dstW, dstH, fit);
+    if (!place.valid) {
+        g_lastError = L"图片尺寸或面板尺寸非法";
+        DebugLog("背景图：%ls（图 %dx%d -> 目标 %dx%d）",
+                 g_lastError.c_str(), imgW, imgH, dstW, dstH);
+        return nullptr;
+    }
+
+    // ---- 解码 + 转 BGRA + 裁剪 ----
+    CComPtr<IWICBitmapDecoder> decoder;
+    if (FAILED(factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ,
+                                                  WICDecodeMetadataCacheOnLoad, &decoder))) {
+        g_lastError = L"解码失败";
+        DebugLog("背景图：%ls", g_lastError.c_str());
+        return nullptr;
+    }
+
+    CComPtr<IWICBitmapFrameDecode> frame;
+    if (FAILED(decoder->GetFrame(0, &frame))) {
+        g_lastError = L"图片里没有可用的帧";
+        DebugLog("背景图：%ls", g_lastError.c_str());
+        return nullptr;
+    }
+
+    // 统一转 32bpp BGRA —— 和 svg_icon 的 RasterIcon、分层渲染的
+    // m_layeredBits 同一种布局，三处混起来不用转换。
+    CComPtr<IWICFormatConverter> conv;
+    if (FAILED(factory->CreateFormatConverter(&conv)) ||
+        FAILED(conv->Initialize(frame, GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone,
+                                nullptr, 0.0, WICBitmapPaletteTypeCustom))) {
+        g_lastError = L"转 BGRA 失败";
+        DebugLog("背景图：%ls", g_lastError.c_str());
+        return nullptr;
+    }
+
+    CComPtr<IWICBitmapSource> src;
+    conv.QueryInterface(&src);
+
+    // 先裁再缩。
+    //
+    // ⚠️ 顺序不能反：先缩的话缩放器要处理整幅原图（可能 4000x3000），
+    //    而 Cover 裁完可能只剩三分之一 —— 白算 2/3 的像素。
+    //    裁是零拷贝的元数据操作，放前面等于免费。
+    const int srcW = place.src.right - place.src.left;
+    const int srcH = place.src.bottom - place.src.top;
+    if ((place.src.left != 0 || place.src.top != 0)) {
+        CComPtr<IWICBitmapClipper> clipper;
+        HRESULT hr = factory->CreateBitmapClipper(&clipper);
+        if (SUCCEEDED(hr)) {
+            WICRect r{ place.src.left, place.src.top, srcW, srcH };
+            hr = clipper->Initialize(conv, &r);
+        }
+        if (FAILED(hr)) {
+            g_lastError = L"裁剪失败";
+            DebugLog("背景图：%ls", g_lastError.c_str());
+            return nullptr;
+        }
+        src = clipper;
+    }
+
+    // ---- 缩放 ----
+    // Tile 不缩放（原尺寸平铺是它的语义）；其余按 place.dst 的尺寸缩。
+    const int drawW = (place.tile ? srcW : place.dst.right - place.dst.left);
+    const int drawH = (place.tile ? srcH : place.dst.bottom - place.dst.top);
+    if (drawW <= 0 || drawH <= 0) {
+        g_lastError = L"缩放目标为空";
+        DebugLog("背景图：%ls", g_lastError.c_str());
+        return nullptr;
+    }
+
+    CComPtr<IWICBitmapSource> scaled;
+    if (drawW != srcW || drawH != srcH) {
+        CComPtr<IWICBitmapScaler> scaler;
+        HRESULT hr = factory->CreateBitmapScaler(&scaler);
+        if (SUCCEEDED(hr)) {
+            // Fant：高质量插值。背景图只在参数变化时缩一次，
+            // 用便宜的 Fant 会在缩得很小时出现明显的锯齿/摩尔纹。
+            hr = scaler->Initialize(src, static_cast<UINT>(drawW), static_cast<UINT>(drawH),
+                                    WICBitmapInterpolationModeFant);
+        }
+        if (FAILED(hr)) {
+            g_lastError = L"缩放失败";
+            DebugLog("背景图：%ls", g_lastError.c_str());
+            return nullptr;
+        }
+        scaled = scaler;
+    } else {
+        scaled = src;
+    }
+
+    // ---- 取像素 ----
+    std::vector<unsigned char> pixels(static_cast<size_t>(drawW) * drawH * 4);
+    const UINT stride = static_cast<UINT>(drawW) * 4;
+    if (FAILED(scaled->CopyPixels(nullptr, stride, static_cast<UINT>(pixels.size()),
+                                  pixels.data()))) {
+        g_lastError = L"读取像素失败";
+        DebugLog("背景图：%ls", g_lastError.c_str());
+        return nullptr;
+    }
+
+    // ---- 铺到目标尺寸的缓冲里 ----
+    //
+    // 输出缓冲**等于目标区域大小**（不是图的大小）：图和透明区都摆好，
+    // 绘制侧只剩"贴上去"一件事 —— 分层路径一次 memcpy，非分层一次 StretchDIBits。
+    // 让绘制侧去算摆放的话，那段逻辑就得在两条渲染路径里各写一遍。
+    BgBitmap bmp;
+    bmp.width  = dstW;
+    bmp.height = dstH;
+    bmp.bgra.assign(static_cast<size_t>(dstW) * dstH * 4, 0);
+
+    const int offX = place.tile ? 0 : place.dst.left;
+    const int offY = place.tile ? 0 : place.dst.top;
+    BlitInto(bmp.bgra, dstW, dstH, pixels.data(), drawW, drawH, offX, offY, place.tile);
+
+    // ---- 模糊 ----
+    //
+    // ⚠️ 只在**图占的那块**上模糊，不模糊整个缓冲。
+    //    整块模糊的话，Contain 留下的透明区（RGB 全 0）会被卷进来，
+    //    图片四周糊出一圈暗晕 —— 那看起来像"图有黑边"。
+    //    传子矩形指针即可：BoxBlurBgra 内部所有索引都夹在它自己的 w/h 内，
+    //    不会读到区域外面去。
+    if (blurPx > 0) {
+        const int bw = place.tile ? dstW : drawW;
+        const int bh = place.tile ? dstH : drawH;
+        unsigned char* base = bmp.bgra.data() +
+                              (static_cast<size_t>(offY) * dstW + offX) * 4;
+        BoxBlurBgra(base, bw, bh, blurPx);
+    }
+
+    // ---- 压暗 + 不透明度 ----
+    // 同样只作用在图占的那块上：透明区改不改都看不见，
+    // 但少扫一遍就是少几百万次乘法。
+    if (dimPct != 0 || opacityPct != 100) {
+        const int bw = place.tile ? dstW : drawW;
+        const int bh = place.tile ? dstH : drawH;
+        unsigned char* base = bmp.bgra.data() +
+                              (static_cast<size_t>(offY) * dstW + offX) * 4;
+        // ApplyDimAndOpacity 按行连续处理，所以这里要逐行走（缓冲的
+        // stride 是 dstW，而图可能只占其中一段）。
+        if (bw == dstW) {
+            ApplyDimAndOpacity(base, bw, bh, dimPct, opacityPct);
+        } else {
+            for (int y = 0; y < bh; ++y) {
+                ApplyDimAndOpacity(base + static_cast<size_t>(y) * dstW * 4, bw, 1,
+                                   dimPct, opacityPct);
+            }
+        }
+    }
+
+    if (!bmp.valid()) {
+        g_lastError = L"结果缓冲非法";
+        DebugLog("背景图：%ls", g_lastError.c_str());
+        return nullptr;
+    }
+
+    g_cache.bmp   = std::move(bmp);
+    g_cache.valid = true;
+
+    DebugLog("背景图：已加载 %ls（图 %dx%d -> 面板 %dx%d，%ls 模糊=%d 压暗=%d 不透明=%d）",
+             path.c_str(), imgW, imgH, dstW, dstH,
+             place.tile ? L"平铺" : L"缩放", blurPx, dimPct, opacityPct);
+
+    return &g_cache.bmp;
+}
+
+void ClearPanelBackgroundCache() {
+    g_cache = CacheEntry{};
+    g_lastError.clear();
+}
+
+const wchar_t* LastBgError() {
+    return g_lastError.c_str();
+}
+
+} // namespace lyricus
