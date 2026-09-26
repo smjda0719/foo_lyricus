@@ -42,6 +42,15 @@ extern cfg_var_modern::cfg_bool cfg_panel_visible;
 // 背景材质模式（存 BackdropMode 的整数值）
 extern cfg_var_modern::cfg_int  cfg_backdrop_mode;
 
+// 控件配色（D-093）。放这里是因为 PanelAppearance 是浮动面板外观的完整快照 ——
+// 面板轮询它就能发现控件色变了，不需要第二条通知路径。
+// GUID 末字节 0x40~0x44（0x02~0x0d 和 0x30~0x3c 已被占用）。
+extern cfg_var_modern::cfg_int  cfg_app_ctrl_mode;
+extern cfg_var_modern::cfg_int  cfg_app_ctrl_btn;
+extern cfg_var_modern::cfg_int  cfg_app_ctrl_icon;
+extern cfg_var_modern::cfg_int  cfg_app_ctrl_slider;
+extern cfg_var_modern::cfg_int  cfg_app_ctrl_text;
+
 // 手动指定的歌词，**按曲目记住**。
 //
 // 存储格式：每条一行，「曲目 URL <TAB> 歌词路径」。
@@ -203,10 +212,32 @@ struct PanelAppearance {
     COLORREF bg      = RGB(28, 28, 30);      // 面板底色
     int      alpha   = 215;                  // 整体不透明度 0..255
 
+    // ---- 控件配色（D-093）----
+    //
+    // ⚠️ 控制条上那 11 类颜色**不在这里**，只放 4 个**基色** + 一个模式标记：
+    //     自动   -> 这些都不用，全部从 bg 推导（见 DrawControls）
+    //     自定义 -> 用这四个基色，组内其余（悬停 / 按下 / 轨道 / 主操作图标）
+    //               由它们推出来
+    //   把 11 类颜色全暴露给用户太多了 —— 挑色本身就是负担，
+    //   何况还得保证它们互相搭配。
+    //
+    // 【为什么放在 PanelAppearance 里】它本来就是"浮动面板外观"的**完整快照**。
+    //   放这儿之后，面板靠轮询它就能发现控件色变了，不需要第二条通知路径 ——
+    //   和配色、字体共用同一条链路。
+    //   ⚠️ 所以 operator== **必须**带上这几个字段，漏一个就等于"改了不生效"。
+    int      ctrlMode   = kCtrlAuto;
+    COLORREF ctrlButton = RGB(58, 62, 72);     // 按钮底
+    COLORREF ctrlIcon   = RGB(200, 200, 208);  // 图标
+    COLORREF ctrlSlider = RGB(206, 210, 220);  // 滑块填充
+    COLORREF ctrlText   = RGB(190, 190, 198);  // 时间文字
+
     bool operator==(const PanelAppearance& o) const {
         return header == o.header && current == o.current && normal  == o.normal &&
                dim    == o.dim    && warn    == o.warn    && bg      == o.bg &&
-               alpha  == o.alpha;
+               alpha  == o.alpha  &&
+               ctrlMode   == o.ctrlMode   &&
+               ctrlButton == o.ctrlButton && ctrlIcon   == o.ctrlIcon &&
+               ctrlSlider == o.ctrlSlider && ctrlText   == o.ctrlText;
     }
     bool operator!=(const PanelAppearance& o) const { return !(*this == o); }
 };

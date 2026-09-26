@@ -186,6 +186,12 @@ void ApplyAppearancePreset(const AppearancePreset& p) {
     a.warn    = p.warn;
     a.bg      = p.bg;
     a.alpha   = p.alpha;
+    // 控件配色（D-093）：模式 + 4 个基色一起进快照，面板靠轮询它发现变化
+    a.ctrlMode   = p.ctrlMode;
+    a.ctrlButton = p.ctrlButton;
+    a.ctrlIcon   = p.ctrlIcon;
+    a.ctrlSlider = p.ctrlSlider;
+    a.ctrlText   = p.ctrlText;
     SetPanelAppearance(a);
 
     // ---- 字体族与字号 ----

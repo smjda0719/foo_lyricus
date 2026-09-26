@@ -628,6 +628,13 @@ AppearancePreset CLyricusPrefsDlg::SnapshotAppearance(const std::wstring& name) 
     p.warn    = m_edited.warn;
     p.bg      = m_edited.bg;
     p.alpha   = m_edited.alpha;
+    // 控件配色（D-093）：模式 + 4 个基色也要进预设，否则"保存当前外观"
+    // 会把用户调好的控件色丢掉。
+    p.ctrlMode   = m_edited.ctrlMode;
+    p.ctrlButton = m_edited.ctrlButton;
+    p.ctrlIcon   = m_edited.ctrlIcon;
+    p.ctrlSlider = m_edited.ctrlSlider;
+    p.ctrlText   = m_edited.ctrlText;
     p.fontFace = m_editedFontFace;
     // 这两项不在本页上，从配置读当前值
     p.fontPct      = GetLyricDisplayConfig().fontPct;

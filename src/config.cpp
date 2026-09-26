@@ -62,9 +62,24 @@ cfg_var_modern::cfg_int cfg_app_warn   ({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0
 cfg_var_modern::cfg_int cfg_app_bg     ({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x35}}, RGB(28,28,30));
 cfg_var_modern::cfg_int cfg_app_alpha  ({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x36}}, 215);
 
+// 控件配色（D-093）。GUID 末字节 0x40~0x44 —— 0x02~0x0d 和 0x30~0x3c 都已被占用。
+cfg_var_modern::cfg_int cfg_app_ctrl_mode  ({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x40}}, kCtrlAuto);
+cfg_var_modern::cfg_int cfg_app_ctrl_btn   ({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x41}}, RGB(58,62,72));
+cfg_var_modern::cfg_int cfg_app_ctrl_icon  ({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x42}}, RGB(200,200,208));
+cfg_var_modern::cfg_int cfg_app_ctrl_slider({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x43}}, RGB(206,210,220));
+cfg_var_modern::cfg_int cfg_app_ctrl_text  ({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x44}}, RGB(190,190,198));
+
 int ClampAlpha(int v) {
     if (v < kMinAlpha) return kMinAlpha;
     if (v > kMaxAlpha) return kMaxAlpha;
+    return v;
+}
+
+// 通用整数夹取。原先这里只有 ClampAlpha 一个专用版本，加控件配色（D-093）
+// 时又需要夹 ctrlMode，就抽了这个 —— 各写一遍迟早会不一致。
+int ClampInt(int v, int lo, int hi) {
+    if (v < lo) return lo;
+    if (v > hi) return hi;
     return v;
 }
 
@@ -78,6 +93,14 @@ PanelAppearance GetPanelAppearance() {
     a.bg      = static_cast<COLORREF>(cfg_app_bg     .get());
     // 兜底夹取：配置是文本的，手工编辑或跨版本残留都可能塞进越界值
     a.alpha   = ClampAlpha(static_cast<int>(cfg_app_alpha.get()));
+
+    // 控件配色（D-093）。ctrlMode 也夹一下 —— 手改配置写个 7 进来的话，
+    // 绘制侧的两分支判断会两个都不成立，控件就整个不画了。
+    a.ctrlMode   = ClampInt(static_cast<int>(cfg_app_ctrl_mode.get()), kCtrlMin, kCtrlMax);
+    a.ctrlButton = static_cast<COLORREF>(cfg_app_ctrl_btn.get());
+    a.ctrlIcon   = static_cast<COLORREF>(cfg_app_ctrl_icon.get());
+    a.ctrlSlider = static_cast<COLORREF>(cfg_app_ctrl_slider.get());
+    a.ctrlText   = static_cast<COLORREF>(cfg_app_ctrl_text.get());
     return a;
 }
 
@@ -89,6 +112,12 @@ void SetPanelAppearance(const PanelAppearance& a) {
     cfg_app_warn    = static_cast<int64_t>(a.warn);
     cfg_app_bg      = static_cast<int64_t>(a.bg);
     cfg_app_alpha   = ClampAlpha(a.alpha);
+
+    cfg_app_ctrl_mode   = ClampInt(a.ctrlMode, kCtrlMin, kCtrlMax);
+    cfg_app_ctrl_btn    = static_cast<int64_t>(a.ctrlButton);
+    cfg_app_ctrl_icon   = static_cast<int64_t>(a.ctrlIcon);
+    cfg_app_ctrl_slider = static_cast<int64_t>(a.ctrlSlider);
+    cfg_app_ctrl_text   = static_cast<int64_t>(a.ctrlText);
 }
 
 // ---------------------------------------------------------------------------

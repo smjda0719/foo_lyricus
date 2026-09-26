@@ -1673,15 +1673,40 @@ void ControlWindow::DrawControls(HDC dc, int dpi) {
     const COLORREF toward = bgDark ? RGB(255, 255, 255) : RGB(0, 0, 0);
     auto T = [&](double t) { return BlendColor(bg, toward, t); };
 
-    const COLORREF cBtnDown  = T(bgDark ? 0.24 : 0.18);
-    const COLORREF cBtnHot   = T(bgDark ? 0.14 : 0.10);
-    const COLORREF cGlyph    = T(bgDark ? 0.82 : 0.78);   // 上一首 / 下一首
-    const COLORREF cGlyphHi  = T(bgDark ? 1.00 : 0.92);   // 播放 / 暂停（最亮的一个）
-    const COLORREF cTrack    = T(bgDark ? 0.21 : 0.16);   // 滑块未填充部分
-    const COLORREF cFill     = T(bgDark ? 0.80 : 0.76);   // 滑块已填充部分
-    const COLORREF cTimeText = T(bgDark ? 0.72 : 0.68);
-    const COLORREF cVolIcon  = T(bgDark ? 0.77 : 0.72);
-    const COLORREF cPopupBg  = T(bgDark ? 0.09 : 0.07);   // 音量浮层底板
+    // 控件配色的两种模式（D-093）：
+    //   自动   -> 4 个基色从面板底色推导（任何预设下都看得见）
+    //   自定义 -> 用用户在预设里指定的那 4 个基色
+    const bool custom = (m_appearance.ctrlMode == kCtrlCustom);
+
+    const COLORREF baseButton = custom ? m_appearance.ctrlButton : T(bgDark ? 0.14 : 0.10);
+    const COLORREF baseIcon   = custom ? m_appearance.ctrlIcon   : T(bgDark ? 0.82 : 0.78);
+    const COLORREF baseSlider = custom ? m_appearance.ctrlSlider : T(bgDark ? 0.80 : 0.76);
+    const COLORREF baseText   = custom ? m_appearance.ctrlText   : T(bgDark ? 0.72 : 0.68);
+
+    // ★ 组内其余颜色**始终从基色推导**，自定义模式下也一样。
+    //
+    // 【为什么不让用户自己填】那样他就得自己保证"悬停色比常态色显眼""按下色
+    // 和悬停色能分开"这类关系 —— 那是负担，而且错了就是"鼠标移上去看不出反馈"。
+    // 给 4 个基色、其余由程序保证层次，是这个模式能用的前提。
+    //
+    // ⚠️ 变化方向由**基色自己的亮度**决定，不是由面板底色决定。
+    //    自定义模式下用户完全可能在深底上放一个亮按钮 —— 那时"悬停更亮"
+    //    就什么都看不出来。亮的基色往暗走、暗的基色往亮走，两种情况都对。
+    auto Shift = [](COLORREF base, double t) {
+        const COLORREF dir = (ColorLuminance(base) < 128) ? RGB(255, 255, 255)
+                                                          : RGB(0, 0, 0);
+        return BlendColor(base, dir, t);
+    };
+
+    const COLORREF cBtnDown  = Shift(baseButton, 0.45);
+    const COLORREF cBtnHot   = Shift(baseButton, 0.25);
+    const COLORREF cGlyph    = baseIcon;
+    const COLORREF cGlyphHi  = Shift(baseIcon, 0.22);      // 播放/暂停（主操作）
+    const COLORREF cTrack    = Shift(baseSlider, 0.55);    // 滑块未填充部分
+    const COLORREF cFill     = baseSlider;
+    const COLORREF cTimeText = baseText;
+    const COLORREF cVolIcon  = baseIcon;
+    const COLORREF cPopupBg  = custom ? Shift(baseButton, 0.15) : T(bgDark ? 0.09 : 0.07);
 
     auto buttonBg = [&](CtrlId id, const RECT& r, bool forceHot = false) {
         if (m_active == id)                        FillRoundRect(dc, r, S(8), cBtnDown);
@@ -1883,12 +1908,28 @@ void ControlWindow::DrawIconOverlay(unsigned char* dst, int w, int h, int stride
                 static_cast<unsigned>(GetBValue(c));
     };
 
-    const unsigned cNormal = ToRgb(T(bgDark ? 0.78 : 0.74));   // 上一首 / 下一首 / 音量
-    const unsigned cMain   = ToRgb(T(bgDark ? 0.94 : 0.86));   // 播放 / 暂停（主操作，常态就给亮）
-    const unsigned cHot    = ToRgb(T(bgDark ? 1.00 : 0.92));
-    // 按下态保留"蓝色"这个语义（它是这组控件里唯一的彩色），但亮度跟着底色走：
-    // 深底用亮蓝，浅底用深蓝 —— 把 0x9CCBFF 直接放到浅底上会糊成一片。
-    const unsigned cActive = ToRgb(bgDark ? RGB(0x9C, 0xCB, 0xFF) : RGB(0x00, 0x5A, 0xB4));
+    // 控件配色两种模式（D-093），和 DrawControls 同一套判断。
+    // 这里只用得上「图标基色」那一个 —— 按钮底、滑块、文字都在那边画。
+    const bool     custom   = (m_appearance.ctrlMode == kCtrlCustom);
+    const COLORREF baseIcon = custom ? m_appearance.ctrlIcon : T(bgDark ? 0.78 : 0.74);
+
+    // 变化方向由**基色自己的亮度**决定，不是面板底色 —— 自定义模式下
+    // 用户完全可能在深底上放个亮图标，那时"悬停更亮"就看不出来了。
+    auto Shift = [](COLORREF base, double t) {
+        const COLORREF dir = (ColorLuminance(base) < 128) ? RGB(255, 255, 255)
+                                                          : RGB(0, 0, 0);
+        return BlendColor(base, dir, t);
+    };
+
+    const unsigned cNormal = ToRgb(baseIcon);                 // 上一首 / 下一首 / 音量
+    const unsigned cMain   = ToRgb(Shift(baseIcon, 0.22));    // 播放 / 暂停（主操作）
+    const unsigned cHot    = ToRgb(Shift(baseIcon, 0.35));
+    // 按下态：自动模式下保留"蓝色"这个语义（它是这组控件里唯一的彩色），
+    // 亮度跟着底色走；**自定义模式下不再塞蓝色** —— 用户既然自己挑了图标色，
+    // 就该整套跟着他挑的走，否则按下时冒出一个他没要求的蓝很突兀。
+    const unsigned cActive = custom
+        ? ToRgb(Shift(baseIcon, 0.55))
+        : ToRgb(bgDark ? RGB(0x9C, 0xCB, 0xFF) : RGB(0x00, 0x5A, 0xB4));
 
     // 悬停/按下的反馈 = 底板（DrawControls 里画）+ 图标变亮，两者一起给。
     // active 优先于 hot —— 按住时鼠标必然还在上面，不能只显示悬停态。
