@@ -35,11 +35,14 @@ void BgManualRange(int imgW, int imgH, int dstW, int dstH, const BgManual& m,
     if (imgW <= 0 || imgH <= 0 || dstW <= 0 || dstH <= 0) return;
 
     const BgManual c = ClampBgManual(m);
-    const double sx = static_cast<double>(dstW) / imgW;
-    const double sy = static_cast<double>(dstH) / imgH;
-    const double base = (std::max)(sx, sy);
+    // ⚠️ 基数必须和 ComputeBgPlacement 的 Manual 分支**完全一致**（D-108），
+    //    否则预览里拖到底和实际画出来的位置对不上 ——
+    //    而那种不一致只看着一边的时候发现不了。
+    const double base = static_cast<double>(dstH) / imgH;
     const double s = base * (c.zoomPct / 100.0);
 
+    // rx/ry 可能是负的（图比区域窄/矮，会露边）—— 那时**该方向不能拖**，
+    // 所以夹到 0。允许负值的话拖动会反向，而"拖不动"至少是诚实的。
     const int rx = (static_cast<int>(std::lround(imgW * s)) - dstW) / 2;
     const int ry = (static_cast<int>(std::lround(imgH * s)) - dstH) / 2;
     outRangeX = (rx > 0) ? rx : 0;
@@ -70,16 +73,24 @@ BgPlacement ComputeBgPlacement(int imgW, int imgH, int dstW, int dstH, BgFit fit
         return p;
 
     case BgFit::Manual: {
-        // 用户自己拖出来的构图（D-103）。
+        // 用户自己拖出来的构图（D-103 / D-108）。
         //
-        // 先夹参数再算 —— 后面的范围计算依赖"图 >= 区域"，
+        // 先夹参数再算 —— 后面的范围计算依赖"图 >= 区域"这个前提，
         // 而那个前提正是 ClampBgManual 保证的（zoom >= 100）。
         const BgManual m = ClampBgManual(manualIn);
 
-        const double sx = static_cast<double>(dstW) / imgW;
-        const double sy = static_cast<double>(dstH) / imgH;
-        // 基数是 Cover 的比例：刚好铺满所需的最小缩放。用户在此基础上再放大。
-        const double base = (std::max)(sx, sy);
+        // ⚠️ 基数是**高度铺满**，不是 Cover 的"两边都铺满"（D-108）。
+        //
+        // 【为什么】用户的期望是「初始时图的高度和工作区一样高」。
+        // 用 Cover 的话，宽图会被按**宽度**铺满、于是比工作区高得多 ——
+        // 一打开预览就是一张放大了的图，得先缩小才能看全，而用户
+        // 根本还没做任何操作。高度铺满则一进来就是"高度上尽收眼底"，
+        // 宽度按比例。
+        //
+        // ⚠️ 代价：宽图左右超出（可以拖，没问题），**窄图会左右露边**
+        //    （露出面板底色）。露边是**有意**的 —— 强制"必须盖满"
+        //    就回到了 Cover，而用户要的恰恰是"别一上来就放大"。
+        const double base = static_cast<double>(dstH) / imgH;
         const double s = base * (m.zoomPct / 100.0);
 
         const int drawW = static_cast<int>(std::lround(imgW * s));

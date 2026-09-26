@@ -277,6 +277,10 @@ private:
     void BeginBgHandleDrag(int hit, CPoint pt, const PrefsLayout& L);
     // 切到"手动"适配模式（拖动/缩放时自动调）
     void EnsureManualFit();
+    // 图片在预览区里**实际占的矩形**（客户区坐标）。
+    // 四角手柄贴的是它，不是预览框 —— 用户拖的是"这张图的角"（D-108）。
+    // 返回 false 表示算不出来（没图、读不到尺寸、尺寸非法）。
+    bool PreviewImageRect(const PrefsLayout& L, RECT& out) const;
 
     // 弹一个模态取色器。
     //
@@ -317,6 +321,11 @@ private:
     // ⚠️ 用「到中心的距离之比」而不是「某一轴的位移之比」：四个角方向不同，
     //    但"离中心越远 = 放得越大"对四个角都成立 —— 一套公式服务四个角，
     //    而不是四份各自带符号判断的实现。
+    //
+    // ⚠️ 中心是**图片矩形的中心**，不是预览框的中心（D-108）：
+    //    手柄贴在图的四角上，配对的中心自然也该是图的中心。
+    //    用框的中心的话，图不居中时（手动构图之后很常见）
+    //    拖角会让图一边缩放一边漂移。
     int    m_dragHandle      = kHitNone;
     int    m_dragStartZoom   = 100;
     double m_dragStartDist   = 0.0;
@@ -524,18 +533,19 @@ int CLyricusPrefsDlg::HitTest(POINT pt) const {
     if (inside(L.bgBlurSlider))    return kHitBgBlur;
     if (inside(L.bgDimSlider))     return kHitBgDim;
 
-    // ⚠️ 角手柄要**先于**预览区判 —— 手柄画在预览框的四个角上，
+    // ⚠️ 角手柄要**先于**预览区判 —— 手柄贴在图的四角上，
     //    顺序反了的话它们永远会被预览区先吃掉，拖角就变成了平移。
     //    这类"优先级"错误的表现是"功能没反应"，很难联想到是判断顺序。
-    if (!m_edited.bgImage.empty()) {
+    RECT imgRect{};
+    if (PreviewImageRect(L, imgRect)) {
         const int dpi = static_cast<int>(GetDpiForWindowSafe(m_hWnd));
         const int visSize = MulDiv(12, dpi, 96);
         const int hitSize = BgPreviewHandleHitSize(visSize);
+        const int grow = (hitSize - visSize) / 2;
         for (int i = 0; i < kBgHandleCount; ++i) {
-            // 命中框比视觉框大一圈，并且**以角为中心**向外扩 ——
+            // 命中框比视觉框大一圈，并且以角为中心向外扩 ——
             // 不然用户得把鼠标完全压在框内那半个手柄上才点得中。
-            const int grow = (hitSize - visSize) / 2;
-            RECT h = BgPreviewHandle(L.bgPreview, i, visSize);
+            RECT h = BgPreviewHandle(imgRect, i, visSize);
             InflateRect(&h, grow, grow);
             if (inside(h)) return kHitBgHandleBase + i;
         }
@@ -1075,6 +1085,34 @@ void CLyricusPrefsDlg::OnBgPick() {
     NotifyChanged();
 }
 
+bool CLyricusPrefsDlg::PreviewImageRect(const PrefsLayout& L, RECT& out) const {
+    out = RECT{ 0, 0, 0, 0 };
+    if (m_edited.bgImage.empty()) return false;
+
+    int imgW = 0, imgH = 0;
+    if (!GetBgImageSize(Utf8ToWide(m_edited.bgImage.c_str()), imgW, imgH)) return false;
+
+    const int pw = L.bgPreview.right - L.bgPreview.left;
+    const int ph = L.bgPreview.bottom - L.bgPreview.top;
+    if (pw <= 0 || ph <= 0) return false;
+
+    // ⚠️ 用**预览区的尺寸**算 —— 和 GetPanelBackground 那边是同一个函数、
+    //    同一组参数，所以这里算出来的矩形和实际画出来的图**一定一致**。
+    //    自己另写一套"图该多大"的算法就会有两份真相，
+    //    而它们不一致的表现是"手柄和图错开"，看起来像手柄画歪了。
+    const BgPlacement place = ComputeBgPlacement(
+        imgW, imgH, pw, ph,
+        static_cast<BgFit>(m_edited.bgFit), CurrentManual());
+    if (!place.valid) return false;
+
+    // place.dst 是"预览区坐标系"的 -> 平移到客户区坐标
+    out.left   = L.bgPreview.left + place.dst.left;
+    out.top    = L.bgPreview.top  + place.dst.top;
+    out.right  = L.bgPreview.left + place.dst.right;
+    out.bottom = L.bgPreview.top  + place.dst.bottom;
+    return true;
+}
+
 BgManual CLyricusPrefsDlg::CurrentManual() const {
     BgManual m;
     m.zoomPct    = m_edited.bgZoomPct;
@@ -1147,13 +1185,17 @@ void CLyricusPrefsDlg::DrawBgPreview(HDC dc, const PrefsLayout& L) {
     // 边框画在最后（先画会被图盖住）
     StrokeRoundRect(dc, L.bgPreview, rad, 1, T.border);
 
-    // 四角手柄（D-107）。**画在图之上** —— 它们是能抓的东西，
-    // 被图盖住的话用户根本不知道可以拖。
-    if (!m_edited.bgImage.empty()) {
+    // 四角手柄（D-107 / D-108）。**贴在图片的四角上**，不是预览框的四角。
+    //
+    // 【为什么要贴图】用户拖的是"这张图的角"。贴框的话，图没铺满时
+    //（露边、或者手动缩过）手柄会飘在离图很远的框角上，
+    // 看起来像"手柄和内容对不上"。而且拖那个角到底在缩什么也不明确。
+    RECT imgRect{};
+    if (PreviewImageRect(L, imgRect)) {
         const int visSize = MulDiv(12, dpi, 96);
         const int hRad    = MulDiv(3, dpi, 96);
         for (int i = 0; i < kBgHandleCount; ++i) {
-            RECT h = BgPreviewHandle(L.bgPreview, i, visSize);
+            RECT h = BgPreviewHandle(imgRect, i, visSize);
             if (empty(h)) continue;
             const bool hot = (m_hot == kHitBgHandleBase + i) ||
                              (m_dragHandle == kHitBgHandleBase + i);
@@ -1231,11 +1273,14 @@ void CLyricusPrefsDlg::BeginBgHandleDrag(int hit, CPoint pt, const PrefsLayout& 
     const BgManual m = CurrentManual();
     m_dragStartZoom = m.zoomPct;
 
-    // 中心取预览框的中心（客户区坐标）—— 拖动过程中要反复用它算距离，
-    // 每次重算没必要，而且布局万一在拖动中途变了（几乎不会），
-    // 用同一个中心至少保证这一趟拖动是自洽的。
-    m_dragCenter.x = (L.bgPreview.left + L.bgPreview.right) / 2;
-    m_dragCenter.y = (L.bgPreview.top + L.bgPreview.bottom) / 2;
+    // ⚠️ 中心取**图片矩形的中心**，不是预览框的中心（D-108）。
+    //    手柄贴在图的四角上，配对的中心自然也该是图的中心 ——
+    //    用框心的话，图不居中时（手动构图之后很常见）拖角会让图
+    //    一边缩放一边漂移，用起来像"抓不住这个角"。
+    RECT imgRect{};
+    if (!PreviewImageRect(L, imgRect)) return;
+    m_dragCenter.x = (imgRect.left + imgRect.right) / 2;
+    m_dragCenter.y = (imgRect.top + imgRect.bottom) / 2;
 
     const double dx = pt.x - m_dragCenter.x;
     const double dy = pt.y - m_dragCenter.y;

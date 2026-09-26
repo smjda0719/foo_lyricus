@@ -456,37 +456,93 @@ void TestManual() {
         Check(rx == 300, "★ 但纵向铺满时横向余量很大（400x100 的图铺 200x200）");
     }
 
-    // ★★ 覆盖是硬约束：任何参数组合下，图都必须盖住整个区域。
-    //    留出没图盖住的边，露出来的是面板底色 —— 那看起来像
-    //    "图没加载全"，而不像"用户拖多了"。所以这条扫得密一些。
+    // ★★ D-108 的新不变量：**zoom = 100 时图的高度正好等于区域高度**。
+    //
+    //    这是"初始尺寸"的定义 —— 用户要的是"一进来别就把图放大"。
+    //    旧的不变量是"图必须完全覆盖区域"（Cover 语义），
+    //    但那个语义下宽图会被按宽度铺满、比工作区高得多，一打开就是放大的。
+    //    露边是有意的：强制盖满就回到了 Cover。
     {
-        int bad = 0, n = 0;
-        const int zooms[] = { 100, 175, 250, 325, 400 };
-        for (int iw = 50; iw <= 400; iw += 61) {
-            for (int ih = 50; ih <= 400; ih += 67) {
-                for (int dw = 20; dw <= 300; dw += 71) {
-                    for (int dh = 20; dh <= 300; dh += 73) {
-                        for (int zi = 0; zi < 5; ++zi) {
-                            const int z = zooms[zi];
-                            for (int ox = -100; ox <= 100; ox += 50) {
-                                for (int oy = -100; oy <= 100; oy += 50) {
-                                    BgManual m;
-                                    m.zoomPct = z; m.offsetXPct = ox; m.offsetYPct = oy;
-                                    const auto p = ComputeBgPlacement(iw, ih, dw, dh,
-                                                                      BgFit::Manual, m);
-                                    ++n;
-                                    if (!p.valid) { ++bad; continue; }
-                                    if (p.dst.left > 0 || p.dst.top > 0 ||
-                                        p.dst.right < dw || p.dst.bottom < dh) ++bad;
-                                }
-                            }
-                        }
+        int bad = 0, n = 0, leaked = 0;
+        for (int iw = 40; iw <= 1200; iw += 97) {
+            for (int ih = 40; ih <= 1200; ih += 89) {
+                for (int dw = 60; dw <= 900; dw += 71) {
+                    for (int dh = 40; dh <= 600; dh += 67) {
+                        BgManual m;   // 默认 zoom=100、offset=0
+                        const auto p = ComputeBgPlacement(iw, ih, dw, dh,
+                                                          BgFit::Manual, m);
+                        ++n;
+                        if (!p.valid) { ++bad; continue; }
+                        // ⚠️ 跳过**封顶**的情况：图很小而区域很大时，
+                        //    drawW 会被压到 kMaxDrawSide（8192）而触发保护性缩小，
+                        //    那时高度不再等于区域高度 —— 那是有意的
+                        //    （宁可图小一点，也不要几百 MB 的中间缓冲）。
+                        //    注意是 `>=`：封顶后的值**正好等于** 8192，
+                        //    写 `>` 的话一个都跳不过去（探针里实测到 8192x527）。
+                        if (RectW(p.dst) >= 8192 || RectH(p.dst) >= 8192) continue;
+                        // 高度允许 ±1 像素的取整误差
+                        const int h = RectH(p.dst);
+                        if (h < dh - 1 || h > dh + 1) ++bad;
+                        // 水平位置：图比区域宽时居中（负偏移），
+                        // 窄时范围被夹成 0、于是贴左（dst.left == 0）。
+                        // ⚠️ 一开始我按"永远居中"写，于是窄图那半边全判错了 ——
+                        //    "露边时到底该居中还是贴左"是实现里的一个选择，
+                        //    断言得跟着那个选择写，不能想当然。
+                        const int expectLeft = (RectW(p.dst) > dw)
+                            ? -(RectW(p.dst) - dw) / 2 : 0;
+                        if (p.dst.left != expectLeft) ++bad;
+                        if (RectW(p.dst) < dw) ++leaked;
                     }
                 }
             }
         }
-        Check(bad == 0, "★★ 几万种参数组合：图始终完全覆盖区域（不留空白）");
-        Check(n > 10000, "（确实扫到了足够多的组合）");
+        Check(bad == 0, "★★ zoom=100 时图的高度始终等于区域高度（±1 像素取整）");
+        Check(n > 500, "（确实扫到了足够多的组合）");
+        Check(leaked > 0, "★ 窄图确实会左右露边（那是有意的，不是 bug）");
+    }
+
+    // 放大之后高度必须**超出**区域（否则"放大"没意义）
+    {
+        BgManual m; m.zoomPct = 200;
+        const auto p = ComputeBgPlacement(400, 300, 200, 200, BgFit::Manual, m);
+        // base = 200/300 -> 图 400x300 画成 267x200；zoom 2 -> 533x400
+        Check(RectH(p.dst) == 400, "★ zoom=200 时高度翻倍");
+        Check(RectH(p.dst) > 200 && RectW(p.dst) > 200, "★ 放大后两个方向都超出区域");
+    }
+
+    // 可移动范围：zoom=100 时**两个方向都没有余量** —— 高度刚好等于区域高、
+    // 宽度按比例（宽图超出时才有横向余量）。
+    // ⚠️ 一开始我断言"竖图上下能拖"，那是按 Cover 的老语义想的；
+    //    高度铺满之后上下正好铺满，自然拖不动 —— 要拖得先放大。
+    {
+        int rx = 0, ry = 0;
+        lyricus::BgManualRange(100, 400, 400, 400, BgManual{}, rx, ry);
+        Check(rx == 0, "★ 竖图 zoom=100：左右没有余量 -> 范围 0（拖不动）");
+        Check(ry == 0, "★ 竖图 zoom=100：上下也没有余量（高度正好铺满）");
+
+        // 放大之后**纵向**有余量了 —— 但横向不一定：
+        // 竖图放大 2 倍后宽度可能仍然比区域窄（100→200，区域 400）。
+        BgManual m; m.zoomPct = 200;
+        lyricus::BgManualRange(100, 400, 400, 400, m, rx, ry);
+        Check(ry > 0, "★ 放大到 200% 后纵向就有余量可拖了");
+        Check(rx == 0, "★ 但横向仍然没有（放大 2 倍也才 200 宽，比区域窄）");
+
+        // 这张图横向**永远不会**有余量：100x400 的图按高度铺满进 400x400，
+        // 宽度正好 400；就算放到上限 400% 也只是宽度刚好铺满。
+        // （想验证"两个方向都能拖"，得用一张更宽的图。）
+        m.zoomPct = kBgZoomMaxPct;
+        lyricus::BgManualRange(100, 400, 400, 400, m, rx, ry);
+        Check(rx == 0 && ry > 0, "★ 竖图到上限也只有纵向可拖（宽度卡在区域宽）");
+
+        // 宽图才两个方向都能拖
+        BgManual m2; m2.zoomPct = 200;
+        lyricus::BgManualRange(800, 200, 400, 400, m2, rx, ry);
+        Check(rx > 0 && ry > 0, "★ 宽图放大后两个方向都能拖");
+
+        // 宽图：高度铺满后左右一定超出，横向有余量
+        lyricus::BgManualRange(800, 200, 400, 400, BgManual{}, rx, ry);
+        Check(rx > 0, "★ 宽图 zoom=100：左右超出 -> 横向有余量");
+        Check(ry == 0, "（但上下正好铺满）");
     }
 
     // 越界的参数（手改配置）也要被夹住而不是画出空白
