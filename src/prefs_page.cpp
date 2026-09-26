@@ -1098,6 +1098,7 @@ void CLyricusPrefsDlg::DrawBgPreview(HDC dc, const PrefsLayout& L) {
             static_cast<BgFit>(m_edited.bgFit), CurrentManual(),
             blurPx, m_edited.bgDim, m_edited.bgOpacity);
 
+
         if (bmp == nullptr) {
             // 读不到就**如实说**，而不是画一块空白 —— 后者看起来像"没设图"，
             // 用户会去重新选一遍，而问题其实出在文件本身。
