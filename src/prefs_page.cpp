@@ -1165,10 +1165,20 @@ void CLyricusPrefsDlg::DrawBgPreview(HDC dc, const PrefsLayout& L) {
     }
 
     if (!empty(L.bgPreviewHint)) {
-        const wchar_t* hint = m_edited.bgImage.empty()
-            ? L""
-            : (manual ? L"拖动移动 · 滚轮缩放"
-                      : L"拖动或滚轮会自动切成「手动」适配");
+        // 提示里带上**当前缩放百分比**（D-107）。
+        // 拖角是连续操作，没有数字的话用户不知道现在放大了多少、
+        // 也不知道有没有到上下限 —— 而"拖了没反应"正是上下限时的表现。
+        wchar_t hintBuf[128] = L"";
+        const wchar_t* hint = L"";
+        if (!m_edited.bgImage.empty()) {
+            if (manual) {
+                swprintf_s(hintBuf, L"拖动移动 · 拖四角缩放 · 当前 %d%%",
+                           m_edited.bgZoomPct);
+                hint = hintBuf;
+            } else {
+                hint = L"拖动或拖角会自动切成「手动」适配";
+            }
+        }
         DrawTextIn(dc, L.bgPreviewHint, hint, T.textDim, m_fontSmall,
                    DT_CENTER | DT_TOP | DT_SINGLELINE);
     }
