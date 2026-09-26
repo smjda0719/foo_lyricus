@@ -156,6 +156,8 @@ public:
         MSG_WM_VSCROLL(OnVScroll)
         MSG_WM_MOUSEWHEEL(OnMouseWheel)
         MSG_WM_SIZE(OnSize)
+        // 让 PrintWindow 能抓到自绘内容（见 OnPrintClient 的说明）
+        MESSAGE_HANDLER(WM_PRINTCLIENT, OnPrintClient)
     END_MSG_MAP()
 
     // ---- preferences_page_instance 的契约 ----
@@ -176,6 +178,9 @@ private:
     void OnDestroy();
     BOOL OnEraseBkgnd(CDCHandle dc);
     void OnPaint(CDCHandle dc);
+    // 把整页画到给定的 DC 上 —— WM_PAINT 和 WM_PRINTCLIENT 共用这一份
+    void PaintTo(HDC dc, const RECT& rc);
+    LRESULT OnPrintClient(UINT nMsg, WPARAM wp, LPARAM lp, BOOL& bHandled);
 
     // ---- 滚动（D-094）----
     void OnVScroll(UINT nSBCode, UINT nPos, CScrollBar pScrollBar);
@@ -456,8 +461,16 @@ void CLyricusPrefsDlg::OnPaint(CDCHandle) {
 
     RECT rc{};
     ::GetClientRect(m_hWnd, &rc);
+    PaintTo(dc, rc);
+
+    EndPaint(&ps);
+}
+
+// 把整页画到**给定的 DC** 上。WM_PAINT 和 WM_PRINTCLIENT 都走这里。
+void CLyricusPrefsDlg::PaintTo(HDC dc, const RECT& rc) {
     const int w = rc.right - rc.left;
     const int h = rc.bottom - rc.top;
+    if (w <= 0 || h <= 0) return;
 
     // 双缓冲：自绘页面直接在窗口 DC 上画会闪（尤其是拖滑块时每帧重绘）
     const HDC mem = CreateCompatibleDC(dc);
@@ -493,7 +506,29 @@ void CLyricusPrefsDlg::OnPaint(CDCHandle) {
     SelectObject(mem, oldBmp);
     DeleteObject(bmp);
     DeleteDC(mem);
-    EndPaint(&ps);
+}
+
+// ★ 让 `PrintWindow` 能抓到自绘内容。
+//
+// 【为什么必须有】全自绘窗口不处理这条消息时，`PrintWindow` 只会走到
+// 默认的背景处理 —— 截图里**内容一片空白，而窗口在屏幕上完全正常**。
+// 用户 2026-09-26 看到我那张"滚到底变空白"的截图时说
+// 「是你的截图脚本问题，我实际看没有问题」，根因就在这儿。
+//
+// `PrintWindow` 发的是 `WM_PRINT`，而 `WM_PRINT` 的默认处理会把
+// `WM_PRINTCLIENT` 转给窗口 —— 所以只需要接这一条。
+// 它给的 DC 需要我们**自己**画上去，这也正是把绘制抽成 PaintTo 的原因。
+LRESULT CLyricusPrefsDlg::OnPrintClient(UINT, WPARAM wp, LPARAM, BOOL& bHandled) {
+    // ⚠️ WTL 的 MESSAGE_HANDLER 要求末尾那个 BOOL& —— 不设 bHandled
+    //    的话消息还会继续往默认处理走，等于白画一遍。
+    bHandled = TRUE;
+    HDC dc = reinterpret_cast<HDC>(wp);
+    if (dc != nullptr) {
+        RECT rc{};
+        ::GetClientRect(m_hWnd, &rc);
+        PaintTo(dc, rc);
+    }
+    return 0;
 }
 
 void CLyricusPrefsDlg::DrawPage(HDC dc, const RECT& rc, const PrefsLayout& L,
