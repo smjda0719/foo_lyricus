@@ -22,8 +22,8 @@
 | | |
 |---|---|
 | 组件 | `foo_lyricus.dll`，foobar2000 2.x，x64 |
-| 源码 | 61 个文件 / **18254 行** |
-| 决策 | **127 条**（D-001 ~ D-129，`decisions.md`） |
+| 源码 | 61 个文件 / **18437 行** |
+| 决策 | **127 条**（D-001 ~ D-131，`decisions.md`） |
 | 测试 | **11 组 891 项，全绿**（离线，`tests/harness/run.ps1`） |
 | 工具 | **8 个脚本**（`tools/`），见第六章 |
 | 打包 | `bin\foo_lyricus.fb2k-component`（脚本 `tools/package.ps1`） |
@@ -137,6 +137,7 @@
 | **背景图预览怎么画** | `control_window.cpp` 的 `PaintPreview()` —— **整块都在这里**（底 / 图 / 歌词 / 控件 / 图标）。⚠️ 别往 `prefs_page.cpp` 的 `DrawBgPreview()` 里加绘制，它只负责"调 PaintPreview + 画手柄 + 画提示" |
 | **拖角缩放的锚点与比例** | `prefs_page.cpp` 的 `OnBgHandleDrag()`（锚点是**对角手柄**，比例是**带符号的曼哈顿距离**）+ `bg_math.h` 的范围常量 |
 | **预览用的测试歌词** | `prefs_page.cpp` 的 `PreviewLyrics()` —— LRC 文本就在里面，改那一行即可 |
+| **鼠标穿透怎么实现/逃生舱** | `control_window.cpp` 的 `UpdateClickThrough()` —— 用 `WS_EX_TRANSPARENT`（**不是** `HTTRANSPARENT`，理由见 D-131）；Ctrl 逃生舱在刷新定时器里轮询。⚠️ 改这里要连带看刷新间隔（穿透时提频到 40ms） |
 
 ---
 
