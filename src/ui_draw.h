@@ -34,6 +34,13 @@ struct HostTheme {
 // 暗色模式也顺带处理了。拿不到服务时退回 GetSysColor。
 HostTheme QueryHostTheme();
 
+// 按 t 把 a 与 b 混合（t=0 全取 a，t=1 全取 b）。
+//
+// 自绘时用它从**宿主背景色**推导出卡片底 / 悬停 / 边框，而不是硬编码几档灰。
+// 硬编码的灰在自定义配色下会和背景打架 —— 而且很容易连带出
+// "填充是浅色、文字却是白的"这种读不了字的组合（见 color_picker.cpp 里那段）。
+COLORREF BlendColor(COLORREF a, COLORREF b, double t);
+
 // 圆角矩形填充 / 描边。半径会自动收缩到不超过矩形的一半。
 void FillRoundRect(HDC dc, const RECT& r, int radius, COLORREF color);
 void StrokeRoundRect(HDC dc, const RECT& r, int radius, int width, COLORREF color);

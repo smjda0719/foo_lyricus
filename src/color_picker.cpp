@@ -6,6 +6,7 @@
 #include "dpi_util.h"
 #include "debug_log.h"
 #include "ui_draw.h"
+#include "prefs_layout.h"   // PrefsLuminance（判"该配黑字还是白字"）
 
 #include <cmath>
 #include <cstdio>
@@ -377,25 +378,52 @@ void CColorWheelDlg::DrawPreview(HDC dc, const ColorWheelLayout& L, const HostTh
 }
 
 void CColorWheelDlg::DrawButtons(HDC dc, const ColorWheelLayout& L, const HostTheme& T) {
+    // 按钮配色**从宿主背景推导**，文字色则按**填充色自己的亮度**选。
+    //
+    // 【为什么不能靠 T.dark 分支】用户 2026-09-26 报「色环界面的白色按钮
+    // 配的是白色文字」。根因就在这里 —— 原来写的是
+    //     fill = T.dark ? 深灰 : 浅灰;    fg = T.fg;
+    // 而 T.dark 来自 is_dark_mode()、T.fg 来自 getSysColor()，**两者不同源**。
+    // foobar2000 用自定义配色时它们会不一致：填充走了"浅色主题"那一支
+    // （浅灰，看着就是白的），文字却拿到白色 —— 于是字看不见了。
+    //
+    // 现在两道保险：
+    //   1. fill 由 T.bg 推导（同一个源，不会跟背景打架）；
+    //   2. ★ fg 只看 fill 的亮度，压根不看主题标志 ——
+    //      即使将来 fill 的推导被改坏，最坏也只是"不好看"，不会"看不见"。
+    const bool dark = (PrefsLuminance(T.bg) < 128);
+
+    auto surface = [&](bool primary, bool hot, bool active) -> COLORREF {
+        if (primary) {
+            if (active) return dark ? RGB(70, 125, 185) : RGB(0, 100, 180);
+            if (hot)    return dark ? RGB(60, 110, 170) : RGB(0, 140, 235);
+            return dark ? RGB(46, 90, 140) : RGB(0, 120, 212);
+        }
+        if (active) return BlendColor(T.bg, dark ? RGB(255, 255, 255) : RGB(0, 0, 0), 0.22);
+        if (hot)    return BlendColor(T.bg, dark ? RGB(255, 255, 255) : RGB(0, 0, 0), 0.16);
+        return BlendColor(T.bg, dark ? RGB(255, 255, 255) : RGB(0, 0, 0), 0.08);
+    };
+
     auto one = [&](const RECT& r, const wchar_t* text, WheelHit id, bool primary) {
         const bool hot    = (m_hot  == id);
         const bool active = (m_drag == id);
+
         RECT box = r;
         if (active) OffsetRect(&box, 0, MulDiv(1, L.dpi, 96));
 
+        const COLORREF fill = surface(primary, hot, active);
+
+        // ★ 阈值 140：低于它用白字、高于它用近黑字。
+        //    140 而不是 128，是因为浅色底上白字比深色底上黑字更早变得难读。
+        const COLORREF fg = (PrefsLuminance(fill) > 140) ? RGB(20, 20, 24)
+                                                         : RGB(255, 255, 255);
+
         const int radius = MulDiv(6, L.dpi, 96);
-        COLORREF fill;
-        if (active)      fill = T.dark ? RGB(60, 110, 170) : RGB(0, 100, 180);
-        else if (hot)    fill = T.dark ? RGB(70, 74, 82)  : RGB(228, 228, 232);
-        else if (primary) fill = T.dark ? RGB(46, 90, 140) : RGB(0, 120, 212);
-        else             fill = T.dark ? RGB(52, 54, 60)  : RGB(240, 240, 242);
-
-        const COLORREF fg = (primary && !hot && !active) ? RGB(255, 255, 255)
-                          : (active ? RGB(255, 255, 255) : T.fg);
-
         FillRoundRect(dc, box, radius, fill);
-        if (!primary) StrokeRoundRect(dc, box, radius, 1,
-                                      T.dark ? RGB(90, 92, 98) : RGB(200, 200, 206));
+        if (!primary) {
+            StrokeRoundRect(dc, box, radius, 1,
+                            BlendColor(T.bg, dark ? RGB(255, 255, 255) : RGB(0, 0, 0), 0.26));
+        }
         DrawTextIn(dc, box, text, fg, m_font,
                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     };

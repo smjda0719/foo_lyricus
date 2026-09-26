@@ -27,6 +27,18 @@ HostTheme QueryHostTheme() {
     return t;
 }
 
+COLORREF BlendColor(COLORREF a, COLORREF b, double t) {
+    auto mix = [t](int x, int y) {
+        int v = static_cast<int>(x * (1.0 - t) + y * t + 0.5);
+        if (v < 0) v = 0;
+        if (v > 255) v = 255;
+        return v;
+    };
+    return RGB(mix(GetRValue(a), GetRValue(b)),
+               mix(GetGValue(a), GetGValue(b)),
+               mix(GetBValue(a), GetBValue(b)));
+}
+
 void FillRoundRect(HDC dc, const RECT& r, int radius, COLORREF color) {
     if (r.right <= r.left || r.bottom <= r.top) return;
 

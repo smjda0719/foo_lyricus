@@ -363,11 +363,19 @@ void CLyricusPrefsDlg::DrawResetButton(HDC dc, const RECT& r) {
     if (active) OffsetRect(&box, 0, MulDiv(1, dpi, 96));
 
     const int radius = MulDiv(6, dpi, 96);
-    FillRoundRect(dc, box, radius, active ? T.accent : (hot ? T.cardHot : T.cardBg));
+    const COLORREF fill = active ? T.accent : (hot ? T.cardHot : T.cardBg);
+    FillRoundRect(dc, box, radius, fill);
     StrokeRoundRect(dc, box, radius, 1, T.border);
 
-    // 按下态底色是强调色（偏深），文字得换成能读清的一侧
-    const COLORREF fg = active ? RGB(255, 255, 255) : T.text;
+    // ★ 文字色按**填充色自己的亮度**选，而不是按状态猜。
+    //
+    // 这里原本写的是 `active ? 白 : T.text`，而它**当时是对的** ——
+    // 因为填充色是从 T.pageBg 推导的、T.text 就是配它的那个前景色，两者同源。
+    // 改成按 fill 判断是为了和 color_picker.cpp 保持同一个模式：
+    // 那边出过一次「白色按钮配白色文字」（主题标志与实际取到的颜色不同源），
+    // 按填充色判断是那种情况下唯一永远正确的做法。
+    const COLORREF fg = (PrefsLuminance(fill) > 140) ? RGB(20, 20, 24)
+                                                     : RGB(255, 255, 255);
     DrawTextIn(dc, box, L"恢复默认", fg, m_fontBody,
                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 }
