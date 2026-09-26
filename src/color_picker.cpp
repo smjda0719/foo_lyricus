@@ -450,7 +450,14 @@ void CColorWheelDlg::ApplyPick(const WheelPick& pick) {
 
 void CColorWheelDlg::OnMouseMove(UINT, CPoint pt) {
     if (m_drag == WheelHit::Ring || m_drag == WheelHit::SvBox) {
-        ApplyPick(HitTestColorWheel(CurrentLayout(), pt, m_hsv));
+        // ★ 把 m_drag 传进去 = **目标锁定**：只改按下的那个分量，
+        //   无论鼠标现在跑到哪儿。
+        //
+        // 【不传会怎样】判定就会跟着鼠标位置变 —— 拖着 SV 方块把鼠标划到
+        // 色环上时判定翻成 Ring，色相被顺手改掉；用户只是想调暗一点，
+        // 颜色却整个跳了。用户 2026-09-26 报的正是这个：
+        // 「内层选的时候如果鼠标拖到外部了会误触到色环」。
+        ApplyPick(HitTestColorWheel(CurrentLayout(), pt, m_hsv, m_drag));
         return;
     }
 

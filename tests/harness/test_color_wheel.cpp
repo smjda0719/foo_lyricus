@@ -296,6 +296,61 @@ void TestDpiScaling() {
     Check(bad == 0, "★ 四种 DPI 下：环有宽度、方块在圈内、按钮不重叠");
 }
 
+// ---------------------------------------------------------------------------
+// ★ 拖动期间必须**锁定目标**。
+//
+// 用户 2026-09-26 报：「内层选的时候如果鼠标拖到外部了会误触到色环」——
+// 根因是拖动时仍按鼠标**当前位置**判定，于是把鼠标从 SV 方块划到色环上时，
+// 判定翻成 Ring，色相被顺手改掉。用户只是想调暗一点，颜色却整个跳了。
+// ---------------------------------------------------------------------------
+void TestDragLocksTarget() {
+    std::printf("\n== 拖动期间锁定目标 ==\n");
+
+    const ColorWheelLayout L = DefaultLayout();
+    const int rMid = (L.outerR + L.innerR) / 2;
+    const HsvColor cur{ 30.0, 0.5, 0.5 };   // 一组明确的"非默认"值
+
+    const POINT onRing = lyricus::HuePointOnRing(L, 120.0, rMid);
+    const POINT inBox{ (L.svBox.left + L.svBox.right) / 2,
+                       (L.svBox.top + L.svBox.bottom) / 2 };
+
+    // ---- 拖方块时鼠标跑到环上 ----
+    const auto a = lyricus::HitTestColorWheel(L, onRing, cur, WheelHit::SvBox);
+    Check(a.hit == WheelHit::SvBox, "★ 拖方块、鼠标移到环上：目标仍是方块");
+    Check(Near(a.hsv.h, cur.h, 1e-9), "★ 且色相一点没变（这正是报的那个 bug）");
+    // 而且 S/V 应该按"鼠标投影到方块上的位置"算，不是落空
+    Check(a.hsv.s >= 0.0 && a.hsv.s <= 1.0 && a.hsv.v >= 0.0 && a.hsv.v <= 1.0,
+          "★ 且 S/V 被钳在 0..1，不会落空");
+
+    // ---- 拖色环时鼠标跑到方块里 ----
+    const auto b = lyricus::HitTestColorWheel(L, inBox, cur, WheelHit::Ring);
+    Check(b.hit == WheelHit::Ring, "★ 拖色环、鼠标移到方块里：目标仍是环");
+    Check(Near(b.hsv.s, cur.s, 1e-9) && Near(b.hsv.v, cur.v, 1e-9),
+          "★ 且 S/V 一点没变");
+    Check(b.hsv.h >= 0.0 && b.hsv.h < 360.0, "★ 且色相是合法角度");
+
+    // ---- 拖到窗口外很远 ----
+    const POINT wayOut{ -5000, -5000 };
+    const auto c = lyricus::HitTestColorWheel(L, wayOut, cur, WheelHit::SvBox);
+    Check(c.hsv.s >= 0.0 && c.hsv.s <= 1.0 && c.hsv.v >= 0.0 && c.hsv.v <= 1.0,
+          "★ 拖到窗口外：S/V 仍被钳在 0..1（钳制而不是落空）");
+    const auto d = lyricus::HitTestColorWheel(L, wayOut, cur, WheelHit::Ring);
+    Check(d.hit == WheelHit::Ring && d.hsv.h >= 0.0 && d.hsv.h < 360.0,
+          "★ 拖到窗口外：色相仍是合法角度");
+
+    // ---- 对照：不传 forTarget 时维持原行为（悬停要能落在 None 上）----
+    const auto e = lyricus::HitTestColorWheel(L, wayOut, cur);
+    Check(e.hit == WheelHit::None, "对照：不锁定目标时，窗口外仍然是 None");
+    const auto f = lyricus::HitTestColorWheel(L, onRing, cur);
+    Check(f.hit == WheelHit::Ring, "对照：不锁定目标时，环上判定为 Ring");
+
+    // ---- 锁定目标时不该被按钮抢走 ----
+    const POINT onOk{ (L.ok.left + L.ok.right) / 2, (L.ok.top + L.ok.bottom) / 2 };
+    const auto g = lyricus::HitTestColorWheel(L, onOk, cur, WheelHit::SvBox);
+    Check(g.hit == WheelHit::SvBox,
+          "★ 拖方块时鼠标划过「确定」按钮：仍按方块算（拖动中不该被按钮打断）");
+}
+
 } // namespace
 
 int main() {
@@ -306,6 +361,7 @@ int main() {
     TestRingGeometry();
     TestSvBox();
     TestDragKeepsOtherComponents();
+    TestDragLocksTarget();
     TestLayout();
     TestDpiScaling();
     std::printf("\n----------------------------------------\n");

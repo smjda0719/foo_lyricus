@@ -161,40 +161,65 @@ ColorWheelLayout ComputeColorWheelLayout(int width, int height, int dpi) {
 // 命中测试
 // ---------------------------------------------------------------------------
 
-WheelPick HitTestColorWheel(const ColorWheelLayout& L, POINT pt, const HsvColor& cur) {
+WheelPick HitTestColorWheel(const ColorWheelLayout& L, POINT pt, const HsvColor& cur,
+                            WheelHit forTarget) {
     WheelPick out;
     out.hsv = cur;   // 默认原样返回：没碰到的分量不该被改
 
+    // 把"算某个分量"的两段抽出来 —— 拖动路径和悬停路径都要用，
+    // 各写一遍迟早会不一致（而那正是"点红色选中橙色"的成因）。
+    auto takeSv = [&]() -> bool {
+        if (IsEmpty(L.svBox)) return false;
+        const double bw = L.svBox.right - L.svBox.left;
+        const double bh = L.svBox.bottom - L.svBox.top;
+        // Clamp01 同时负责"拖出方块"的情形：钳到 0..1，而不是落空
+        out.hsv.s = Clamp01((pt.x - L.svBox.left) / bw);
+        out.hsv.v = Clamp01(1.0 - (pt.y - L.svBox.top) / bh);
+        out.hit   = WheelHit::SvBox;
+        return true;
+    };
+    auto takeHue = [&]() -> bool {
+        // atan2(dx, -dy)：0 = 正上方，顺时针增加。
+        // 用 -dy 而不是 dy，是因为屏幕 y 轴向下；这样"上"才是 0 度。
+        //
+        // ⚠️ 这里**不判半径** —— 拖动时鼠标可以跑到环外很远，
+        //    而"角度"在任何距离上都是有意义的，钳都不需要钳。
+        const double dx = pt.x - L.cx;
+        const double dy = pt.y - L.cy;
+        double ang = std::atan2(dx, -dy) * 180.0 / kPi;
+        if (ang < 0.0) ang += 360.0;
+        out.hsv.h = ang;
+        out.hit   = WheelHit::Ring;
+        return true;
+    };
+
+    // ---- 拖动中：目标锁定，只看 forTarget 指定的那一个 ----
+    //
+    // ★ 这是修「内层选的时候鼠标拖到外部会误触色环」的关键分支。
+    //   不锁的话，拖着 SV 方块划到环上时判定会翻成 Ring、色相被顺手改掉。
+    if (forTarget == WheelHit::SvBox) { takeSv();  return out; }
+    if (forTarget == WheelHit::Ring)  { takeHue(); return out; }
+
+    // ---- 非拖动（悬停 / 按下）：按鼠标实际落在哪儿判定 ----
     if (Inside(L.ok, pt))     { out.hit = WheelHit::Ok;     return out; }
     if (Inside(L.cancel, pt)) { out.hit = WheelHit::Cancel; return out; }
 
-    if (Inside(L.svBox, pt)) {
-        const double bw = L.svBox.right - L.svBox.left;
-        const double bh = L.svBox.bottom - L.svBox.top;
-        out.hsv.s = Clamp01((pt.x - L.svBox.left) / bw);
-        out.hsv.v = Clamp01(1.0 - (pt.y - L.svBox.top) / bh);
-        out.hit = WheelHit::SvBox;
-        return out;
-    }
+    if (Inside(L.svBox, pt)) { takeSv(); return out; }
 
     const double dx = pt.x - L.cx;
     const double dy = pt.y - L.cy;
     const double dist = std::sqrt(dx * dx + dy * dy);
 
     // 环外留一点容差（半个环宽），免得贴着边缘就点不中。
+    // ⚠️ 这个容差只在**悬停**时有意义：拖动走的是上面那条 takeHue()，
+    //    那里不需要容差，也不该因为鼠标跑远就落空。
     const double tolerance = (L.outerR - L.innerR) / 2.0;
     if (dist > L.outerR + tolerance || dist < L.innerR - tolerance) {
         out.hit = WheelHit::None;
         return out;
     }
 
-    // atan2(dx, -dy)：0 = 正上方，顺时针增加。
-    // 用 -dy 而不是 dy，是因为屏幕 y 轴向下；这样"上"才是 0 度。
-    double ang = std::atan2(dx, -dy) * 180.0 / kPi;
-    if (ang < 0.0) ang += 360.0;
-
-    out.hsv.h = ang;
-    out.hit = WheelHit::Ring;
+    takeHue();
     return out;
 }
 

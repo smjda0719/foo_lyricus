@@ -64,7 +64,17 @@ struct WheelPick {
 };
 
 // 给定鼠标位置与当前颜色，算出"如果拖到这里会变成什么"。
-WheelPick HitTestColorWheel(const ColorWheelLayout& L, POINT pt, const HsvColor& cur);
+//
+// 【forTarget 是干什么的】传 None = 按鼠标**实际落在哪儿**判定（悬停、按下时用）。
+// 传 Ring / SvBox = **目标锁定**：无论鼠标跑到哪里，都只按那一个目标算，
+// 而且超出范围时**钳制**而不是落空。
+//
+// ★ 拖动期间**必须**传目标。否则把鼠标从 SV 方块划到色环上时，
+//   判定会翻成 Ring，色相就被顺手改掉了 —— 用户只是想调暗一点，
+//   颜色却整个跳了（用户 2026-09-26 报的正是这个：「内层选的时候
+//   如果鼠标拖到外部了会误触到色环」）。
+WheelPick HitTestColorWheel(const ColorWheelLayout& L, POINT pt, const HsvColor& cur,
+                            WheelHit forTarget = WheelHit::None);
 
 // 色相 -> 环上一点（画标记用）。r 是标记所在的半径。
 POINT HuePointOnRing(const ColorWheelLayout& L, double hue, int r);
