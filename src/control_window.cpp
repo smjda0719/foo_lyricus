@@ -309,6 +309,38 @@ void DrawSlider(HDC dc, const RECT& r, double ratio, int thickness,
     DeleteObject(kp);
 }
 
+// 垂直滑块：**底部 = 0，顶部 = 1**。
+//
+// 和上面的 DrawSlider 是镜像关系（那个按宽度算、左边 = 0）。刻意没合并成一个
+// 带方向参数的函数 —— 两个方向的比例换算、轨道构造、填充起点全都不一样，
+// 硬合并只会让两边都难读，而它们各自只有十几行。
+void DrawVerticalSlider(HDC dc, const RECT& r, double ratio, int thickness,
+                        COLORREF bg, COLORREF fill) {
+    if (r.bottom <= r.top) return;
+    const int cx = (r.left + r.right) / 2;
+
+    RECT track{ cx - thickness / 2, r.top, cx + thickness / 2, r.bottom };
+    FillRoundRect(dc, track, thickness, bg);
+
+    // 从底部往上填
+    const int fillTop = r.bottom - static_cast<int>((r.bottom - r.top) * ratio);
+    if (fillTop < r.bottom - 1) {
+        RECT fr{ track.left, fillTop, track.right, r.bottom };
+        FillRoundRect(dc, fr, thickness, fill);
+    }
+
+    const int knobR = (r.right - r.left) / 4;
+    HBRUSH kb = CreateSolidBrush(RGB(246, 246, 250));
+    HPEN   kp = CreatePen(PS_SOLID, 1, RGB(246, 246, 250));
+    const HGDIOBJ ob = SelectObject(dc, kb);
+    const HGDIOBJ op = SelectObject(dc, kp);
+    Ellipse(dc, cx - knobR, fillTop - knobR, cx + knobR, fillTop + knobR);
+    SelectObject(dc, ob);
+    SelectObject(dc, op);
+    DeleteObject(kb);
+    DeleteObject(kp);
+}
+
 std::wstring FormatTime(double sec) {
     if (!(sec > 0.0)) sec = 0.0;          // 同时挡住 NaN
     const int total = static_cast<int>(sec);
@@ -708,13 +740,20 @@ LRESULT ControlWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         // 拖拽中：只更新比例，松手才真正 seek / 设音量
         if (m_draggingProgress || m_draggingVolume) {
-            const RECT& r = m_draggingProgress ? m_rcProgress : m_rcVolumeBar;
-            const int w = r.right - r.left;
-            if (w > 0) {
-                const double v = static_cast<double>(pt.x - r.left) / static_cast<double>(w);
-                m_dragRatio = (v < 0.0) ? 0.0 : ((v > 1.0) ? 1.0 : v);
-                RequestRepaint();
+            // ⚠️ 浮层是**垂直**的（底部 = 0、顶部 = 1），横向那两样是左 0 右 1 ——
+            //    方向正好相反，所以按来源分开算，不从矩形形状去反推。
+            const RECT& r = m_draggingProgress ? m_rcProgress
+                          : (m_dragFromPopup ? m_rcVolumePopup : m_rcVolumeBar);
+            double v = 0.0;
+            if (m_draggingVolume && m_dragFromPopup) {
+                const int h = r.bottom - r.top;
+                if (h > 0) v = static_cast<double>(r.bottom - pt.y) / static_cast<double>(h);
+            } else {
+                const int w = r.right - r.left;
+                if (w > 0) v = static_cast<double>(pt.x - r.left) / static_cast<double>(w);
             }
+            m_dragRatio = (v < 0.0) ? 0.0 : ((v > 1.0) ? 1.0 : v);
+            RequestRepaint();
             return 0;
         }
 
@@ -726,13 +765,36 @@ LRESULT ControlWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         EnsureLayout();
         const CtrlId id = HitTestControls(pt, nullptr);
-        SetCursor(LoadCursorW(nullptr, id == CtrlId::None ? IDC_ARROW : IDC_HAND));
-        if (id != m_hot) { m_hot = id; RequestRepaint(); }
+
+        // ---- 音量浮层的展开 / 收起 ----
+        //
+        // 【为什么是悬停而不是点击】点击音量图标已经是静音开关了
+        //（用户 2026-09-26 明确要保留那个入口），悬停展开两者就不打架。
+        //
+        // 【收起条件】鼠标既不压在图标上、也不在浮层里。拖动中永远不收。
+        // ⚠️ 浮层与图标是**零间隙**的（见 control_bar_layout.cpp）——
+        //    正因为那条缝不存在，从图标往上滑才是连续的，
+        //    不会中途收掉再展开（那样会抖得没法用）。
+        const bool overIcon  = (id == CtrlId::VolumeIcon);
+        const bool overPopup = (id == CtrlId::VolumePopup);
+        const bool wantOpen  = overIcon || overPopup || m_draggingVolume;
+        if (wantOpen != m_volumePopupOpen) {
+            m_volumePopupOpen = wantOpen;
+            RequestRepaint();
+        }
+
+        // 鼠标进了浮层之后让图标保持"热" —— 否则图标一熄，看着就像这浮层
+        // 跟它没关系。m_hot 只参与绘制，改它没有副作用。
+        const CtrlId hotId = overPopup ? CtrlId::VolumeIcon : id;
+        SetCursor(LoadCursorW(nullptr, (id == CtrlId::None) ? IDC_ARROW : IDC_HAND));
+        if (hotId != m_hot) { m_hot = hotId; RequestRepaint(); }
         return 0;
     }
 
     case WM_MOUSELEAVE:
         if (m_hot != CtrlId::None) { m_hot = CtrlId::None; RequestRepaint(); }
+        // 鼠标离开整个窗口了，浮层没有理由继续开着
+        if (m_volumePopupOpen) { m_volumePopupOpen = false; RequestRepaint(); }
         return 0;
 
     case WM_LBUTTONDOWN: {
@@ -743,8 +805,9 @@ LRESULT ControlWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (id == CtrlId::None) break;   // 空白处：交给默认处理，走拖动窗口
 
         m_active = id;
-        if (id == CtrlId::Progress)  { m_draggingProgress = true; m_dragRatio = ratio; }
-        if (id == CtrlId::VolumeBar) { m_draggingVolume   = true; m_dragRatio = ratio; }
+        if (id == CtrlId::Progress)    { m_draggingProgress = true; m_dragFromPopup = false; m_dragRatio = ratio; }
+        if (id == CtrlId::VolumeBar)   { m_draggingVolume   = true; m_dragFromPopup = false; m_dragRatio = ratio; }
+        if (id == CtrlId::VolumePopup) { m_draggingVolume   = true; m_dragFromPopup = true;  m_dragRatio = ratio; }
         SetCapture(hwnd);
         RequestRepaint();
         return 0;
@@ -757,13 +820,17 @@ LRESULT ControlWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         const CtrlId id    = m_active;
         const bool   wasP  = m_draggingProgress;
         const bool   wasV  = m_draggingVolume;
+        const bool   fromPop = m_dragFromPopup;
         const double ratio = m_dragRatio;
 
         m_active           = CtrlId::None;
         m_draggingProgress = false;
         m_draggingVolume   = false;
+        m_dragFromPopup    = false;
 
+        // 松手才真正落音量 —— 拖动期间只改 m_dragRatio（和进度条同一个套路）
         if (wasP)                    ActivateControl(CtrlId::Progress,  ratio);
+        else if (wasV && fromPop)    ActivateControl(CtrlId::VolumePopup, ratio);
         else if (wasV)               ActivateControl(CtrlId::VolumeBar, ratio);
         else if (id != CtrlId::None) ActivateControl(id, ratio);
         return 0;
@@ -1309,6 +1376,12 @@ void ControlWindow::LayoutControls(const RECT& rc, int dpi) {
     m_rcVolumeIcon = r.volumeIcon;
     m_rcVolumeBar  = r.volumeBar;
     m_ctrlBarTop   = r.barTop;
+
+    // 音量浮层（悬停下拉的垂直滑块）。同时维护展开状态：
+    // 浮层没了（面板被拉宽、或变得太矮）就顺手收起，否则会留下一个
+    // "状态是开着、却画不出东西"的悬空值。
+    m_rcVolumePopup = r.volumePopup;
+    if (m_rcVolumePopup.right <= m_rcVolumePopup.left) m_volumePopupOpen = false;
 }
 
 ControlWindow::CtrlId ControlWindow::HitTestControls(POINT pt, double* ratioOut) const {
@@ -1324,6 +1397,24 @@ ControlWindow::CtrlId ControlWindow::HitTestControls(POINT pt, double* ratioOut)
         const double v = static_cast<double>(pt.x - r.left) / static_cast<double>(w);
         return (v < 0.0) ? 0.0 : ((v > 1.0) ? 1.0 : v);
     };
+
+    // ---- 音量浮层最先判 ----
+    //
+    // 它**盖在**歌词和其它控件上面，所以必须排在所有命中之前；
+    // 而且它的 ratio 是**垂直**的（底部 = 0，顶部 = 1），
+    // 和横向那套「左边 = 0」相反 —— 这里单独算，不复用 ratioOf。
+    if (m_volumePopupOpen && inside(m_rcVolumePopup)) {
+        if (ratioOut != nullptr) {
+            const int h = m_rcVolumePopup.bottom - m_rcVolumePopup.top;
+            double v = (h > 0)
+                     ? static_cast<double>(m_rcVolumePopup.bottom - pt.y) / static_cast<double>(h)
+                     : 0.0;
+            if (v < 0.0) v = 0.0;
+            if (v > 1.0) v = 1.0;
+            *ratioOut = v;
+        }
+        return CtrlId::VolumePopup;
+    }
 
     if (inside(m_rcPrev))       return CtrlId::Prev;
     if (inside(m_rcPlayPause))  return CtrlId::PlayPause;
@@ -1345,8 +1436,12 @@ void ControlWindow::ActivateControl(CtrlId id, double ratio) {
     case CtrlId::VolumeIcon: pc->volume_mute_toggle(); break;
 
     case CtrlId::VolumeBar:
+    case CtrlId::VolumePopup:
         // 【注意】playback_control 的音量单位是 dB，0 表示满音量（不是 0..100）。
         // 把滑条 0..1 映射到 [-40dB, 0dB]，-40dB 近似当静音用。
+        //
+        // 横向条和悬停浮层共用这一条映射 —— 两者给的都是 0..1 的**音量比例**，
+        // 区别只在拖动方向与画法，换算到 dB 这一步没有任何不同。
         pc->set_volume(static_cast<float>(-40.0 * (1.0 - ratio)));
         break;
 
@@ -1448,6 +1543,27 @@ void ControlWindow::DrawControls(HDC dc, int dpi) {
         if (v < 0.0) v = 0.0;
         if (v > 1.0) v = 1.0;
         DrawSlider(dc, m_rcVolumeBar, v, S(4), RGB(74, 74, 82), RGB(206, 210, 220));
+    }
+
+    // ---- 音量浮层（悬停展开的垂直滑块）----
+    //
+    // 画在**最后**：它盖在歌词之上（面板里除了控制条，就属它最靠前）。
+    //
+    // 它的存在条件是"横向条被降级掉了" —— 两者不会同时出现，
+    // 所以用户在任何一个宽度下都恰好有一个音量控件可用。
+    if (m_volumePopupOpen && m_rcVolumePopup.right > m_rcVolumePopup.left) {
+        // 底板：比面板深一档的圆角块，让它从歌词背景里浮出来
+        FillRoundRect(dc, m_rcVolumePopup, S(10), RGB(44, 46, 54));
+
+        // 轨道两侧留内边距，别贴着底板边缘
+        RECT track = m_rcVolumePopup;
+        InflateRect(&track, -S(9), -S(10));
+
+        double v = 1.0 + static_cast<double>(st.VolumeDb()) / 40.0;
+        if (m_draggingVolume && m_dragFromPopup) v = m_dragRatio;
+        if (v < 0.0) v = 0.0;
+        if (v > 1.0) v = 1.0;
+        DrawVerticalSlider(dc, track, v, S(4), RGB(74, 74, 82), RGB(206, 210, 220));
     }
 
     // fSmall 归字体缓存所有，这里不删 —— 见 GetCachedUiFont 的说明。

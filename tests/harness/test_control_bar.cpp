@@ -200,6 +200,53 @@ void TestBarTop() {
     Check(r.barTop < 150, "barTop 落在客户区内");
 }
 
+// ---------------------------------------------------------------------------
+// 「下拉」音量浮层（鼠标悬停展开的垂直滑块）
+// ---------------------------------------------------------------------------
+void TestVolumePopup() {
+    std::printf("\n== 音量浮层（悬停下拉）==\n");
+
+    // 宽面板：横向条还在，不该有浮层 —— 两个音量控件同时可见会让人不知道拖哪个
+    const auto wide = Layout(700, 96);
+    Check(!IsEmpty(wide.volumeBar), "宽面板：横向音量条在");
+    Check(IsEmpty(wide.volumePopup), "★ 宽面板不给浮层（横条就够用）");
+
+    // 窄面板：横条被降级 -> 浮层顶上
+    const auto narrow = Layout(340, 96);
+    Check(IsEmpty(narrow.volumeBar), "340 逻辑像素：横向条已让位");
+    Check(!IsEmpty(narrow.volumePopup), "★ 这时浮层必须顶上 —— 音量功能不能就这么没了");
+
+    // ★ 零间隙：鼠标从图标往上滑要能无缝进入浮层
+    Check(narrow.volumePopup.bottom == narrow.volumeIcon.top,
+          "★ 浮层底边紧贴图标顶边（零间隙）—— 留缝会让它在鼠标经过时反复收放");
+
+    // 水平居中于音量图标（允许 1 像素取整误差）
+    const int iconCx = (narrow.volumeIcon.left + narrow.volumeIcon.right) / 2;
+    const int popCx  = (narrow.volumePopup.left + narrow.volumePopup.right) / 2;
+    const int dx     = (popCx > iconCx) ? (popCx - iconCx) : (iconCx - popCx);
+    Check(dx <= 1, "浮层水平居中于音量图标");
+
+    // 面板太矮时宁可不给
+    Check(!IsEmpty(Layout(340, 96, 200).volumePopup), "面板够高（200）时浮层有充足空间");
+    Check(IsEmpty(Layout(340, 96, 80).volumePopup),
+          "★ 面板太矮（80 逻辑像素）时不给浮层 —— 半截滑块比没有更糟");
+
+    // 全宽度扫描：浮层一旦存在就必须在客户区内，且贴合图标
+    int stray = 0, gapped = 0;
+    for (int dpi : kTwoDpis) {
+        for (int w = 320; w <= 1600; w += 4) {
+            const RECT rc = Rc(MulDiv(w, dpi, 96), MulDiv(150, dpi, 96));
+            const auto r = lyricus::ComputeControlBarLayout(rc, dpi);
+            if (IsEmpty(r.volumePopup)) continue;
+            if (r.volumePopup.left < rc.left || r.volumePopup.right > rc.right ||
+                r.volumePopup.top  < rc.top  || r.volumePopup.bottom > rc.bottom) ++stray;
+            if (r.volumePopup.bottom != r.volumeIcon.top) ++gapped;
+        }
+    }
+    Check(stray == 0,  "★ 任何宽度下浮层都不越出客户区");
+    Check(gapped == 0, "★ 任何宽度下浮层与图标都是零间隙");
+}
+
 } // namespace
 
 int main() {
@@ -209,6 +256,7 @@ int main() {
     TestProgressNeverVanishesAcrossRange();
     TestNoOverlapNoOverflow();
     TestEmptyRectConvention();
+    TestVolumePopup();
     TestDpiScaling();
     TestBarTop();
     std::printf("\n----------------------------------------\n");

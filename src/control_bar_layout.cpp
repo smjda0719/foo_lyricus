@@ -15,6 +15,8 @@ namespace {
 // 逻辑像素 -> 物理像素。写成自由函数而不是 lambda：本文件里每一处都要用它。
 int S(int dpi, int v) { return MulDiv(v, dpi, 96); }
 
+bool IsEmpty(const RECT& r) { return r.right <= r.left || r.bottom <= r.top; }
+
 } // namespace
 
 ControlBarRects ComputeControlBarLayout(const RECT& rc, int dpi) {
@@ -87,6 +89,37 @@ ControlBarRects ComputeControlBarLayout(const RECT& rc, int dpi) {
     const int progL = leftEnd + gap;
     if (r > progL) {
         out.progress = RECT{ progL, top + S(dpi, 9), r, top + btn - S(dpi, 9) };
+    }
+
+    // ---- 「下拉」音量浮层 ----
+    //
+    // 【什么时候才给】只在**横向音量条被降级掉**的时候。宽面板上横条就在那儿，
+    // 再弹一个浮层是多余的，而且两个音量控件同时可见会让人不知道该拖哪个。
+    //
+    // 【★ 为什么底边紧贴图标上边、一点缝都不留】鼠标从音量图标往上移到浮层，
+    // 中间要是存在一条"既不在图标里、也不在浮层里"的带子，收起逻辑就会在那条
+    // 带子上把浮层收掉，下一帧鼠标进了浮层又重新展开 —— 浮层会抖，根本没法用。
+    // 零间隙是功能性的，不是审美（test_control_bar.cpp 里有断言钉着）。
+    if (!showVolBar && !IsEmpty(out.volumeIcon)) {
+        const int popupW = S(dpi, 30);
+        const int popupH = S(dpi, 96);
+        const int cx     = (out.volumeIcon.left + out.volumeIcon.right) / 2;
+
+        int left  = cx - popupW / 2;
+        int right = left + popupW;
+        // 贴住面板左右边界，别探出去
+        if (left < rc.left)   { left  = rc.left;   right = left + popupW; }
+        if (right > rc.right) { right = rc.right;  left  = right - popupW; }
+
+        // 底边 = 图标顶边（零间隙），往上长
+        const int bottom = out.volumeIcon.top;
+        int       topY   = bottom - popupH;
+        if (topY < rc.top) topY = rc.top;      // 顶到面板上沿就截断
+
+        // 太矮就不给 —— 半截滑块比没有更糟（拖不准，还挡歌词）
+        if (bottom - topY >= S(dpi, 48)) {
+            out.volumePopup = RECT{ left, topY, right, bottom };
+        }
     }
 
     return out;

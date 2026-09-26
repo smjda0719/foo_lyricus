@@ -60,7 +60,13 @@ private:
     void RequestRepaint();
 
     // ---- 控制条（M2）----
-    enum class CtrlId { None, Prev, PlayPause, Next, Progress, VolumeIcon, VolumeBar };
+    //
+    // VolumePopup 是「横向音量条被降级掉之后，鼠标悬停在音量图标上」展开的
+    // **垂直**滑块。它和 VolumeIcon 是两个不同的命中目标：
+    //   * 悬停图标 -> 展开浮层（不改变任何状态）
+    //   * 点击图标 -> 静音开关（原有行为，用户 2026-09-26 明确要保留）
+    // 悬停与点击用同一个图标但不打架，这是当初选悬停而非点击展开的原因。
+    enum class CtrlId { None, Prev, PlayPause, Next, Progress, VolumeIcon, VolumeBar, VolumePopup };
 
     void   EnsureLayout();                       // 按当前客户区尺寸重算控件矩形
     void   LayoutControls(const RECT& rc, int dpi);
@@ -74,11 +80,16 @@ private:
     std::wstring IconPath(const wchar_t* name) const;
 
     RECT   m_rcPrev{}, m_rcPlayPause{}, m_rcNext{}, m_rcProgress{}, m_rcTime{},
-           m_rcVolumeIcon{}, m_rcVolumeBar{};
+           m_rcVolumeIcon{}, m_rcVolumeBar{}, m_rcVolumePopup{};
     CtrlId m_hot    = CtrlId::None;   // 鼠标悬停
     CtrlId m_active = CtrlId::None;   // 鼠标按下
     bool   m_draggingProgress = false;
     bool   m_draggingVolume   = false;
+    // 这一轮音量拖拽是在**浮层**上进行的（垂直方向）还是横向条上（水平方向）。
+    // 两者的 ratio 换算方向相反 —— 用矩形反推容易出错，索性显式记一笔。
+    bool   m_dragFromPopup    = false;
+    // 浮层当前是否展开。悬停展开、移开收起，状态由 WM_MOUSEMOVE 维护。
+    bool   m_volumePopupOpen  = false;
     double m_dragRatio        = 0.0;
     int    m_ctrlBarTop       = 0;    // 控制条上沿 = 歌词区的下界
 
