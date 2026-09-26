@@ -26,7 +26,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('all', 'search', 'lyric', 'order', 'online', 'view', 'cbar', 'prefs', 'wheel', 'hint', 'preset', 'bench')] [string]$Suite = 'all'
+    [ValidateSet('all', 'search', 'lyric', 'order', 'online', 'view', 'cbar', 'prefs', 'wheel', 'hint', 'preset', 'bg', 'bench')] [string]$Suite = 'all'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -79,6 +79,7 @@ $suites = @(
     # 外观预设：文本表解析、增删改、单条导入导出。难点全在**容错**上 ——
     # 缺字段、多字段、坏值、BOM、CRLF、前后空行，这些在界面上试不出来。
     @{ key='preset'; name='外观预设';      compile=@('test_preset.cpp','preset.cpp','lyric.cpp'); extra=@('preset.h'); shims=@(); libs='' },
+    @{ key='bg';     name='面板背景图';    compile=@('test_bg.cpp','bg_math.cpp');            extra=@('bg_math.h'); shims=@(); libs='' },
     # bench 不是测试，是**基准**：它只打印耗时，不判通过与否。
     # 所以默认的 all 会跳过它（不能让"性能数字"影响单测的通过/失败），
     # 要用就显式 -Suite bench。
@@ -92,7 +93,7 @@ $suites = @(
 #    include 了 preset.h（D-088），而 search / online 那两个组只用
 #    config.h，于是它们会因为找不到 preset.h 而 C1083。
 #    所以：**给 config.h 加新 include 时，记得回来看看这里**。
-$headers = @('config.h', 'preset.h', 'lyric.h', 'lyric_search.h', 'debug_log.h')
+$headers = @('config.h', 'preset.h', 'lyric.h', 'lyric_search.h', 'debug_log.h', 'bg_math.h')
 
 $totalPass = 0
 $totalFail = 0
@@ -147,7 +148,9 @@ foreach ($s in $suites) {
     & cmd.exe /c $cmd | Out-Null
     if ($LASTEXITCODE -ne 0) {
         Write-Host '  编译失败 —— 重新单独编一次看错误：' -ForegroundColor Red
-        & cmd.exe /c $cmd
+        # ⚠️ 必须 2>&1：cl.exe 的错误走 stderr，不重定向的话这里一片空白，
+        #    只剩一句"看错误"却看不到任何错误（踩过一次）。
+        & cmd.exe /c $cmd 2>&1 | ForEach-Object { Write-Host "    $_" }
         $failedSuites += $s.name
         continue
     }
