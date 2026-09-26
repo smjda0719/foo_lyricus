@@ -73,6 +73,20 @@ constexpr int kHitNone    = -1;
 constexpr int kHitSlider  = -2;
 constexpr int kHitReset   = -3;
 constexpr int kHitFontBtn = -4;
+// ---- 外观预设（D-088）----
+constexpr int kHitPresetCombo  = -5;
+constexpr int kHitPresetSave   = -6;
+constexpr int kHitPresetDelete = -7;
+constexpr int kHitPresetImport = -8;
+constexpr int kHitPresetExport = -9;
+
+// 布局判定"这块地方画不下"时返回的是空矩形，逐项判空后跳过即可。
+//
+// ⚠️ 它原本是 DrawPage 里的一个**局部 lambda**。加 DrawPresetArea 时才发现
+//    那种写法只有那一个函数能用，于是第二个绘制函数只好自己再判一遍 ——
+//    而"漏判"的表现是某个控件在窄窗口下画到客户区外面去，糊在别的控件上。
+//    提到文件作用域，所有绘制函数共用同一份判断。
+bool empty(const RECT& r) { return r.right <= r.left || r.bottom <= r.top; }
 
 class CLyricusPrefsDlg : public CDialogImpl<CLyricusPrefsDlg>,
                          public preferences_page_instance {
@@ -146,6 +160,26 @@ private:
                     const PrefsTheme& T, bool leftAlign);
     void DrawResetButton(HDC dc, const RECT& r);
     void DrawFontButton(HDC dc, const RECT& r);
+    void DrawPresetArea(HDC dc, const PrefsLayout& L);
+
+    // ---- 外观预设的动作 ----
+    // 全是**立刻生效**的，不走"应用 / 取消"：切一套配色就是要马上看到效果，
+    // 再让他点一次应用没有意义（和色块那种"先在界面上试"不是一回事）。
+    void OnPresetCombo();          // 弹菜单：选一套 / 另存为新预设
+    void OnPresetSaveCurrent();    // 把当前外观覆盖进选中的预设
+    void OnPresetDelete();         // 删掉选中的（内置的 = 恢复内置默认）
+    void OnPresetImport();         // 从文件读一套进来
+    void OnPresetExport();         // 把选中的写出去（分享 / 备份）
+
+    // 把"当前的外观"采集出来。界面上正在编辑的颜色 + 正在编辑的字体，
+    // 再加上**不在这一页上**的两项（字号、通透度）—— 后两者从配置读，
+    // 因为"保存当前外观"的语义就是"保存现在的实际状态"。
+    AppearancePreset SnapshotAppearance(const std::wstring& name) const;
+
+    // 选中的预设名。空 = 还没挑过，界面上显示成「（未选择）」。
+    // ⚠️ 它**不是配置项**：没有"当前预设"这个东西要持久化 ——
+    //    应用过的值已经在各项设置里了，这个字符串只决定按钮上写什么。
+    std::wstring m_presetName;
 
     void SetAlphaFromSliderX(int x);
 
@@ -220,6 +254,12 @@ int CLyricusPrefsDlg::HitTest(POINT pt) const {
     if (inside(L.slider)) return kHitSlider;
     if (inside(L.reset))  return kHitReset;
     if (inside(L.fontBtn)) return kHitFontBtn;
+    // ---- 外观预设（D-088）----
+    if (inside(L.presetCombo))  return kHitPresetCombo;
+    if (inside(L.presetSave))   return kHitPresetSave;
+    if (inside(L.presetDelete)) return kHitPresetDelete;
+    if (inside(L.presetImport)) return kHitPresetImport;
+    if (inside(L.presetExport)) return kHitPresetExport;
     return kHitNone;
 }
 
@@ -279,8 +319,7 @@ void CLyricusPrefsDlg::DrawPage(HDC dc, const RECT& rc, const PrefsLayout& L,
     FillRect(dc, &rc, bg);
     DeleteObject(bg);
 
-    // 布局判定"这块地方画不下"时返回的是空矩形，逐项判空后跳过即可。
-    auto empty = [](const RECT& r) { return r.right <= r.left || r.bottom <= r.top; };
+    // 逐项判空后跳过 —— empty() 现在是文件作用域的共用函数（见开头的说明）。
 
     // ---- 分组标题 ----
     DrawTextIn(dc, L.titleColors, L"浮动面板配色", T.text, m_fontBold,
@@ -313,6 +352,7 @@ void CLyricusPrefsDlg::DrawPage(HDC dc, const RECT& rc, const PrefsLayout& L,
     // ---- 按钮 ----
     if (!empty(L.reset)) DrawResetButton(dc, L.reset);
     if (!empty(L.fontBtn)) DrawFontButton(dc, L.fontBtn);
+    DrawPresetArea(dc, L);
 }
 
 void CLyricusPrefsDlg::DrawColorCard(HDC dc, const RECT& card, int index) {
@@ -424,8 +464,7 @@ void CLyricusPrefsDlg::DrawResetButton(HDC dc, const RECT& r) {
     DrawButton(dc, r, L"恢复默认", kHitReset, CurrentTheme(), false);
 }
 
-void CLyricusPrefsDlg::DrawFontButton(HDC dc, const RECT& r) {
-    // 显示**正在编辑**的字体，不是已落盘的那个 —— 和色块画 m_edited 一致。
+void CLyricusPrefsDlg::DrawFontButton(HDC dc, const RECT& r) {    // 显示**正在编辑**的字体，不是已落盘的那个 —— 和色块画 m_edited 一致。
     // 用配置里的值的话，用户选完字体按钮上还是旧名字，看着像没反应。
     std::wstring label = L"字体：";
     if (m_editedFontFace.empty()) {
@@ -434,6 +473,61 @@ void CLyricusPrefsDlg::DrawFontButton(HDC dc, const RECT& r) {
         label += Utf8ToWide(m_editedFontFace.c_str());
     }
     DrawButton(dc, r, label.c_str(), kHitFontBtn, CurrentTheme(), true);
+}
+
+// 外观预设区：标题 + 下拉框 + 四个按钮。
+//
+// 【为什么下拉用系统菜单而不是自绘列表】自绘列表要就地展开，而这一页只有
+// 424 逻辑像素高 —— 列表必然盖住下面几行控件，于是要么被客户区裁掉，
+// 要么得再开一个弹窗去处理失焦 / 滚动 / 键盘 / 点到外面关闭。
+// TrackPopupMenu 这几件事全是现成的，而且位置它自己会算。
+void CLyricusPrefsDlg::DrawPresetArea(HDC dc, const PrefsLayout& L) {
+    if (empty(L.titlePreset) && empty(L.presetCombo)) return;   // 整体降级了
+
+    const PrefsTheme& T = CurrentTheme();
+    const int r4 = MulDiv(4, L.dpi, 96);
+
+    if (!empty(L.titlePreset)) {
+        DrawTextIn(dc, L.titlePreset, L"外观预设", T.text, m_fontBold,
+                   DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    }
+
+    if (!empty(L.presetCombo)) {
+        const bool hot = (m_hot == kHitPresetCombo);
+        FillRoundRect(dc, L.presetCombo, r4, hot ? T.cardHot : T.cardBg);
+        StrokeRoundRect(dc, L.presetCombo, r4, 1, T.border);
+
+        RECT textRc = L.presetCombo;
+        textRc.left  += MulDiv(8,  L.dpi, 96);
+        textRc.right -= MulDiv(22, L.dpi, 96);      // 给 ▼ 留位置
+
+        // 没选过时显示成**暗色**的提示语 —— 用 textDim 而不是 text，
+        // 这样"这是一句说明"和"这是一个预设名"一眼能分开。
+        const bool hasSel = !m_presetName.empty();
+        DrawTextIn(dc, textRc, hasSel ? m_presetName.c_str() : L"（未选择）",
+                   hasSel ? T.text : T.textDim, m_fontBody,
+                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+        // ▼ 实心三角，贴在右边
+        const int cx = L.presetCombo.right - MulDiv(13, L.dpi, 96);
+        const int cy = (L.presetCombo.top + L.presetCombo.bottom) / 2;
+        const int hw = MulDiv(4, L.dpi, 96);
+        const int hh = MulDiv(3, L.dpi, 96);
+        POINT tri[3] = { { cx - hw, cy - hh }, { cx + hw, cy - hh }, { cx, cy + hh } };
+
+        HBRUSH br = CreateSolidBrush(T.textDim);
+        HGDIOBJ oldBr  = SelectObject(dc, br);
+        HGDIOBJ oldPen = SelectObject(dc, GetStockObject(NULL_PEN));
+        Polygon(dc, tri, 3);
+        SelectObject(dc, oldPen);
+        SelectObject(dc, oldBr);
+        DeleteObject(br);
+    }
+
+    if (!empty(L.presetSave))   DrawButton(dc, L.presetSave,   L"保存", kHitPresetSave,   T, false);
+    if (!empty(L.presetDelete)) DrawButton(dc, L.presetDelete, L"删除", kHitPresetDelete, T, false);
+    if (!empty(L.presetImport)) DrawButton(dc, L.presetImport, L"导入", kHitPresetImport, T, false);
+    if (!empty(L.presetExport)) DrawButton(dc, L.presetExport, L"导出", kHitPresetExport, T, false);
 }
 
 // ---------------------------------------------------------------------------
@@ -499,6 +593,15 @@ void CLyricusPrefsDlg::OnLButtonUp(UINT /*flags*/, CPoint pt) {
         return;
     }
 
+    // ---- 外观预设（D-088）----
+    // 这几条**立刻生效**，不走"应用 / 取消"：切一套配色就是要马上看到效果。
+    // 和色块那种"先在界面上试、点应用才落地"不是一回事。
+    if (hit == kHitPresetCombo)  { OnPresetCombo();         Repaint(); return; }
+    if (hit == kHitPresetSave)   { OnPresetSaveCurrent();   Repaint(); return; }
+    if (hit == kHitPresetDelete) { OnPresetDelete();        Repaint(); return; }
+    if (hit == kHitPresetImport) { OnPresetImport();        Repaint(); return; }
+    if (hit == kHitPresetExport) { OnPresetExport();        Repaint(); return; }
+
     if (hit >= 0 && hit < kPrefsColorCount) {
         COLORREF* p = &(m_edited.*(kColorSlots[hit].member));
         if (PickColor(*p)) {
@@ -511,8 +614,234 @@ void CLyricusPrefsDlg::OnLButtonUp(UINT /*flags*/, CPoint pt) {
     if (wasDrag) Repaint();
 }
 
-void CLyricusPrefsDlg::SetAlphaFromSliderX(int x) {
+// ---------------------------------------------------------------------------
+// 外观预设的动作（D-088）
+// ---------------------------------------------------------------------------
+
+AppearancePreset CLyricusPrefsDlg::SnapshotAppearance(const std::wstring& name) const {
+    AppearancePreset p;
+    p.name    = name;
+    p.header  = m_edited.header;
+    p.current = m_edited.current;
+    p.normal  = m_edited.normal;
+    p.dim     = m_edited.dim;
+    p.warn    = m_edited.warn;
+    p.bg      = m_edited.bg;
+    p.alpha   = m_edited.alpha;
+    p.fontFace = m_editedFontFace;
+    // 这两项不在本页上，从配置读当前值
+    p.fontPct      = GetLyricDisplayConfig().fontPct;
+    p.backdropMode = static_cast<int>(cfg_backdrop_mode.get());
+    return p;
+}
+
+void CLyricusPrefsDlg::OnPresetCombo() {
+    const auto presets = GetAppearancePresets();
+
+    HMENU menu = CreatePopupMenu();
+    if (menu == nullptr) return;
+
+    // id 从 1 起：`TrackPopupMenu` 返回 0 表示"用户点到外面关掉了"。
+    const UINT kIdBase = 1;
+    const UINT kIdNew  = kIdBase + static_cast<UINT>(presets.size());
+
+    for (size_t i = 0; i < presets.size(); ++i) {
+        UINT flags = MF_STRING;
+        if (presets[i].name == m_presetName) flags |= MF_CHECKED;
+        AppendMenuW(menu, flags, kIdBase + static_cast<UINT>(i), presets[i].name.c_str());
+    }
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, kIdNew, L"另存为新预设");
+
     const PrefsLayout L = CurrentLayout();
+    POINT pt{ L.presetCombo.left, L.presetCombo.bottom };
+
+    const UINT cmd = TrackPopupMenu(menu,
+                                    TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN,
+                                    pt.x, pt.y, 0, m_hWnd, nullptr);
+    DestroyMenu(menu);
+
+    if (cmd == 0) return;      // 点到外面
+
+    if (cmd == kIdNew) {
+        // 自动起一个不重名的名字。
+        //
+        // 【为什么不弹输入框】Win32 没有现成的 InputBox，为它动态造一个对话框
+        // 的代价远大于收益。名字本来就能靠"导出 → 改 → 导入"来定，
+        // 而那条路还顺带支持了分享 —— 所以这里选自动命名。
+        for (int n = 2; n < 1000; ++n) {
+            wchar_t buf[64];
+            swprintf_s(buf, L"预设 %d", n);
+            if (FindPreset(presets, buf) == nullptr) { m_presetName = buf; break; }
+        }
+        SaveAppearancePreset(m_presetName, SnapshotAppearance(m_presetName));
+        return;
+    }
+
+    const size_t idx = static_cast<size_t>(cmd - kIdBase);
+    if (idx >= presets.size()) return;
+
+    m_presetName = presets[idx].name;
+    ApplyAppearancePreset(presets[idx]);
+
+    // ★ 应用之后要让**界面上"正在编辑"的那份**跟上，否则色块还画着旧颜色、
+    //   而面板已经变了 —— 看起来像"点了没生效"。
+    m_edited          = GetPanelAppearance();
+    m_applied         = m_edited;
+    m_editedFontFace  = GetLyricDisplayConfig().fontFace;
+    m_appliedFontFace = m_editedFontFace;
+    NotifyChanged();
+}
+
+void CLyricusPrefsDlg::OnPresetSaveCurrent() {
+    if (m_presetName.empty()) {
+        ::MessageBoxW(m_hWnd,
+            L"先在左边的下拉里选一套预设。\n\n"
+            L"「保存」是**覆盖**选中的那一套；要新建请用下拉菜单里的"
+            L"「另存为新预设」。",
+            L"Lyricus", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    SaveAppearancePreset(m_presetName, SnapshotAppearance(m_presetName));
+}
+
+void CLyricusPrefsDlg::OnPresetDelete() {
+    if (m_presetName.empty()) {
+        ::MessageBoxW(m_hWnd, L"先在左边的下拉里选一套预设。",
+                    L"Lyricus", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    const bool builtin = IsBuiltinPresetName(m_presetName);
+
+    // ★ 删不掉就**如实说明**，不要假装成功。
+    //   内置那几套没有落盘，所以对它们必然删不动 —— 但提示里要讲清
+    //   "什么情况下才有东西可删"，否则用户会以为这个按钮坏了。
+    if (!DeleteAppearancePreset(m_presetName)) {
+        wchar_t buf[512];
+        swprintf_s(buf,
+            L"「%s」是内置预设，而且你没有覆盖过它，所以没有东西可删。\n\n"
+            L"如果你改过它并点过「保存」，那时才有一份属于你的副本 —— "
+            L"删掉那份就会回到内置的样子。",
+            m_presetName.c_str());
+        ::MessageBoxW(m_hWnd, buf, L"Lyricus", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    wchar_t buf[256];
+    swprintf_s(buf, builtin
+        ? L"已删掉你对「%s」的改动，恢复成内置的那一份。"
+        : L"已删除预设「%s」。", m_presetName.c_str());
+    DebugLog("外观预设：%s", WideToUtf8(buf).c_str());
+}
+
+void CLyricusPrefsDlg::OnPresetImport() {
+    wchar_t path[MAX_PATH] = L"";
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner   = m_hWnd;
+    ofn.lpstrFilter = L"Lyricus 预设 (*.txt)\0*.txt\0所有文件 (*.*)\0*.*\0";
+    ofn.lpstrFile   = path;
+    ofn.nMaxFile    = MAX_PATH;
+    ofn.lpstrTitle  = L"导入外观预设";
+    ofn.Flags       = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+    if (!GetOpenFileNameW(&ofn)) return;      // 用户取消
+
+    HANDLE h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, nullptr,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        ::MessageBoxW(m_hWnd, L"打不开这个文件。", L"Lyricus", MB_OK | MB_ICONWARNING);
+        return;
+    }
+
+    std::string text;
+    char buf[4096];
+    DWORD got = 0;
+    // 预设就是一行，但别人可能存成了带说明的文本 —— 读到一个上限就够，
+    // 避免有人误选了一个几百 MB 的文件把内存吃光。
+    constexpr DWORD kMaxRead = 64 * 1024;
+    while (text.size() < kMaxRead && ReadFile(h, buf, sizeof(buf), &got, nullptr) && got > 0) {
+        text.append(buf, got);
+    }
+    CloseHandle(h);
+
+    AppearancePreset p;
+    if (!ImportPreset(text, p)) {
+        ::MessageBoxW(m_hWnd,
+            L"这个文件里没有可识别的预设。\n\n"
+            L"预设文件应该长这样（名字、TAB、然后一串 key=value）：\n"
+            L"我的配色\tbg=1C1C1E;current=FFFFFF;alpha=215;fontPct=100;backdrop=4",
+            L"Lyricus", MB_OK | MB_ICONWARNING);
+        return;
+    }
+
+    // 导入的这条**直接存下来并选中**，不自动应用 —— 用户可能只是想收着，
+    // 不想现在的画面被换掉。
+    m_presetName = p.name;
+    SaveAppearancePreset(p.name, p);
+
+    wchar_t msg[256];
+    swprintf_s(msg, L"已导入「%s」。\n\n它现在是选中状态，但**没有**自动应用 ——"
+                    L"想用就再点一次下拉里的它。", p.name.c_str());
+    ::MessageBoxW(m_hWnd, msg, L"Lyricus", MB_OK | MB_ICONINFORMATION);
+}
+
+void CLyricusPrefsDlg::OnPresetExport() {
+    if (m_presetName.empty()) {
+        ::MessageBoxW(m_hWnd, L"先在左边的下拉里选一套预设。",
+                    L"Lyricus", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    const auto presets = GetAppearancePresets();
+    const AppearancePreset* p = FindPreset(presets, m_presetName);
+    if (p == nullptr) return;
+
+    wchar_t path[MAX_PATH] = L"";
+    // 用预设名做默认文件名，导出多个时不用自己想名字。
+    // ⚠️ 名字里的 \ / : 等字符不能进文件名，先换掉。
+    std::wstring safe = m_presetName;
+    for (wchar_t& c : safe) {
+        if (c == L'\\' || c == L'/' || c == L':' || c == L'*' ||
+            c == L'?'  || c == L'"' || c == L'<' || c == L'>' || c == L'|') {
+            c = L'_';
+        }
+    }
+    wcsncpy_s(path, safe.c_str(), _TRUNCATE);
+
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner   = m_hWnd;
+    ofn.lpstrFilter = L"文本文件 (*.txt)\0*.txt\0所有文件 (*.*)\0*.*\0";
+    ofn.lpstrFile   = path;
+    ofn.nMaxFile    = MAX_PATH;
+    ofn.lpstrTitle  = L"导出外观预设";
+    ofn.lpstrDefExt = L"txt";
+    ofn.Flags       = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
+    if (!GetSaveFileNameW(&ofn)) return;
+
+    const std::string out = ExportPreset(*p);
+
+    HANDLE h = CreateFileW(path, GENERIC_WRITE, 0, nullptr,
+                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        ::MessageBoxW(m_hWnd, L"写不了这个文件（权限或路径问题）。",
+                    L"Lyricus", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    DWORD written = 0;
+    const BOOL ok = WriteFile(h, out.data(), static_cast<DWORD>(out.size()), &written, nullptr);
+    CloseHandle(h);
+
+    if (!ok || written != out.size()) {
+        ::MessageBoxW(m_hWnd, L"写入没有完成。", L"Lyricus", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    DebugLog("外观预设：已导出「%s」到 %s",
+             WideToUtf8(m_presetName).c_str(), WideToUtf8(path).c_str());
+}
+
+void CLyricusPrefsDlg::SetAlphaFromSliderX(int x) {    const PrefsLayout L = CurrentLayout();
     const int dpi = static_cast<int>(GetDpiForWindowSafe(m_hWnd));
     const int knobR = MulDiv(9, dpi, 96);
     const int left  = L.slider.left + knobR;

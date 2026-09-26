@@ -170,6 +170,43 @@ void SetLyricFontFace(const std::string& faceUtf8) {
 }
 
 // ---------------------------------------------------------------------------
+// 外观预设：应用
+// ---------------------------------------------------------------------------
+
+// 实现放在这里而不是 config.cpp —— 它要碰字体设置（SetLyricFontFace /
+// SetLyricFontPct），那两个是 advconfig，住在 settings.cpp。
+// 声明在 config.h，和 SetLyricFontFace 同一套安排。
+void ApplyAppearancePreset(const AppearancePreset& p) {
+    // ---- 六个颜色 + 不透明度 ----
+    PanelAppearance a;
+    a.header  = p.header;
+    a.current = p.current;
+    a.normal  = p.normal;
+    a.dim     = p.dim;
+    a.warn    = p.warn;
+    a.bg      = p.bg;
+    a.alpha   = p.alpha;
+    SetPanelAppearance(a);
+
+    // ---- 字体族与字号 ----
+    // 空串是合法值（= 跟随宿主），照传。
+    SetLyricFontFace(p.fontFace);
+    SetLyricFontPct(p.fontPct);
+
+    // ---- 通透度 ----
+    cfg_backdrop_mode = static_cast<int64_t>(p.backdropMode);
+
+    // ⚠️ 到此为止。**刻意不动**面板位置尺寸（cfg_panel_x/y/w/h）和
+    //    阅读偏好（span / currentRatio / tlPrimary）—— 理由见 preset.h 开头：
+    //    换一套配色不该把窗口挪走，也不该改掉"我在看第几行"。
+    DebugLog("外观预设：已应用「%s」（字号=%d%% 通透度=%d 字体=%s）",
+             WideToUtf8(p.name).c_str(),
+             p.fontPct,
+             p.backdropMode,
+             p.fontFace.empty() ? "(跟随宿主)" : p.fontFace.c_str());
+}
+
+// ---------------------------------------------------------------------------
 // 一次性迁移：currentRatio 的基准从"歌词区"改成"整个面板"。
 //
 // 【为什么必须迁】用户把浮动面板的当前行调到了"刚好"（旧基准下的 60）。

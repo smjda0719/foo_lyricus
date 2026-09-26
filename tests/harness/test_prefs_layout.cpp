@@ -65,6 +65,13 @@ void TestDefaultLayout() {
     Check(!IsEmpty(L.hint),        "底部说明有位置");
     Check(!IsEmpty(L.reset),       "「恢复默认」按钮有位置");
     Check(!IsEmpty(L.fontBtn),     "「字体...」按钮有位置（默认尺寸下放得下）");
+    // ---- 外观预设（D-088）----
+    Check(!IsEmpty(L.titlePreset),  "「外观预设」标题有位置");
+    Check(!IsEmpty(L.presetCombo),  "预设下拉有位置");
+    Check(!IsEmpty(L.presetSave),   "「保存」有位置");
+    Check(!IsEmpty(L.presetDelete), "「删除」有位置");
+    Check(!IsEmpty(L.presetImport), "「导入」有位置");
+    Check(!IsEmpty(L.presetExport), "「导出」有位置");
 }
 
 // ---------------------------------------------------------------------------
@@ -106,6 +113,26 @@ void TestNothingOverlaps() {
                 if (Overlap(L.fontBtn, L.reset))  ++bad;
                 if (Overlap(L.fontBtn, L.slider)) ++bad;
                 if (Overlap(L.fontBtn, L.hint))   ++bad;
+
+                // ---- 外观预设区（D-088）----
+                // 区内两两之间
+                if (Overlap(L.presetCombo,  L.presetSave))    ++bad;
+                if (Overlap(L.presetDelete, L.presetImport))  ++bad;
+                if (Overlap(L.presetDelete, L.presetExport))  ++bad;
+                if (Overlap(L.presetImport, L.presetExport))  ++bad;
+                // 和它上面那一行（滑块）、下面那一行（提示 / 按钮）
+                if (Overlap(L.titlePreset,  L.slider))        ++bad;
+                if (Overlap(L.presetCombo,  L.slider))        ++bad;
+                if (Overlap(L.titlePreset,  L.hint))          ++bad;
+                if (Overlap(L.presetExport, L.hint))          ++bad;
+                if (Overlap(L.presetExport, L.reset))         ++bad;
+                if (Overlap(L.presetExport, L.fontBtn))       ++bad;
+                for (int i = 0; i < lyricus::kPrefsColorCount; ++i) {
+                    if (Overlap(L.presetCombo,  L.cards[i]))      ++bad;
+                    if (Overlap(L.presetCombo,  L.cardLabels[i])) ++bad;
+                    if (Overlap(L.presetExport, L.cards[i]))      ++bad;
+                    if (Overlap(L.presetExport, L.cardLabels[i])) ++bad;
+                }
                 for (int i = 0; i < lyricus::kPrefsColorCount; ++i) {
                     if (Overlap(L.fontBtn, L.cards[i]))      ++bad;
                     if (Overlap(L.fontBtn, L.cardLabels[i])) ++bad;
@@ -137,6 +164,8 @@ void TestInsideClientArea() {
                     L.cards[3], L.cards[4], L.cards[5],
                     L.titleColors, L.titleAlpha, L.alphaValue,
                     L.slider, L.hint, L.reset, L.fontBtn,
+                    L.titlePreset, L.presetCombo, L.presetSave,
+                    L.presetDelete, L.presetImport, L.presetExport,
                 };
                 for (const RECT& r : all) {
                     if (IsEmpty(r)) continue;

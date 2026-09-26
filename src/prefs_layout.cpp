@@ -76,6 +76,38 @@ PrefsLayout ComputePrefsLayout(int width, int height, int dpi) {
     out.slider = RECT{ padX, y, width - padX, y + sliderH };
     y += sliderH + Sx(14);
 
+    // ---- 外观预设（D-088）----
+    //
+    // 放在**主体设置之后、底部按钮之前**。放最后会被切掉：宿主给的区域
+    // 不够高时，最后那几行本来就探出客户区（见下面按钮那段的说明）。
+    const int btnW2 = Sx(88), btnH2 = Sx(26);
+
+    out.titlePreset = RECT{ padX, y, width - padX, y + Sx(14) };
+    y += Sx(14) + Sx(8);
+
+    // 第一行：[当前预设名 v] [保存]
+    // 下拉宽度**吃满剩余空间** —— 预设名是用户自己起的，可能挺长
+    //（「深夜蓝 · 给专辑封面用」），定宽会把它截成一个没用的前缀。
+    const int saveLeft = width - padX - btnW2;
+    const int comboW   = saveLeft - Sx(8) - padX;
+    if (comboW >= Sx(100)) {          // 太窄就不给这一行，绘制侧会跳过
+        out.presetCombo = RECT{ padX, y, padX + comboW, y + btnH2 };
+        out.presetSave  = RECT{ saveLeft, y, saveLeft + btnW2, y + btnH2 };
+    }
+    y += btnH2 + Sx(6);
+
+    // 第二行：删除 / 导入 / 导出。三个等宽按钮，间距一致。
+    const int gap2 = Sx(6);
+    const int rowW = btnW2 * 3 + gap2 * 2;
+    if (rowW <= width - padX * 2) {
+        out.presetDelete = RECT{ padX, y, padX + btnW2, y + btnH2 };
+        out.presetImport = RECT{ out.presetDelete.right + gap2, y,
+                                 out.presetDelete.right + gap2 + btnW2, y + btnH2 };
+        out.presetExport = RECT{ out.presetImport.right + gap2, y,
+                                 out.presetImport.right + gap2 + btnW2, y + btnH2 };
+    }
+    y += btnH2 + Sx(14);
+
     // ---- 底部说明 ----
     out.hint = RECT{ padX, y, width - padX, y + Sx(32) };
     y += Sx(32) + Sx(10);

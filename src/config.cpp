@@ -1,6 +1,11 @@
 #include "stdafx.h"
 #include "config.h"
 
+// 显式包含，不指望 stdafx.h 顺带带上 —— 单测台那边的 shim 没有那份间接包含，
+// 这一点在 lyrics_view.h 上刚吃过一次（C2039，见 D-086）。
+#include "lyric.h"       // WideToUtf8 / Utf8ToWide
+#include "debug_log.h"
+
 namespace lyricus {
 
 const char* BackdropModeName(BackdropMode mode) {
@@ -36,6 +41,12 @@ cfg_var_modern::cfg_string cfg_lyric_offset_map({0x1a7c3e90,0x2b41,0x4c58,{0x9d,
 
 // 在线歌词源的顺序与启用状态（0x3B）。见 config.h 与 source_order.h。
 cfg_var_modern::cfg_string cfg_lyric_source_order({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x3b}}, "");
+
+// 用户存的外观预设。**内置那 4 套不在里面** —— 它们是 BuiltinPresets()
+// 现生成的，不落盘。这样升级版本时内置预设能跟着更新，
+// 而用户改过的同名条目会以"覆盖"的形式存在这张表里。
+// GUID 末字节用 0x3c（0x3b 被源顺序占了，其余到 0x3a 为止都在用）。
+cfg_var_modern::cfg_string cfg_appearance_presets({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x3c}}, "");
 
 // ---- 浮动面板外观（0x30-0x36）------------------------------------------------
 //
@@ -78,6 +89,80 @@ void SetPanelAppearance(const PanelAppearance& a) {
     cfg_app_warn    = static_cast<int64_t>(a.warn);
     cfg_app_bg      = static_cast<int64_t>(a.bg);
     cfg_app_alpha   = ClampAlpha(a.alpha);
+}
+
+// ---------------------------------------------------------------------------
+// 外观预设
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// 用户存的那部分**原始文本**（不含内置的）。解析交给 preset.cpp。
+std::string ReadPresetText() {
+    const pfc::string8 raw = cfg_appearance_presets.get();
+    return std::string(raw.get_ptr(), raw.length());
+}
+
+void WritePresetText(const std::string& text) {
+    cfg_appearance_presets = text.c_str();
+}
+
+} // namespace
+
+std::vector<AppearancePreset> GetAppearancePresets() {
+    std::vector<AppearancePreset> v = BuiltinPresets();
+
+    for (const auto& u : ParsePresets(ReadPresetText())) {
+        // 同名 -> 用户那份**覆盖**内置那份。这样他改完「暗色」存下来，
+        // 下次切到「暗色」就是自己的版本，而不是要另起一个名字。
+        bool replaced = false;
+        for (auto& b : v) {
+            if (b.name == u.name) { b = u; replaced = true; break; }
+        }
+        // 用户自己新增的排在**内置的后面**：内置那 4 套位置固定
+        //（「默认」永远是第一个），用户存的不该插到它们中间去。
+        if (!replaced) v.push_back(u);
+    }
+    return v;
+}
+
+void SaveAppearancePreset(const std::wstring& name, const AppearancePreset& preset) {
+    if (name.empty()) return;
+
+    bool changed = false;
+    const std::string next = ApplyPresetEdit(ReadPresetText(), name, &preset, &changed);
+
+    // ★ 没变化就不写盘。
+    // 这个判断不是省事 —— 重复保存同一个值会让配置无谓地重写一次，
+    // 而歌词线索表那边正是漏了它（重复填同一个歌手会白白作废未命中缓存，见 D-078）。
+    if (!changed) return;
+
+    WritePresetText(next);
+    DebugLog("外观预设：已保存「%s」", WideToUtf8(name).c_str());
+}
+
+bool DeleteAppearancePreset(const std::wstring& name) {
+    if (name.empty()) return false;
+
+    bool changed = false;
+    const std::string next = ApplyPresetEdit(ReadPresetText(), name, nullptr, &changed);
+
+    // ⚠️ 只有**用户存过**的才删得掉 —— 内置那几套没落盘，所以对它们这里
+    //    必然是 false。而"删掉自己的覆盖 = 恢复内置默认"恰恰是这个函数
+    //    最有用的地方，调用方要能区分这两种结果，所以返回 bool。
+    if (!changed) return false;
+
+    WritePresetText(next);
+    DebugLog("外观预设：已删除「%s」（若是内置名字，即恢复成内置默认）",
+             WideToUtf8(name).c_str());
+    return true;
+}
+
+bool IsBuiltinPresetName(const std::wstring& name) {
+    for (const auto& b : BuiltinPresets()) {
+        if (b.name == name) return true;
+    }
+    return false;
 }
 
 } // namespace lyricus

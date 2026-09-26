@@ -27,7 +27,8 @@ constexpr int kPrefsColorCount = 6;
 // 页面的**建议尺寸**（逻辑像素）。对话框资源按它设，宿主给多大就画多大 ——
 // 布局全部按实际客户区算，不假设固定尺寸。
 constexpr int kPrefsWidth96  = 380;
-constexpr int kPrefsHeight96 = 330;
+// 330 -> 424：加了「外观预设」那一区（标题 + 两行控件，见下表）。
+constexpr int kPrefsHeight96 = 424;
 
 // 首选项页上所有需要定位的元素。
 //
@@ -52,6 +53,21 @@ struct PrefsLayout {
     RECT hint{};                        // 底部说明文字
     RECT reset{};                       // "恢复默认"按钮
     RECT fontBtn{};                     // "字体..."按钮（按钮上显示当前字体名）
+
+    // ---- 外观预设（D-088）----
+    //
+    // 排布：标题一行，下面两行控件 ——
+    //     [当前预设名                    v] [保存]
+    //     [删除] [导入] [导出]
+    // 下拉**不用自绘列表**，点击直接弹系统 TrackPopupMenu：自绘列表要么被
+    // 对话框边界裁掉、要么得再开一个弹窗，而菜单是系统给的、位置自己会算。
+    RECT titlePreset{};                 // 小标题：外观预设
+    RECT presetCombo{};                 // 「当前预设名 v」框（点击弹菜单）
+    RECT presetSave{};                  // 保存
+    RECT presetDelete{};                // 删除
+    RECT presetImport{};                // 导入
+    RECT presetExport{};                // 导出
+
     int  dpi = 96;                      // 回传给绘制侧，省得它再查一次
     int  padX = 0;                      // 左右内边距（提示文字要用）
 };

@@ -5,6 +5,7 @@
 #include <windows.h>   // COLORREF
 
 #include <string>
+#include <vector>
 
 // ---------------------------------------------------------------------------
 // Lyricus 配置项
@@ -13,6 +14,8 @@
 // 命名空间用 cfg_var_modern（SDK/config/cfg_var.h 里的现代实现，
 // 而不是 cfg_var_legacy 那套）。
 // ---------------------------------------------------------------------------
+
+#include "preset.h"   // AppearancePreset（预设系统，见 D-088）
 
 namespace lyricus {
 
@@ -210,6 +213,40 @@ struct PanelAppearance {
 
 PanelAppearance GetPanelAppearance();
 void            SetPanelAppearance(const PanelAppearance& a);
+
+// ---------------------------------------------------------------------------
+// 外观预设
+// ---------------------------------------------------------------------------
+
+// 预设表存哪。**只存用户自己存的那些** —— 内置 4 套是代码里生成的，不落盘。
+// 这样升级版本时内置预设能跟着更新，而用户改过的同名条目会覆盖内置那份。
+extern cfg_var_modern::cfg_string cfg_appearance_presets;
+
+// 完整的预设列表 = **内置的 + 用户存的**，同名的以用户那份为准。
+//
+// 【为什么同名的用户那份赢】用户改了「暗色」之后要能存下来。
+// 存成"暗色 2"之类的新名字是另一种做法，但那样想恢复内置的「暗色」
+// 就变得很别扭（得先自己删掉那条）。
+std::vector<AppearancePreset> GetAppearancePresets();
+
+// 存一条（新增，或覆盖同名）。空名字忽略。
+void SaveAppearancePreset(const std::wstring& name, const AppearancePreset& preset);
+
+// 删掉**用户存的**那一条，返回"有没有真的删掉东西"。
+//
+// ⚠️ 内置的删不掉（它们没落盘）—— 但如果用户存过同名覆盖，
+//    删它就是"**恢复内置默认**"，那正是这个函数最有用的地方。
+//    对没覆盖过的内置名字，它返回 false，UI 该据此提示而不是假装删掉了。
+bool DeleteAppearancePreset(const std::wstring& name);
+
+// 这个名字是不是**内置的**。UI 用它区分"删除"的两种语义。
+bool IsBuiltinPresetName(const std::wstring& name);
+
+// 把一套预设**应用到实际外观**：6 色 + 不透明度 + 字体族 + 字号 + 通透度。
+//
+// ⚠️ 刻意**不碰**窗口位置尺寸和阅读偏好（行数 / 当前行位置 / 正文字向）——
+//    理由写在 preset.h 开头。
+void ApplyAppearancePreset(const AppearancePreset& preset);
 
 // 把整体不透明度限制在「看得见又不至于完全糊住」的范围内。
 // 0 会让面板彻底消失、255 就是完全不透明，两头都没有实际意义。

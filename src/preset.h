@@ -57,8 +57,16 @@ struct AppearancePreset {
     // ---- 来自 cfg_backdrop_mode ----
     // 刻意用 int 而不是 BackdropMode 枚举：那个枚举属于窗口层，
     // 而这一层要能脱离 SDK 单独编译进单测台。
-    // 取值和 BackdropMode 一致：0=不透明 1=毛玻璃 2=半透明。
-    int backdropMode = 2;
+    //
+    // ⚠️ 取值是 **BackdropMode 的原始值**，照抄 config.h 里那份定义：
+    //     0 = None        自绘不透明底色（最稳的兜底）
+    //     1 = Mica        采样桌面壁纸，不透明
+    //     2 = Acrylic     毛玻璃
+    //     3 = MicaAlt     Mica 的强着色变体
+    //     4 = Translucent 分层窗口整体半透明（出厂默认）
+    //   **默认值是 4**（= 出厂那套）。这里一开始写了 2 并注释成"半透明"，
+    //   是照着自己想当然的顺序编的 —— 而枚举里有 5 个值、顺序也不同。
+    int backdropMode = 4;
 };
 
 // 内置的几套。**顺序就是它们在下拉里的顺序**（第一套是「默认」）。
@@ -104,5 +112,23 @@ bool ImportPreset(const std::string& text, AppearancePreset& out);
 
 // 表里最多留多少条。超了从**最旧的**开始丢。
 constexpr size_t kMaxPresets = 64;
+
+// 各字段的合法区间。
+//
+// ★ 提成常量是因为它们**被写在不止一个地方**（ClampPreset 和单测的断言）。
+//   backdropMode 的上限刚因为两处不同步挂过一次断言：实现改成了 0..4，
+//   测试里还留着 0..2，于是"每套都是完整的外观"这条直接红了 ——
+//   而它想验的其实是"字段合法"，不是"上限是不是 2"。
+//
+// ⚠️ 名字都带 `kPreset` 前缀：`config.h` 里已经有一份 `kMinAlpha` / `kMaxAlpha`
+//    （那是**配置层**的不透明度区间），两处语义不同、不能共用一个名字 ——
+//    不加前缀直接撞车，实测 C2374 重定义。
+constexpr int  kPresetMinAlpha    = 0;
+constexpr int  kPresetMaxAlpha    = 255;
+constexpr int  kPresetMinFontPct  = 50;
+constexpr int  kPresetMaxFontPct  = 300;
+// ⚠️ BackdropMode 有 **5** 个值（见 config.h）：None/Mica/Acrylic/MicaAlt/Translucent。
+constexpr int  kPresetMinBackdrop = 0;
+constexpr int  kPresetMaxBackdrop = 4;
 
 } // namespace lyricus

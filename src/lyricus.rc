@@ -30,7 +30,12 @@
 // ⚠️ STYLE 里必须保留 WS_CHILD —— preferences_page_instance_impl 会断言
 //    （见 helpers/atl-misc.h:277）。也不能加 WS_CAPTION / DS_MODALFRAME。
 // ---------------------------------------------------------------------------
-IDD_LYRICUS_PREFS DIALOGEX 0, 0, 253, 185
+// ⚠️ 尺寸是**对话框单位（DLU）**，不是像素，而且横纵的换算基数不同：
+//      宽 253 DLU / 380 逻辑像素 = 0.666
+//      高 185 DLU / 330 逻辑像素 = 0.561
+//    所以高从 330 加到 424（加了外观预设那一区）时，是 424 * 0.561 = 238，
+//    不能拿横向那个比例去乘 —— 那样会短掉一大截，预设区直接看不见。
+IDD_LYRICUS_PREFS DIALOGEX 0, 0, 253, 238
 STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD
 FONT 9, "MS Shell Dlg", 400, 0, 0x86
 BEGIN

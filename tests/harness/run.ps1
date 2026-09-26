@@ -86,7 +86,13 @@ $suites = @(
 )
 
 # 真实头文件（各组都要）
-$headers = @('config.h', 'lyric.h', 'lyric_search.h', 'debug_log.h')
+# 每次都要复制过去的 src 头。
+#
+# ⚠️ 这里漏一个头，表现是**另一个组突然编不过** —— 因为 config.h 现在
+#    include 了 preset.h（D-088），而 search / online 那两个组只用
+#    config.h，于是它们会因为找不到 preset.h 而 C1083。
+#    所以：**给 config.h 加新 include 时，记得回来看看这里**。
+$headers = @('config.h', 'preset.h', 'lyric.h', 'lyric_search.h', 'debug_log.h')
 
 $totalPass = 0
 $totalFail = 0

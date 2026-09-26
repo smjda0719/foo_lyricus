@@ -67,9 +67,16 @@ void Sanitize(std::wstring& s) {
 // 夹取到合法区间的那些字段。解析之后统一走一遍，
 // 这样"手改配置文件写了个 999"和"别人给的预设"都进不来坏值。
 AppearancePreset ClampPreset(AppearancePreset p) {
-    p.alpha        = ClampInt(p.alpha, 0, 255);
-    p.fontPct      = ClampInt(p.fontPct, 50, 300);
-    p.backdropMode = ClampInt(p.backdropMode, 0, 2);
+    // ⚠️ 这里用 preset.h 里的常量，不写字面量 —— 它们和单测的断言共用同一份，
+    //    免得改了实现忘了改断言（backdropMode 刚这么挂过一次）。
+    //
+    // 关于 alpha：这里放到 0..255，而 config.cpp 的 ClampAlpha 会再夹到
+    // 60..kMaxAlpha。**分层是有意的** —— 预设定的是"这个颜色方案的不透明度"，
+    // 而"能不能真的设成 5"是配置层的规则。预设不该替它做决定，
+    // 否则从别处导入一套 alpha=30 的配色会被静默改掉再存回去。
+    p.alpha        = ClampInt(p.alpha, kPresetMinAlpha, kPresetMaxAlpha);
+    p.fontPct      = ClampInt(p.fontPct, kPresetMinFontPct, kPresetMaxFontPct);
+    p.backdropMode = ClampInt(p.backdropMode, kPresetMinBackdrop, kPresetMaxBackdrop);
     return p;
 }
 
@@ -97,7 +104,7 @@ std::vector<AppearancePreset> BuiltinPresets() {
         p.alpha   = 215;
         p.fontFace = "";        // 空 = 跟随宿主界面字体
         p.fontPct  = 100;
-        p.backdropMode = 2;     // 半透明
+        p.backdropMode = 4;     // Translucent（出厂默认）
         v.push_back(p);
     }
 
@@ -116,7 +123,7 @@ std::vector<AppearancePreset> BuiltinPresets() {
         p.alpha   = 235;
         p.fontFace = "";
         p.fontPct  = 100;
-        p.backdropMode = 2;
+        p.backdropMode = 4;     // Translucent
         v.push_back(p);
     }
 
@@ -135,7 +142,7 @@ std::vector<AppearancePreset> BuiltinPresets() {
         p.alpha   = 230;
         p.fontFace = "";
         p.fontPct  = 100;
-        p.backdropMode = 2;
+        p.backdropMode = 4;     // Translucent
         v.push_back(p);
     }
 
@@ -157,7 +164,7 @@ std::vector<AppearancePreset> BuiltinPresets() {
         p.alpha   = 255;
         p.fontFace = "";
         p.fontPct  = 115;
-        p.backdropMode = 0;     // 不透明
+        p.backdropMode = 0;     // None：自绘不透明
         v.push_back(p);
     }
 
