@@ -958,14 +958,32 @@ void CLyricusPrefsDlg::DrawBgArea(HDC dc, const PrefsLayout& L) {
         DrawButton(dc, L.bgPick, caption.c_str(), kHitBgPick, T, false);
     }
 
-    // 适配方式：**点击循环**而不是下拉。四个值，点三下转一圈 ——
+    // 适配方式：**点击循环**而不是下拉。几个值，点几下转一圈 ——
     // 比弹菜单少一次交互，也少一份要测的代码。
     if (!empty(L.bgFit)) {
+        // ⚠️ 这张表和 kBgFitMax **必须同步**。
+        //
+        // 这里踩过一次崩溃：加 BgFit::Manual 时把 kBgFitMax 从 3 改成了 4，
+        // 却忘了给这个数组补第 5 项 —— 于是 f == 4 时读到数组外的垃圾指针，
+        // 传给 DrawButton 之后在 wcslen 里访问违例。
+        //
+        // ★ 而且下面那句 `if (f > kBgFitMax) f = kBgFitMin;` 是**挡不住**的：
+        //   它把 f 夹到"合法的最大值"，而上限本身就已经越界了。
+        //   「用常量当边界」只有在常量和表长一致时才成立。
+        //
+        // 所以再加一条以**表长**为准的检查 —— 两者不一致时不会崩，
+        // 最坏是显示错的文字（而那是能一眼看出来的）。
         static const wchar_t* const kFitNames[] = {
-            L"填充（裁掉多余）", L"适应（可能留边）", L"拉伸（会变形）", L"平铺"
+            L"填充（裁掉多余）", L"适应（可能留边）", L"拉伸（会变形）", L"平铺",
+            L"手动（拖动调整）"
         };
+        constexpr int kFitNameCount =
+            static_cast<int>(sizeof(kFitNames) / sizeof(kFitNames[0]));
+        static_assert(kFitNameCount == kBgFitMax + 1,
+                      "kFitNames 的项数和 kBgFitMax 不同步了 —— 加适配方式时两处都要改");
+
         int f = m_edited.bgFit;
-        if (f < kBgFitMin || f > kBgFitMax) f = kBgFitMin;
+        if (f < 0 || f >= kFitNameCount) f = 0;
         const std::wstring cap = std::wstring(L"适配方式：") + kFitNames[f] + L"（点击切换）";
         DrawButton(dc, L.bgFit, cap.c_str(), kHitBgFit, T, false);
     }
