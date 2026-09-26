@@ -1290,6 +1290,7 @@ void CLyricusPrefsDlg::DrawBgPreview(HDC dc, const PrefsLayout& L) {
         const int cx0 = L.bgPreview.left;
         const int cx1 = L.bgPreview.right;
         const int ctrlH = MulDiv(30, dpi, 96);   // 底部控制条大致占这么高
+        const int headerH = MulDiv(26, dpi, 96); // 曲名占掉的那一条
 
         auto line = [&](int cy, const wchar_t* text, COLORREF color, bool bold) {
             RECT r{ cx0, cy - lineH / 2, cx1, cy + lineH / 2 };
@@ -1298,20 +1299,35 @@ void CLyricusPrefsDlg::DrawBgPreview(HDC dc, const PrefsLayout& L) {
         };
 
         // 曲名：贴着预览框顶部（面板上也是顶部一行）
-        line(L.bgPreview.top + MulDiv(12, dpi, 96) + lineH / 2,
-             L"曲名 — 歌手", m_edited.header, true);
+        line(L.bgPreview.top + headerH / 2, L"曲名 — 歌手", m_edited.header, true);
 
-        // 歌词：以"控制条上方的区域"的中心为当前行位置 —— 和面板一致
-        const int midY = (L.bgPreview.top +
-                          (L.bgPreview.bottom - ctrlH)) / 2;
-        line(midY - lineH * 3 / 2, L"上一行歌词",   m_edited.dim,    false);
-        line(midY,                 L"当前这一行歌词", m_edited.current, true);
-        line(midY + lineH * 3 / 2, L"下一行歌词",   m_edited.normal, false);
+        // 歌词区：曲名之下、控制条之上
+        const int lyrTop = L.bgPreview.top + headerH;
+        const int lyrBot = L.bgPreview.bottom - ctrlH;
+        const int midY   = (lyrTop + lyrBot) / 2;
+        const int avail  = lyrBot - lyrTop;
 
-        // 警告色单独放控制条上方一行 —— 它平时不出现，
-        // 但用户调色时要能看到自己挑的是什么。
-        line(L.bgPreview.bottom - ctrlH - lineH / 2,
-             L"歌词未找到", m_edited.warn, false);
+        // ⚠️ 预览框矮的时候**少画几行**（D-127）。
+        //
+        // 上一版固定画三行（上一行/当前行/下一行）+ 警告，而 preview 只有
+        // 约 143 逻辑像素高 —— 曲名在 y≈21、上一行在 y≈28，直接叠在一起。
+        // 预览的框高随窗口宽度变（按面板长宽比算），所以这里必须自适应：
+        // **挤在一起比少画几行更糟** —— 叠字看起来像渲染坏了。
+        const bool wide = (avail >= lineH * 4);      // 放得下上下各一行 + 警告
+        const bool mid  = (avail >= lineH * 3);
+
+        if (wide) {
+            line(midY - lineH, L"上一行歌词", m_edited.dim, false);
+        }
+        line(midY, L"当前这一行歌词", m_edited.current, true);
+        if (mid) {
+            line(midY + lineH, L"下一行歌词", m_edited.normal, false);
+        }
+        // 警告色平时不出现，但用户调色时要能看到自己挑的是什么。
+        // 只在真的放得下时才画 —— 它是这五行里最不重要的一条。
+        if (wide) {
+            line(lyrBot - lineH / 2, L"歌词未找到", m_edited.warn, false);
+        }
     }
 
     // 边框画在最后（先画会被图盖住）
