@@ -139,7 +139,12 @@ $Script:Targets = [ordered]@{
     'panel' = @{ cls = 'LyricusControlPanel';                      title = '';                  desc = '独立浮动面板';      note = '副屏置顶窗口' }
     'dui'   = @{ cls = '{1A7C3E90-2B41-4C58-9D6E-0F1A2B3C4D10}';   title = '';                  desc = 'DUI 元素';          note = '嵌在 foobar2000 默认界面里' }
     'cui'   = @{ cls = '{1A7C3E90-2B41-4C58-9D6E-0F1A2B3C4D11}';   title = '';                  desc = 'CUI 面板';          note = '嵌在 Columns UI 里' }
-    'main'  = @{ cls = '{97E27FAA-C0B3-4b8e-A693-ED7881E99FC1}';   title = '';                  desc = 'foobar2000 主窗口';  note = '用来确认整体布局' }
+    # ★ 主窗口**按标题**判定，不按类名 —— DUI 和 CUI 的主窗口类名完全不同：
+    #     DUI: {97E27FAA-C0B3-4b8e-A693-ED7881E99FC1}
+    #     CUI: {E7076D1C-A7BF-4f39-B771-BCBE88F2A2A8}
+    #   写死任一个，用户一换 UI 这个目标就失效（实测切到 CUI 后 -Restart
+    #   直接报"找不到 foobar2000 主窗口"）。标题两边都含 "foobar2000"。
+    'main'  = @{ cls = '';                                         title = 'foobar2000';        desc = 'foobar2000 主窗口';  note = '按标题匹配（主窗口类名随 UI 变）' }
     'prefs' = @{ cls = '#32770';                                   title = '首选项|Preferences'; desc = '首选项窗口';        note = 'View → Lyricus 外观设置...' }
     'wheel' = @{ cls = '#32770';                                   title = '选择颜色';           desc = '色环取色器';         note = '在首选项页里点一个色块' }
 }
@@ -215,8 +220,14 @@ function Get-FoobarWindows {
     $result = New-Object System.Collections.Generic.List[object]
     foreach ($key in $Script:Targets.Keys) {
         $spec = $Script:Targets[$key]
-        if (-not $byClass.ContainsKey($spec.cls)) { continue }
-        foreach ($h in $byClass[$spec.cls]) {
+
+        # cls 为空 = 这个目标**按标题**找（只有 main 是这样，理由见上面的注释）。
+        # 那种情况下要遍历所有顶层窗口，而不是查 byClass 表。
+        $cands = if ($spec.cls -eq '') { $byClass.Values | ForEach-Object { $_ } }
+                 elseif ($byClass.ContainsKey($spec.cls)) { $byClass[$spec.cls] }
+                 else { @() }
+
+        foreach ($h in $cands) {
             if (-not [LyricusCapture.Native]::IsWindowVisible($h)) { continue }
             # 标题再筛一道：只有 #32770 需要，其余目标的 title 是空串（不过滤）
             if ($spec.title -ne '' -and (Get-TitleOf $h) -notmatch $spec.title) { continue }
@@ -346,12 +357,10 @@ function Restart-Foobar {
     $oldPid = $procs[0].Id
     $main = [IntPtr]::Zero
     foreach ($p in $procs) {
-        # 用和截图同一条枚举路径。
-        # ⚠️ 别用 $p.MainWindowHandle —— 它会挑中 LyricusControlPanel（独立置顶窗口），
-        #    而那是另一个顶层窗口，从它往下找不到 foobar2000 主窗口。
-        #    这个坑刚在 Get-FoobarWindows 里踩过一次，这里是同一处。
+        # 用和截图同一条枚举路径，而且**按标题**判定主窗口（理由见
+        # $Script:Targets 里 main 那条注释 —— DUI / CUI 的主窗口类名不同）。
         foreach ($h in (Get-TopLevelWindows $p.Id)) {
-            if ((Get-ClassOf $h) -eq $Script:Targets['main'].cls) { $main = $h; break }
+            if ((Get-TitleOf $h) -match $Script:Targets['main'].title) { $main = $h; break }
         }
         if ($main -ne [IntPtr]::Zero) { break }
     }

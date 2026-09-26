@@ -82,7 +82,9 @@ public:
     explicit CLyricusPrefsDlg(preferences_page_callback::ptr callback)
         : m_callback(callback),
           m_edited(GetPanelAppearance()),     // 界面上正在编辑的值
-          m_applied(GetPanelAppearance()) {}  // 上次"应用"下去的值
+          m_applied(GetPanelAppearance()),    // 上次"应用"下去的值
+          m_editedFontFace(GetLyricDisplayConfig().fontFace),
+          m_appliedFontFace(GetLyricDisplayConfig().fontFace) {}
 
     ~CLyricusPrefsDlg() { FreeFonts(); }
 
@@ -154,11 +156,24 @@ private:
     //    所以进来先拿一份自身引用把自己钉住，返回后碰成员才安全；
     //    返回后还要再确认一次窗口还在。
     bool PickColor(COLORREF& inOut);
-    void PickFont();   // 弹系统字体对话框，把选中的**字体族**写进设置
+    void PickFont();   // 弹系统字体对话框，把选中的**字体族**记进"正在编辑"的值
 
     preferences_page_callback::ptr m_callback;
     PanelAppearance m_edited;
     PanelAppearance m_applied;
+
+    // 字体族（UTF-8，空 = 跟随宿主）。**和颜色一样走"应用 / 取消"**。
+    //
+    // 【为什么不立即写存储】原来是立即写的（D-082），理由是 ChooseFontW 是模态的、
+    // 点确定就是明确意图。但那带来一个**当时没想到的副作用**：
+    // `reset()` 会把它清掉，而颜色要"点应用"才落盘 —— 于是
+    // **点「恢复默认」再点「取消」= 颜色回来了、字体回不来**。
+    // 实测用户就是这么丢掉「方正姚体」的（配置里 lyricus.fontFace 还在，值是空的）。
+    //
+    // 【为什么是 UTF-8 的 std::string】和 LyricDisplayConfig::fontFace 同一口径，
+    // 中间不必来回转换；Config::fontFace 本来就是 UTF-8 存的。
+    std::string m_editedFontFace;
+    std::string m_appliedFontFace;
 
     // 交互状态
     int  m_hot       = kHitNone;   // 鼠标悬停在谁身上
@@ -410,14 +425,13 @@ void CLyricusPrefsDlg::DrawResetButton(HDC dc, const RECT& r) {
 }
 
 void CLyricusPrefsDlg::DrawFontButton(HDC dc, const RECT& r) {
-    // 按钮上直接显示**当前字体名** —— 不用点开就知道现在用的是什么。
-    // 空 = 跟随宿主（DUI/CUI）/ 默认（浮动面板），显示成「跟随」。
-    const LyricDisplayConfig cfg = GetLyricDisplayConfig();
+    // 显示**正在编辑**的字体，不是已落盘的那个 —— 和色块画 m_edited 一致。
+    // 用配置里的值的话，用户选完字体按钮上还是旧名字，看着像没反应。
     std::wstring label = L"字体：";
-    if (cfg.fontFace.empty()) {
+    if (m_editedFontFace.empty()) {
         label += L"跟随";
     } else {
-        label += Utf8ToWide(cfg.fontFace.c_str());
+        label += Utf8ToWide(m_editedFontFace.c_str());
     }
     DrawButton(dc, r, label.c_str(), kHitFontBtn, CurrentTheme(), true);
 }
@@ -551,13 +565,21 @@ void CLyricusPrefsDlg::NotifyChanged() {
 
 t_uint32 CLyricusPrefsDlg::get_state() {
     t_uint32 state = preferences_state::resettable | preferences_state::dark_mode_supported;
-    if (m_edited != m_applied) state |= preferences_state::changed;
+    // ★ 字体也要算"改了" —— 它和颜色一样等"应用"才落盘，
+    //   不带它的话用户选完字体，"应用"按钮还是灰的。
+    if (m_edited != m_applied || m_editedFontFace != m_appliedFontFace)
+        state |= preferences_state::changed;
     return state;
 }
 
 void CLyricusPrefsDlg::apply() {
     SetPanelAppearance(m_edited);
     m_applied = m_edited;
+
+    // ★ 字体也在这里才落盘（和颜色一致）。
+    //   空串是**合法值**（= 跟随宿主），不是"清空错误"。
+    SetLyricFontFace(m_editedFontFace);
+    m_appliedFontFace = m_editedFontFace;
 
     DebugLog("首选项页：已应用 曲名=#%02X%02X%02X 当前行=#%02X%02X%02X 普通行=#%02X%02X%02X "
              "暗色=#%02X%02X%02X 警告=#%02X%02X%02X 底色=#%02X%02X%02X alpha=%d",
@@ -578,18 +600,17 @@ void CLyricusPrefsDlg::reset() {
     // 好让用户先看到效果再决定要不要"应用"（preferences_page.h:144）。
     m_edited = PanelAppearance{};
 
-    // ★ 字体是个例外，这里**必须**写存储，而且立刻就写。
+    // ★ 字体回到"跟随宿主"，但同样**只改界面**。
     //
-    // 【为什么不能跟颜色一样等"应用"】颜色在 m_edited 里，用户点应用才落盘；
-    // 而字体是点「字体...」当场写进去的（ChooseFontW 是模态的，点确定
-    // 就是明确意图，没必要再让他确认一次）。于是"恢复默认"如果不动它，
-    // 就会出现：颜色全回去了、字体还留着 —— 用户会觉得这个按钮坏了一半。
-    //
-    // 【更要紧的是没有别的入口】ChooseFontW 没有"清除"这个选项，
-    // 用户一旦设了自定义字体，**除了这里没有第二条路能回到"跟随宿主"**。
-    SetLyricFontFace(std::string());
-    NotifyChanged();
+    // 【这里改过一次】从前这一句是直接 `SetLyricFontFace("")`（立刻写存储），
+    // 理由是"字体本来就是立即生效的"。但那造出一个当时没想到的坑：
+    // **点「恢复默认」再点「取消」= 颜色回来了、字体回不来** ——
+    // 因为颜色在 m_edited 里等着应用，而字体已经落盘了。
+    // 实测用户就是这么丢掉「方正姚体」的（配置里 lyricus.fontFace 还在，值是空的）。
+    // 现在两边同一条路：改内存 -> 点应用才落盘 -> 取消就整页还原。
+    m_editedFontFace.clear();
 
+    NotifyChanged();
     Repaint();
 }
 
@@ -629,11 +650,12 @@ void CLyricusPrefsDlg::PickFont() {
 
     const LyricDisplayConfig cfg = GetLyricDisplayConfig();
 
-    // 对话框的初始值。
+    // 对话框的初始值。用 m_editedFontFace 而不是 cfg —— 后者是**已落盘**的值，
+    // 若用户上次选了字体没点应用又来打开，起点该是他看到的那个。
     LOGFONTW lf{};
-    if (!cfg.fontFace.empty()) {
+    if (!m_editedFontFace.empty()) {
         // 用户设过 —— 以它为起点，打开就是当前值
-        const std::wstring w = Utf8ToWide(cfg.fontFace.c_str());
+        const std::wstring w = Utf8ToWide(m_editedFontFace.c_str());
         wcsncpy_s(lf.lfFaceName, w.c_str(), _TRUNCATE);
         lf.lfHeight = -MulDiv(12, 96, 72);
     } else {
@@ -669,10 +691,12 @@ void CLyricusPrefsDlg::PickFont() {
     // 字号归「字号百分比」那条滑块管，是另一个维度。混在一起的话，
     // 用户挑一次字体就会把辛苦调好的字号一并覆盖掉 —— 而且他多半
     // 根本没注意到自己在字体对话框里也动了字号。
-    SetLyricFontFace(WideToUtf8(lf.lfFaceName));
+    // ★ 只改**正在编辑**的值，不写存储 —— 和颜色一样，等用户点"应用"。
+    //   这样"选了字体又点取消"能真正撤销（从前的立即写盘会把它留下）。
+    m_editedFontFace = WideToUtf8(lf.lfFaceName);
     NotifyChanged();
 
-    DebugLog("首选项页：字体 -> 「%s」", WideToUtf8(lf.lfFaceName).c_str());
+    DebugLog("首选项页：字体 -> 「%s」（待应用）", m_editedFontFace.c_str());
 }
 
 // ---------------------------------------------------------------------------
