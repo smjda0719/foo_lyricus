@@ -238,6 +238,20 @@ LanguageStandard            = stdcpp20
   **缓冲区越界，不是编译错误**，而且只在特定字体回调路径下触发，极难排查。
 - **结论**：这个设置**不能动**。改它之前先看这条。
 
+## D-072 View 菜单加「Lyricus 外观设置...」直达首选项页
+
+- **起因**：用户 2026-09-26「这个面板其实也应该在 view 里有。**那个地方更好找**」。
+  从 File → Preferences → Display → Lyricus 一路点进去确实太深。
+- **做法**：走 `ui_control::show_preferences(guid)` —— SDK 说它会
+  "激活首选项对话框并跳转到指定页"（`ui.h:117`）。
+- **★ 菜单不直接引 GUID**：新增 `prefs_page.h`，只暴露一个
+  `lyricus::OpenPrefsPage()`。页面 GUID、页面由哪个类实现、以后要不要换 ——
+  全是 `prefs_page.cpp` 的内部细节；菜单只该说"打开设置"。
+  这和 `PromptAdjustPanel` / `PromptSourceOrder` 是同一个套路。
+- **位置**：菜单组本来就已经挂在 `mainmenu_groups::view` 下（`menu.cpp:76`），
+  所以新项排在「调节面板...」之后即可 —— 不用新建分组。
+- **验证**：编译零错误零警告；新 GUID 段 `0x1b` 全工程 grep 唯一。
+
 ## D-071 首选项页重做成**全自绘**（跟随宿主主题，含暗色模式）
 
 - **起因**：用户 2026-09-26 看过取色修复后的界面说「这个界面有点老旧，

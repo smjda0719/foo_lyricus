@@ -147,6 +147,8 @@
     <ClInclude Include="..\src\control_window.h" />
     <ClInclude Include="..\src\control_bar_layout.h" />
     <ClInclude Include="..\src\prefs_layout.h" />
+    <ClInclude Include="..\src\prefs_page.h" />
+    <ClInclude Include="..\src\dpi_util.h" />
     <ClInclude Include="..\src\resource.h" />
   </ItemGroup>
 

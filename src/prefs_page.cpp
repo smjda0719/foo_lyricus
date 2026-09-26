@@ -5,9 +5,11 @@
 #include "control_window.h"
 #include "debug_log.h"
 #include "prefs_layout.h"
+#include "prefs_page.h"         // OpenPrefsPage（View 菜单的入口）
 #include "dpi_util.h"           // GetDpiForWindowSafe（与控制面板共用同一份）
 
 #include <SDK/preferences_page.h>
+#include <SDK/ui.h>             // ui_control::show_preferences（菜单"外观设置"要用）
 #include <SDK/ui_element.h>     // ui_config_manager：宿主主题色 + 暗色模式
 #include <helpers/atl-misc.h>   // preferences_page_impl
 // ⚠️ 刻意**不**包含 atldlgs.h、也不用 WTL 的 CColorDialog —— 原因写在 PickColor() 里。
@@ -690,3 +692,16 @@ public:
 preferences_page_factory_t<LyricusPrefsPage> g_prefs_page_factory;
 
 } // namespace
+
+// ---------------------------------------------------------------------------
+
+namespace lyricus {
+
+void OpenPrefsPage() {
+    // show_preferences(guid) = 激活首选项对话框并跳转到这一页（ui.h:117）。
+    // ui_control 拿不到时（无 GUI 的场合）什么都不做 —— 菜单项本来也点不到。
+    ui_control::ptr ui = ui_control::get();
+    if (ui.is_valid()) ui->show_preferences(guid_prefs_page);
+}
+
+} // namespace lyricus

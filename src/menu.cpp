@@ -5,6 +5,7 @@
 #include "folder_hint.h"
 #include "adjust_dialog.h"
 #include "source_dialog.h"   // 歌词源顺序面板
+#include "prefs_page.h"      // OpenPrefsPage（View 菜单里的"外观设置"入口）
 #include "source_order.h"    // SourcesToTry / SourceDisplayName（菜单名字里要显示当前顺序）
 #include "playback_state.h"
 #include "online_lyric.h"   // ListUnmatchedTracks
@@ -60,6 +61,10 @@ const GUID guid_cmd_adjust = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b
 // 0x19：列出没找到歌词的曲目（见 online_lyric.h 的 ListUnmatchedTracks）
 // 0x1A：歌词源顺序面板（见 source_order.h / source_dialog.h）
 const GUID guid_cmd_sources = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x1a}};
+// 打开首选项里的 Lyricus 页。用户 2026-09-26 提的需求：
+// 「这个面板其实也应该在 view 里有。那个地方更好找」——
+// 从 File → Preferences → Display → Lyricus 一路点进去确实太深了。
+const GUID guid_cmd_prefs   = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x1b}};
 const GUID guid_cmd_unmatched = {0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x19}};
 
 // 【这里原本有四组"点一下换下一档"的档位表】—— 字号 / 行数 / 行位置 / 背景通透度。
@@ -89,6 +94,7 @@ public:
         cmd_unmatched,
         cmd_sources,
         cmd_adjust,
+        cmd_prefs,
         cmd_total
     };
 
@@ -107,6 +113,7 @@ public:
         case cmd_unmatched:    return guid_cmd_unmatched;
         case cmd_sources:      return guid_cmd_sources;
         case cmd_adjust:       return guid_cmd_adjust;
+        case cmd_prefs:        return guid_cmd_prefs;
         default: uBugCheck();
         }
     }
@@ -153,6 +160,11 @@ public:
             out = buf;
             break;
         }
+
+        case cmd_prefs:
+            out = "Lyricus 外观设置...";
+            break;
+
         default: uBugCheck();
         }
     }
@@ -203,6 +215,13 @@ public:
                   "歌词偏移只对当前曲目生效并记住 —— 用在「声音已经唱到下一句、"
                   "面板还停在上一句」那种整首歌的偏移上（多半是因为在线歌词来自"
                   "另一个剪辑版本）。其余四项是全局的。";
+            return true;
+
+        case cmd_prefs:
+            out = "打开首选项里的 Lyricus 页 —— 六个配色（曲名 / 当前歌词行 / 其它歌词行 / "
+                  "次要文字 / 警告文字 / 面板底色）和整体不透明度，点色块取色、拖滑块调。\n"
+                  "改动点「应用」或「确定」之后生效。\n"
+                  "这些设置只影响**浮动面板**；DUI 元素和 CUI 面板跟随宿主主题，不在这里调。";
             return true;
         default:
             return false;
@@ -309,6 +328,12 @@ public:
         // 面板下一拍（最多 250ms）自己就跟着变了。
         case cmd_adjust:
             lyricus::PromptAdjustPanel(core_api::get_main_window());
+            break;
+
+        // 「外观设置」直接跳到首选项的 Lyricus 页（ui_control::show_preferences）。
+        // 页面自己负责实时预览与"确定才落盘"，这里不需要额外通知谁。
+        case cmd_prefs:
+            lyricus::OpenPrefsPage();
             break;
 
         // 源顺序只影响**以后**的查询，不碰正在显示的歌词，
