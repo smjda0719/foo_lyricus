@@ -1453,25 +1453,37 @@ void ControlWindow::RenderLayered() {
         }
     }
 
-    // 1.5) 背景图叠在底色之上（D-098）。
+    // 1.5) 背景图叠在底色之上（D-098），并**存一份快照**（D-106）。
     //
     // 【为什么是"叠"而不是"替"】图带自己的 alpha（由 bgOpacity 决定），
     // 半透明的图下面必须有底色兜着 —— 直接替换的话面板会变成
     // "图有多透明、面板就有多透明"，透出桌面，而用户要的是
     // "面板底色上有一张图"。
     //
-    // ⚠️ 这里记一份**掩码**（哪些像素被图盖过），下一步的 alpha 修正要用。
-    //    那段修正靠"和底色不同 = 文字"认人，而**图本来就和底色不同** ——
-    //    不排除它的话，整片图会被拉到完全不透明，用户调的
-    //    「图片不透明度」就完全看不出来（用户 2026-09-26 报的
-    //    "不会显现出透明的感觉"正是这个）。
+    // ★ 快照是下面 alpha 修正的**比对基准**。
     //
-    // 这一趟只在**参数或尺寸变化时**才会真的重算 —— CurrentBackground
-    // 返回的是缓存好的位图，所以这里每帧的代价就是一次内存混合。
-    std::vector<unsigned char> bgMask;
+    //   那段修正靠"和已知状态不同 = 新画上去的内容（文字 / 控件）"认人，
+    //   而有了背景图之后，"已知状态"变成了**逐像素不同**的东西 ——
+    //   再拿单个底色去比，整片图都会被误判成内容。
+    //
+    //   曾经试过用"图覆盖掩码"排除它，但那个思路不够：掩码标的是
+    //   "图盖过的像素"，而文字/控件是**后来画在同一个像素上**的 ——
+    //   它们继承了图的半透明 alpha，于是进度条压在图的白色部分上时
+    //   会变成**镂空**（用户 2026-09-26 报的正是这个）。
+    //   只有逐像素快照才能区分"这里还是图"和"这里已经被画上东西了"。
+    //
+    // 存 RGB 就够：GDI 不写 alpha，所以 alpha 对我们的比对没有信息量。
+    std::vector<unsigned char> bgSnapshot;   // RGB 交错，3 字节/像素
     if (const BgBitmap* bgImg = CurrentBackground(w, h)) {
-        bgMask.assign(pixelCount, 0);
-        BlendBgOver(static_cast<BYTE*>(bits), bgImg->bgra.data(), pixelCount, bgMask.data());
+        BlendBgOver(static_cast<BYTE*>(bits), bgImg->bgra.data(), pixelCount);
+
+        bgSnapshot.resize(pixelCount * 3);
+        const BYTE* s = static_cast<const BYTE*>(bits);
+        for (size_t i = 0; i < pixelCount; ++i) {
+            bgSnapshot[i * 3 + 0] = s[i * 4 + 0];
+            bgSnapshot[i * 3 + 1] = s[i * 4 + 1];
+            bgSnapshot[i * 3 + 2] = s[i * 4 + 2];
+        }
     }
 
     QueryPerformanceCounter(&qpc1);
@@ -1489,18 +1501,24 @@ void ControlWindow::RenderLayered() {
     //       即 RGB 必须已经乘过 alpha/255，否则文字会偏暗偏糊。
     {
         BYTE* p = static_cast<BYTE*>(bits);
-        const bool haveBg = !bgMask.empty();
+        const bool haveSnap = !bgSnapshot.empty();
         for (size_t i = 0; i < pixelCount; ++i, p += 4) {
-            // ⚠️ **被背景图盖过的像素不能走 (a)**。
-            //    它们的 RGB 和图不同、alpha 也已经由 BlendBgOver 合成好了
-            //    （反映了「图片不透明度」）；把它们拉到 255 的话，
-            //    图那一块会比周围更"实"，用户调的透明度完全看不出来。
-            //    这类像素只需要走 (b) 预乘。
-            const bool fromBgImage = haveBg && bgMask[i] != 0;
-            if (!fromBgImage &&
-                (p[0] != bgB || p[1] != bgG || p[2] != bgR)) {
-                p[3] = 255;
+            // 有快照（叠过背景图）：和快照不同 = 这一步之后新画上去的内容。
+            // 没快照（纯色底）：和底色不同 = 文字。
+            //
+            // ⚠️ 两种判据是**同一个意思**（"这个像素和铺完底/叠完图时不一样了"），
+            //    只是"基准"一个是逐像素的、一个是单个颜色。
+            //    用掩码代替快照是不行的 —— 见上面存快照那段说明。
+            bool isContent;
+            if (haveSnap) {
+                isContent = (p[0] != bgSnapshot[i * 3 + 0] ||
+                             p[1] != bgSnapshot[i * 3 + 1] ||
+                             p[2] != bgSnapshot[i * 3 + 2]);
+            } else {
+                isContent = (p[0] != bgB || p[1] != bgG || p[2] != bgR);
             }
+            if (isContent) p[3] = 255;
+
             p[0] = static_cast<BYTE>(p[0] * p[3] / 255);
             p[1] = static_cast<BYTE>(p[1] * p[3] / 255);
             p[2] = static_cast<BYTE>(p[2] * p[3] / 255);
