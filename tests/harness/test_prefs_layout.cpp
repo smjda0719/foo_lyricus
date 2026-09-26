@@ -203,6 +203,8 @@ void TestInsideClientArea() {
                     L.presetDelete, L.presetImport, L.presetExport,
                     L.titleCtrl, L.ctrlModeBtn,
                     L.ctrlCards[0], L.ctrlCards[1], L.ctrlCards[2], L.ctrlCards[3],
+                    L.titleBg, L.bgClear, L.bgPick, L.bgFit,
+                    L.bgOpacitySlider, L.bgBlurSlider, L.bgDimSlider,
                 };
                 for (const RECT& r : all) {
                     if (IsEmpty(r)) continue;

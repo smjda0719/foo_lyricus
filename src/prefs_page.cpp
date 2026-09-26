@@ -102,6 +102,13 @@ constexpr int kHitPresetImport = -8;
 constexpr int kHitPresetExport = -9;
 // 控件配色（D-093）
 constexpr int kHitCtrlMode     = -10;
+// ---- 背景图（D-098）----
+constexpr int kHitBgPick    = -11;   // 「选择图片…」
+constexpr int kHitBgClear   = -12;   // 「清除」
+constexpr int kHitBgFit     = -13;   // 适配方式（点击循环，不是下拉）
+constexpr int kHitBgOpacity = -14;   // 下面三个是滑块
+constexpr int kHitBgBlur    = -15;
+constexpr int kHitBgDim     = -16;
 
 // 控件基色块用**独立的索引区**，不和上面那 6 个配色色块（0..5）混。
 // 混在一起的话 HitTest 的 `hit < kPrefsColorCount` 判断会把它们误当成配色色块，
@@ -199,7 +206,15 @@ private:
 
     void DrawPage(HDC dc, const RECT& rc, const PrefsLayout& L, const PrefsTheme& T);
     void DrawColorCard(HDC dc, const RECT& card, int index);
-    void DrawSlider(HDC dc, const RECT& r, int value);
+    // 滑块绘制。maxValue 让同一个函数服务不同量程的滑块 ——
+    // 不透明度是 0..255、图片不透明度 0..100、磨砂 0..40、压暗 0..90。
+    // 各写一份的话，手柄位置/圆角/热区那几行会在四个地方慢慢跑偏。
+    // 滑块绘制。hit 是它的命中目标 —— 有了它，"这个滑块现在是不是热的"
+    // 就不用猜（`m_hot == hit || m_dragSlider == hit`）。
+    // min/max 让同一个函数服务不同量程：面板不透明度 60..255、
+    // 图片不透明度 0..100、磨砂 0..40、压暗 0..90。
+    // 各写一份的话，手柄位置那几行会在四个地方慢慢跑偏。
+    void DrawSlider(HDC dc, const RECT& r, int hit, int value, int minValue, int maxValue);
     void DrawButton(HDC dc, const RECT& r, const wchar_t* text, int hitId,
                     const PrefsTheme& T, bool leftAlign);
     void DrawResetButton(HDC dc, const RECT& r);
@@ -233,7 +248,16 @@ private:
     //    应用过的值已经在各项设置里了，这个字符串只决定按钮上写什么。
     std::wstring m_presetName;
 
-    void SetAlphaFromSliderX(int x);
+    // 把鼠标 x 换算成某个滑块的值并写进 m_edited。
+    //
+    // 泛化自原来的 SetAlphaFromSliderX —— 现在有四个滑块（面板不透明度、
+    // 图片不透明度、磨砂、压暗），量程各不相同。每个各写一份的话，
+    // 手柄半径的偏移、long long 防溢出这些细节会在四处慢慢跑偏，
+    // 而"哪个滑块偏了 2 像素"是很难看出来的。
+    void SetSliderFromX(int hit, int x);
+    // 当前鼠标 x 落在哪个滑块的值上（点哪儿跳到哪儿用）
+    void DrawBgArea(HDC dc, const PrefsLayout& L);
+    void OnBgPick();   // 「选择图片…」
 
     // 弹一个模态取色器。
     //
@@ -264,7 +288,10 @@ private:
     // 交互状态
     int  m_hot       = kHitNone;   // 鼠标悬停在谁身上
     int  m_active    = kHitNone;   // 按下了谁
-    bool m_dragAlpha = false;      // 正在拖不透明度滑块
+    // 正在拖哪个滑块（kHitNone = 没有）。用**哪个**而不是布尔，
+    // 是因为现在有四个滑块；布尔的话每加一个就要多一个标志，
+    // 而漏掉"松开时清哪一个"就是滑块粘住鼠标。
+    int  m_dragSlider = kHitNone;
     bool m_tracking  = false;      // 已登记 TME_LEAVE
 
     // 字体按 dpi 建一次就够（对话框存续期间不会变 dpi）
@@ -421,6 +448,13 @@ int CLyricusPrefsDlg::HitTest(POINT pt) const {
     if (inside(L.presetDelete)) return kHitPresetDelete;
     if (inside(L.presetImport)) return kHitPresetImport;
     if (inside(L.presetExport)) return kHitPresetExport;
+    // ---- 背景图（D-098）----
+    if (inside(L.bgClear))         return kHitBgClear;
+    if (inside(L.bgPick))          return kHitBgPick;
+    if (inside(L.bgFit))           return kHitBgFit;
+    if (inside(L.bgOpacitySlider)) return kHitBgOpacity;
+    if (inside(L.bgBlurSlider))    return kHitBgBlur;
+    if (inside(L.bgDimSlider))     return kHitBgDim;
     // ---- 控件配色（D-093）----
     if (inside(L.ctrlModeBtn))  return kHitCtrlMode;
     for (int i = 0; i < kPrefsCtrlColorCount; ++i) {
@@ -560,7 +594,8 @@ void CLyricusPrefsDlg::DrawPage(HDC dc, const RECT& rc, const PrefsLayout& L,
     }
 
     // ---- 滑块 ----
-    if (!empty(L.slider)) DrawSlider(dc, L.slider, m_edited.alpha);
+    if (!empty(L.slider)) DrawSlider(dc, L.slider, kHitSlider, m_edited.alpha,
+                                     kMinAlpha, kMaxAlpha);
 
     // ---- 底部说明 ----
     DrawTextIn(dc, L.hint,
@@ -572,6 +607,7 @@ void CLyricusPrefsDlg::DrawPage(HDC dc, const RECT& rc, const PrefsLayout& L,
     if (!empty(L.reset)) DrawResetButton(dc, L.reset);
     if (!empty(L.fontBtn)) DrawFontButton(dc, L.fontBtn);
     DrawPresetArea(dc, L);
+    DrawBgArea(dc, L);
     DrawCtrlColorArea(dc, L);
 }
 
@@ -600,7 +636,8 @@ void CLyricusPrefsDlg::DrawColorCard(HDC dc, const RECT& card, int index) {
                m_fontBody, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 }
 
-void CLyricusPrefsDlg::DrawSlider(HDC dc, const RECT& r, int value) {
+void CLyricusPrefsDlg::DrawSlider(HDC dc, const RECT& r, int hit, int value,
+                                  int minValue, int maxValue) {
     const int dpi = static_cast<int>(GetDpiForWindowSafe(m_hWnd));
     const PrefsTheme T = CurrentTheme();
 
@@ -620,10 +657,15 @@ void CLyricusPrefsDlg::DrawSlider(HDC dc, const RECT& r, int value) {
 
     // 已填充部分 + 手柄位置
     const int span = right - left;
-    const int pos  = left + MulDiv(span, ClampAlpha(value) - kMinAlpha,
-                                   kMaxAlpha - kMinAlpha);
+    // ⚠️ 量程由参数决定，**不是**写死的 60..255（那是面板不透明度专用的）。
+    //    图片不透明度是 0..100、磨砂 0..40、压暗 0..90 —— 写死的话
+    //    后三个滑块的手柄位置全都会算错。
+    if (maxValue <= minValue) return;
+    if (value < minValue) value = minValue;
+    if (value > maxValue) value = maxValue;
+    const int pos  = left + MulDiv(span, value - minValue, maxValue - minValue);
 
-    const bool hot = (m_hot == kHitSlider) || m_dragAlpha;
+    const bool hot = (m_hot == hit) || (m_dragSlider == hit);
 
     if (pos > left) {
         RECT fill{ left, track.top, pos, track.bottom };
@@ -812,6 +854,116 @@ void CLyricusPrefsDlg::PickCtrlColor(int index) {
     }
 }
 
+// 背景图区（D-098）。
+void CLyricusPrefsDlg::DrawBgArea(HDC dc, const PrefsLayout& L) {
+    if (empty(L.titleBg) && empty(L.bgPick)) return;   // 整区被降级了
+
+    const PrefsTheme& T = CurrentTheme();
+    const bool hasImg = !m_edited.bgImage.empty();
+
+    if (!empty(L.titleBg)) {
+        DrawTextIn(dc, L.titleBg, L"背景图", T.text, m_fontBold,
+                   DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    }
+
+    // 「清除」只在设了图时才画 —— 没图时它没有意义，画出来只会让人
+    // 点一下然后什么都没发生。
+    if (hasImg && !empty(L.bgClear)) {
+        DrawButton(dc, L.bgClear, L"清除", kHitBgClear, T, false);
+    }
+
+    // 「选择图片…」兼任"当前路径"的显示位：单独再放一个只读路径框的话，
+    // 窄窗口下两个都会被压扁，不如合成一个。
+    //
+    // ⚠️ 路径只显示**文件名**（`PathFindFileNameW`），不显示全路径：
+    //    全路径的前半段永远是 C:\Users\...\Pictures\ 这种没有信息量的东西，
+    //    而按钮宽度有限，显示全路径的结果是文件名被截掉 —— 恰好把
+    //    唯一有用的部分丢了。
+    if (!empty(L.bgPick)) {
+        std::wstring caption;
+        if (hasImg) {
+            const std::wstring full = Utf8ToWide(m_edited.bgImage.c_str());
+            const wchar_t* base = ::PathFindFileNameW(full.c_str());
+            caption = std::wstring(L"选择图片…（当前：") +
+                      ((base && *base) ? base : full.c_str()) + L"）";
+        } else {
+            caption = L"选择图片…（当前：无，用纯色底）";
+        }
+        DrawButton(dc, L.bgPick, caption.c_str(), kHitBgPick, T, false);
+    }
+
+    // 适配方式：**点击循环**而不是下拉。四个值，点三下转一圈 ——
+    // 比弹菜单少一次交互，也少一份要测的代码。
+    if (!empty(L.bgFit)) {
+        static const wchar_t* const kFitNames[] = {
+            L"填充（裁掉多余）", L"适应（可能留边）", L"拉伸（会变形）", L"平铺"
+        };
+        int f = m_edited.bgFit;
+        if (f < kBgFitMin || f > kBgFitMax) f = kBgFitMin;
+        const std::wstring cap = std::wstring(L"适配方式：") + kFitNames[f] + L"（点击切换）";
+        DrawButton(dc, L.bgFit, cap.c_str(), kHitBgFit, T, false);
+    }
+
+    // 三个参数滑块。
+    //
+    // ⚠️ 没设图时画成**禁用态**（暗一档）但**仍然可拖** ——
+    //    完全不给拖的话，用户想"先把参数调好再选图"就做不到；
+    //    而画成亮色又会让人以为已经生效了。暗一档 + 能拖是这两者之间
+    //    唯一说得通的做法。
+    wchar_t buf[32];
+    auto drawOne = [&](const RECT& lab, const RECT& val, const RECT& sl,
+                       int hit, int cur, int lo, int hi, const wchar_t* text,
+                       const wchar_t* unit) {
+        if (empty(sl)) return;
+        const COLORREF c = hasImg ? T.text : T.textDim;
+        DrawTextIn(dc, lab, text, c, m_fontBody,
+                   DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        swprintf_s(buf, L"%d%s", cur, unit);
+        DrawTextIn(dc, val, buf, c, m_fontBody,
+                   DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+        DrawSlider(dc, sl, hit, cur, lo, hi);
+    };
+
+    drawOne(L.bgOpacityLabel, L.bgOpacityValue, L.bgOpacitySlider,
+            kHitBgOpacity, m_edited.bgOpacity, kBgOpacityMin, kBgOpacityMax,
+            L"图片不透明度", L"%");
+    drawOne(L.bgBlurLabel, L.bgBlurValue, L.bgBlurSlider,
+            kHitBgBlur, m_edited.bgBlur, kBgBlurMin, kBgBlurMax,
+            L"磨砂强度", L"");
+    drawOne(L.bgDimLabel, L.bgDimValue, L.bgDimSlider,
+            kHitBgDim, m_edited.bgDim, kBgDimMin, kBgDimMax,
+            L"压暗（保证歌词可读）", L"%");
+}
+
+// 「选择图片…」（D-098）。
+void CLyricusPrefsDlg::OnBgPick() {
+    wchar_t path[MAX_PATH] = L"";
+    if (!m_edited.bgImage.empty()) {
+        const std::wstring cur = Utf8ToWide(m_edited.bgImage.c_str());
+        wcsncpy_s(path, cur.c_str(), _TRUNCATE);
+    }
+
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner   = m_hWnd;
+    ofn.lpstrFilter = L"图片\0*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.webp;*.tif;*.tiff\0所有文件\0*.*\0";
+    ofn.lpstrFile   = path;
+    ofn.nMaxFile    = MAX_PATH;
+    ofn.lpstrTitle  = L"选择面板背景图";
+    ofn.Flags       = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER;
+
+    if (!::GetOpenFileNameW(&ofn)) return;   // 用户取消
+
+    m_edited.bgImage = WideToUtf8(path);
+    // ⚠️ 换图必须**显式清缓存**：选了一张新图但四个参数都没变时，
+    //    bg_image 那边会因为"路径变了"而重算 —— 那是它该做的。
+    //    这里显式清是为了让语义更清楚：换了图就等于换了整个背景，
+    //    不该指望下游靠参数比对去发现。
+    ClearPanelBackgroundCache();
+    DebugLog("背景图：用户选了 %ls", path);
+    NotifyChanged();
+}
+
 void CLyricusPrefsDlg::DrawPresetArea(HDC dc, const PrefsLayout& L) {
     if (empty(L.titlePreset) && empty(L.presetCombo)) return;   // 整体降级了
 
@@ -866,8 +1018,11 @@ void CLyricusPrefsDlg::DrawPresetArea(HDC dc, const PrefsLayout& L) {
 // ---------------------------------------------------------------------------
 
 void CLyricusPrefsDlg::OnMouseMove(UINT /*flags*/, CPoint pt) {
-    if (m_dragAlpha) {
-        SetAlphaFromSliderX(pt.x);
+    // 拖动中：直接把 x 喂给那个滑块。注意是**按记录下来的那个 hit**，
+    // 不是重新命中测试 —— 拖出滑块范围（甚至拖到窗口外）时仍然要跟着走，
+    // 那正是滑块该有的行为。
+    if (m_dragSlider != kHitNone) {
+        SetSliderFromX(m_dragSlider, pt.x);
         return;
     }
 
@@ -897,19 +1052,22 @@ void CLyricusPrefsDlg::OnLButtonDown(UINT /*flags*/, CPoint pt) {
     m_active = hit;
     ::SetCapture(m_hWnd);
 
-    if (hit == kHitSlider) {
-        m_dragAlpha = true;
-        SetAlphaFromSliderX(pt.x);   // 点哪儿跳到哪儿，而不是只响应拖动
+    // 四个滑块都用同一个起点处理：点哪儿跳到哪儿，而不是只响应拖动。
+    if (hit == kHitSlider || hit == kHitBgOpacity || hit == kHitBgBlur || hit == kHitBgDim) {
+        m_dragSlider = hit;
+        SetSliderFromX(hit, pt.x);
     }
     Repaint();
 }
 
 void CLyricusPrefsDlg::OnLButtonUp(UINT /*flags*/, CPoint pt) {
     const int hit  = m_active;
-    const bool wasDrag = m_dragAlpha;
+    // 松开之前记一下"刚才是不是在拖" —— 拖拽结束时不该再当成一次点击
+    // （否则松手会顺带触发按钮动作，滑块拖到一半就把图清了那种）。
+    const bool wasDrag = (m_dragSlider != kHitNone);
 
-    m_active    = kHitNone;
-    m_dragAlpha = false;
+    m_active     = kHitNone;
+    m_dragSlider = kHitNone;
     if (::GetCapture() == m_hWnd) ::ReleaseCapture();
 
     if (hit == kHitReset) {
@@ -932,6 +1090,26 @@ void CLyricusPrefsDlg::OnLButtonUp(UINT /*flags*/, CPoint pt) {
     if (hit == kHitPresetDelete) { OnPresetDelete();        Repaint(); return; }
     if (hit == kHitPresetImport) { OnPresetImport();        Repaint(); return; }
     if (hit == kHitPresetExport) { OnPresetExport();        Repaint(); return; }
+
+    // ---- 背景图（D-098）----
+    if (hit == kHitBgPick) { OnBgPick(); Repaint(); return; }
+    if (hit == kHitBgClear) {
+        m_edited.bgImage.clear();
+        ClearPanelBackgroundCache();
+        NotifyChanged();
+        Repaint();
+        return;
+    }
+    if (hit == kHitBgFit) {
+        // 循环切换。夹一次是因为配置是文本的，手改可能塞进越界值 ——
+        // 不夹的话 (7+1)%4 = 0 会突然跳回第一个，看着像"点了没反应还倒退"。
+        int f = m_edited.bgFit;
+        if (f < kBgFitMin || f > kBgFitMax) f = kBgFitMin;
+        m_edited.bgFit = (f + 1) % (kBgFitMax + 1);
+        NotifyChanged();
+        Repaint();
+        return;
+    }
 
     // ---- 控件配色（D-093）----
     // 基色块的索引从 100 起，和上面那 6 个配色色块（0..5）不重叠，
@@ -1227,21 +1405,43 @@ void CLyricusPrefsDlg::OnPresetExport() {
              WideToUtf8(m_presetName).c_str(), WideToUtf8(path).c_str());
 }
 
-void CLyricusPrefsDlg::SetAlphaFromSliderX(int x) {    const PrefsLayout L = CurrentLayout();
-    const int dpi = static_cast<int>(GetDpiForWindowSafe(m_hWnd));
+void CLyricusPrefsDlg::SetSliderFromX(int hit, int x) {
+    const PrefsLayout L = CurrentLayout();
+    const int dpi   = static_cast<int>(GetDpiForWindowSafe(m_hWnd));
     const int knobR = MulDiv(9, dpi, 96);
-    const int left  = L.slider.left + knobR;
-    const int right = L.slider.right - knobR;
+
+    // 每个滑块的：区域、量程、值存在哪
+    RECT r{};
+    int  lo = 0, hi = 0;
+    int* target = nullptr;
+
+    switch (hit) {
+    case kHitSlider:
+        r = L.slider;          lo = kMinAlpha;     hi = kMaxAlpha;     target = &m_edited.alpha;     break;
+    case kHitBgOpacity:
+        r = L.bgOpacitySlider; lo = kBgOpacityMin; hi = kBgOpacityMax; target = &m_edited.bgOpacity; break;
+    case kHitBgBlur:
+        r = L.bgBlurSlider;    lo = kBgBlurMin;    hi = kBgBlurMax;    target = &m_edited.bgBlur;    break;
+    case kHitBgDim:
+        r = L.bgDimSlider;     lo = kBgDimMin;     hi = kBgDimMax;     target = &m_edited.bgDim;     break;
+    default:
+        return;
+    }
+    if (target == nullptr || r.right <= r.left || hi <= lo) return;
+
+    const int left  = r.left + knobR;
+    const int right = r.right - knobR;
     if (right <= left) return;
 
     // 用 long long 作中间量再除 —— 这里要先做 (x - left) 的偏移，
     // 套不进 MulDiv 的形式；而两个 int 相乘在极端 dpi 下有溢出风险。
-    int v = kMinAlpha + static_cast<int>(
-                static_cast<long long>(x - left) * (kMaxAlpha - kMinAlpha) / (right - left));
-    v = ClampAlpha(v);
+    int v = lo + static_cast<int>(
+                static_cast<long long>(x - left) * (hi - lo) / (right - left));
+    if (v < lo) v = lo;
+    if (v > hi) v = hi;
 
-    if (v == m_edited.alpha) return;
-    m_edited.alpha = v;
+    if (v == *target) return;
+    *target = v;
     NotifyChanged();
     Repaint();
 }

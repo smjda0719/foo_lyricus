@@ -110,6 +110,53 @@ PrefsLayout ComputePrefsLayout(int width, int height, int dpi) {
         }
     }
 
+    // ---- 背景图（D-098）----
+    //
+    // 位置在**控件配色之后、外观预设之前**。这两个的相对顺序是这么定的：
+    // 背景图属于"逐项调外观"那一类（和上面的配色、控件配色是一伙的），
+    // 而外观预设是"整套快照"的操作（保存 / 删除 / 导入 / 导出），
+    // 放在最后更像一个收尾动作 —— 用户调完所有项目之后才想到要存下来。
+    //
+    // ⚠️ 加了这一区之后页面超过 800 逻辑像素，绝大多数窗口装不下 ——
+    //    所以**滚动条是这一区能存在的前提**（D-094）。
+    //    没那条滚动条的话，下面的外观预设和底部按钮会被整个切掉。
+    out.titleBg = RECT{ padX, y, padX + Sx(120), y + Sx(14) };
+
+    // 「清除」和标题同一行、贴右边。设了图才给位置（没图时它没有意义）。
+    const int clrW = Sx(64), clrH = Sx(22);
+    if (padX + Sx(120) + Sx(8) + clrW <= width - padX) {
+        out.bgClear = RECT{ width - padX - clrW, y, width - padX, y + clrH };
+    }
+    y += Sx(14) + Sx(10);
+
+    // 「选择图片…」按钮：整行，同时兼任"当前路径"的显示位。
+    // 单独再放一个只读路径框的话，窄窗口下两个都会被压扁，不如合成一个。
+    out.bgPick = RECT{ padX, y, width - padX, y + Sx(26) };
+    y += Sx(26) + Sx(10);
+
+    // 适配方式：**点击循环**而不是下拉。
+    // 四个值，循环点三下就转一圈 —— 比弹菜单少一次交互，也少一份要测的代码。
+    out.bgFit = RECT{ padX, y, width - padX, y + Sx(24) };
+    y += Sx(24) + Sx(14);
+
+    // 三个参数滑块。和上面的不透明度滑块用同一套排布（标题左、数值右、滑块整行）。
+    const int bgSliderH = Sx(24);
+    struct SliderSlot {
+        RECT* label; RECT* value; RECT* slider; const wchar_t* text;
+    };
+    const SliderSlot slots[3] = {
+        { &out.bgOpacityLabel, &out.bgOpacityValue, &out.bgOpacitySlider, L"图片不透明度" },
+        { &out.bgBlurLabel,    &out.bgBlurValue,    &out.bgBlurSlider,    L"磨砂强度"     },
+        { &out.bgDimLabel,     &out.bgDimValue,     &out.bgDimSlider,     L"压暗（保证歌词可读）" },
+    };
+    for (const SliderSlot& s : slots) {
+        *s.label = RECT{ padX, y, padX + Sx(150), y + Sx(14) };
+        *s.value = RECT{ width - padX - Sx(70), y, width - padX, y + Sx(14) };
+        y += Sx(14) + Sx(6);
+        *s.slider = RECT{ padX, y, width - padX, y + bgSliderH };
+        y += bgSliderH + Sx(12);
+    }
+
     // ---- 外观预设（D-088）----
     //
     // 放在**主体设置之后、底部按钮之前**。放最后会被切掉：宿主给的区域

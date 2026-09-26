@@ -35,8 +35,12 @@ constexpr int kPrefsCtrlColorCount = 4;
 // 页面的**建议尺寸**（逻辑像素）。对话框资源按它设，宿主给多大就画多大 ——
 // 布局全部按实际客户区算，不假设固定尺寸。
 constexpr int kPrefsWidth96  = 380;
-// 330 -> 424（外观预设区）-> 596（控件配色区，D-093）。
-constexpr int kPrefsHeight96 = 596;
+// 330 -> 424（外观预设区）-> 596（控件配色区）-> 940（背景图区，D-098）。
+//
+// ⚠️ 这个值**必须跟着内容走**：它同时是"页面建议尺寸"和"滚动内容高度"，
+//    写小了的话最后那一区会被切掉（测试里那条"所有元素都落在客户区内"
+//    就是钉这个的，它扫的起点正是这个常量 —— 所以常量错了它会红）。
+constexpr int kPrefsHeight96 = 940;
 
 // 首选项页上所有需要定位的元素。
 //
@@ -86,6 +90,22 @@ struct PrefsLayout {
     RECT ctrlModeBtn{};                 // 两态开关（点一下切换「自动 / 自定义」）
     RECT ctrlCards[kPrefsCtrlColorCount]{};        // 4 个基色块
     RECT ctrlCardLabels[kPrefsCtrlColorCount]{};
+
+    // ---- 背景图（D-100）----
+    //
+    //     ◆ 背景图                              [清除]
+    //     [选择图片…  C:\pics\bg.jpg]
+    //     适配方式：填充（点击切换）
+    //     不透明度 [=======|==] 100%
+    //     磨砂强度 [==|=======] 0
+    //     压暗     [|=========] 0
+    RECT titleBg{};              // 小标题：背景图
+    RECT bgClear{};              // 「清除」（标题行右侧）
+    RECT bgPick{};               // 「选择图片…」（也显示当前路径）
+    RECT bgFit{};                // 适配方式（点击循环，不是下拉）
+    RECT bgOpacityLabel{}, bgOpacityValue{}, bgOpacitySlider{};
+    RECT bgBlurLabel{},    bgBlurValue{},    bgBlurSlider{};
+    RECT bgDimLabel{},     bgDimValue{},     bgDimSlider{};
 
     int  dpi = 96;                      // 回传给绘制侧，省得它再查一次
     int  padX = 0;                      // 左右内边距（提示文字要用）
