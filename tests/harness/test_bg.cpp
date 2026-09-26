@@ -21,6 +21,12 @@
 // 加一条 using 比到处补 lyricus:: 更好读，也不容易漏。
 using namespace lyricus;
 
+// 手动构图的参数范围（D-103）
+using lyricus::kBgZoomMinPct;
+using lyricus::kBgZoomMaxPct;
+using lyricus::kBgOffsetMinPct;
+using lyricus::kBgOffsetMaxPct;
+
 namespace {
 
 int g_pass = 0, g_fail = 0;
@@ -385,9 +391,122 @@ void TestBlend() {
 
 } // namespace
 
+// 手动构图（D-103）单独一组
+namespace {
+
+void TestManual() {
+    std::printf("\n== 手动构图（BgFit::Manual）==\n");
+
+    // 夹取
+    {
+        BgManual m;
+        m.zoomPct = 10; m.offsetXPct = -500; m.offsetYPct = 500;
+        const BgManual c = lyricus::ClampBgManual(m);
+        Check(c.zoomPct == kBgZoomMinPct, "★ 缩放被夹到下限 100（再小会露边）");
+        Check(c.offsetXPct == kBgOffsetMinPct && c.offsetYPct == kBgOffsetMaxPct,
+              "★ 偏移被夹到 ±100");
+    }
+
+    // zoom=100 + offset=0 = 刚好铺满且居中 —— 也就是 Cover 的效果
+    {
+        const auto p = ComputeBgPlacement(400, 100, 200, 200, BgFit::Manual, BgManual{});
+        Check(p.valid && !p.tile, "Manual 有效且不平铺");
+        Check(EqRect(p.src, RECT{0, 0, 400, 100}), "★ Manual：源不裁（整图参与）");
+        // 比例 = max(200/400, 200/100) = 2.0 -> 画出来 800x200，居中 y = (200-200)/2 = 0
+        Check(RectW(p.dst) == 800 && RectH(p.dst) == 200, "★ zoom=100 -> 按铺满比例");
+        Check(p.dst.left == -300 && p.dst.top == 0, "★ offset=0 -> 居中");
+    }
+
+    // 三个锚点：offset -100 / 0 / +100 分别对应"左贴 / 居中 / 右贴"
+    {
+        BgManual m;
+        m.zoomPct = 200;   // 放大一倍，这样横向有余量可移
+        // 图 200x200 -> 区域 200x200。base = 1.0，zoom 2.0 -> 画出来 400x400
+        // rangeX = (400-200)/2 = 100
+        m.offsetXPct = -100;
+        auto p = ComputeBgPlacement(200, 200, 200, 200, BgFit::Manual, m);
+        Check(p.dst.left == 0, "★ offset=-100 -> 图左边贴住区域左边");
+
+        m.offsetXPct = 0;
+        p = ComputeBgPlacement(200, 200, 200, 200, BgFit::Manual, m);
+        Check(p.dst.left == -100, "★ offset=0 -> 居中（左边在 -range）");
+
+        m.offsetXPct = 100;
+        p = ComputeBgPlacement(200, 200, 200, 200, BgFit::Manual, m);
+        Check(p.dst.right == 200, "★ offset=+100 -> 图右边贴住区域右边");
+        Check(p.dst.left == -200, "★ 同上，左边相应在 -2*range");
+    }
+
+    // BgManualRange 和实际摆放要对得上（预览控件靠它换算鼠标位移）
+    {
+        BgManual m; m.zoomPct = 150;
+        int rx = 0, ry = 0;
+        lyricus::BgManualRange(200, 200, 200, 200, m, rx, ry);
+        const auto p = ComputeBgPlacement(200, 200, 200, 200, BgFit::Manual, m);
+        Check(rx == -p.dst.left, "★ range 和居中的左边距一致（预览换算才对得上）");
+        Check(ry == -p.dst.top, "★ 纵向同理");
+        Check(rx > 0, "★ zoom=150 时确实有余量可移");
+    }
+
+    // zoom=100 时横向可能没有余量（比例刚好），不能算出负数范围
+    {
+        int rx = 0, ry = 0;
+        lyricus::BgManualRange(400, 100, 200, 200, BgManual{}, rx, ry);
+        Check(rx >= 0 && ry >= 0, "★ zoom=100 时范围不为负");
+        Check(rx == 300, "★ 但纵向铺满时横向余量很大（400x100 的图铺 200x200）");
+    }
+
+    // ★★ 覆盖是硬约束：任何参数组合下，图都必须盖住整个区域。
+    //    留出没图盖住的边，露出来的是面板底色 —— 那看起来像
+    //    "图没加载全"，而不像"用户拖多了"。所以这条扫得密一些。
+    {
+        int bad = 0, n = 0;
+        const int zooms[] = { 100, 175, 250, 325, 400 };
+        for (int iw = 50; iw <= 400; iw += 61) {
+            for (int ih = 50; ih <= 400; ih += 67) {
+                for (int dw = 20; dw <= 300; dw += 71) {
+                    for (int dh = 20; dh <= 300; dh += 73) {
+                        for (int zi = 0; zi < 5; ++zi) {
+                            const int z = zooms[zi];
+                            for (int ox = -100; ox <= 100; ox += 50) {
+                                for (int oy = -100; oy <= 100; oy += 50) {
+                                    BgManual m;
+                                    m.zoomPct = z; m.offsetXPct = ox; m.offsetYPct = oy;
+                                    const auto p = ComputeBgPlacement(iw, ih, dw, dh,
+                                                                      BgFit::Manual, m);
+                                    ++n;
+                                    if (!p.valid) { ++bad; continue; }
+                                    if (p.dst.left > 0 || p.dst.top > 0 ||
+                                        p.dst.right < dw || p.dst.bottom < dh) ++bad;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Check(bad == 0, "★★ 几万种参数组合：图始终完全覆盖区域（不留空白）");
+        Check(n > 10000, "（确实扫到了足够多的组合）");
+    }
+
+    // 越界的参数（手改配置）也要被夹住而不是画出空白
+    {
+        BgManual m;
+        m.zoomPct = -50; m.offsetXPct = 9999; m.offsetYPct = -9999;
+        const auto p = ComputeBgPlacement(300, 200, 150, 150, BgFit::Manual, m);
+        Check(p.valid, "越界参数仍能算出布局");
+        Check(p.dst.left <= 0 && p.dst.top <= 0 &&
+              p.dst.right >= 150 && p.dst.bottom >= 150,
+              "★ 越界参数被夹住后仍然完全覆盖");
+    }
+}
+
+} // namespace
+
 int main() {
     std::printf("======== 面板背景图（纯计算）========\n");
     TestPlacement();
+    TestManual();
     TestBlur();
     TestDimOpacity();
     TestBlend();

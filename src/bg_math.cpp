@@ -15,7 +15,39 @@ int ClampInt(int v, int lo, int hi) {
 
 } // namespace
 
-BgPlacement ComputeBgPlacement(int imgW, int imgH, int dstW, int dstH, BgFit fit) {
+BgManual ClampBgManual(const BgManual& m) {
+    BgManual r = m;
+    // 缩放下限是 100（= 刚好铺满）而不是 0：再小就露边，
+    // 而露出来的那块是面板底色 —— 看起来像"图没加载全"。
+    if (r.zoomPct < kBgZoomMinPct) r.zoomPct = kBgZoomMinPct;
+    if (r.zoomPct > kBgZoomMaxPct) r.zoomPct = kBgZoomMaxPct;
+    if (r.offsetXPct < kBgOffsetMinPct) r.offsetXPct = kBgOffsetMinPct;
+    if (r.offsetXPct > kBgOffsetMaxPct) r.offsetXPct = kBgOffsetMaxPct;
+    if (r.offsetYPct < kBgOffsetMinPct) r.offsetYPct = kBgOffsetMinPct;
+    if (r.offsetYPct > kBgOffsetMaxPct) r.offsetYPct = kBgOffsetMaxPct;
+    return r;
+}
+
+void BgManualRange(int imgW, int imgH, int dstW, int dstH, const BgManual& m,
+                   int& outRangeX, int& outRangeY) {
+    outRangeX = 0;
+    outRangeY = 0;
+    if (imgW <= 0 || imgH <= 0 || dstW <= 0 || dstH <= 0) return;
+
+    const BgManual c = ClampBgManual(m);
+    const double sx = static_cast<double>(dstW) / imgW;
+    const double sy = static_cast<double>(dstH) / imgH;
+    const double base = (std::max)(sx, sy);
+    const double s = base * (c.zoomPct / 100.0);
+
+    const int rx = (static_cast<int>(std::lround(imgW * s)) - dstW) / 2;
+    const int ry = (static_cast<int>(std::lround(imgH * s)) - dstH) / 2;
+    outRangeX = (rx > 0) ? rx : 0;
+    outRangeY = (ry > 0) ? ry : 0;
+}
+
+BgPlacement ComputeBgPlacement(int imgW, int imgH, int dstW, int dstH, BgFit fit,
+                               const BgManual& manualIn) {
     BgPlacement p;
     if (imgW <= 0 || imgH <= 0 || dstW <= 0 || dstH <= 0) return p;   // valid 保持 false
 
@@ -36,6 +68,45 @@ BgPlacement ComputeBgPlacement(int imgW, int imgH, int dstW, int dstH, BgFit fit
         p.dst = RECT{ 0, 0, dstW, dstH };
         p.tile = false;
         return p;
+
+    case BgFit::Manual: {
+        // 用户自己拖出来的构图（D-103）。
+        //
+        // 先夹参数再算 —— 后面的范围计算依赖"图 >= 区域"，
+        // 而那个前提正是 ClampBgManual 保证的（zoom >= 100）。
+        const BgManual m = ClampBgManual(manualIn);
+
+        const double sx = static_cast<double>(dstW) / imgW;
+        const double sy = static_cast<double>(dstH) / imgH;
+        // 基数是 Cover 的比例：刚好铺满所需的最小缩放。用户在此基础上再放大。
+        const double base = (std::max)(sx, sy);
+        const double s = base * (m.zoomPct / 100.0);
+
+        const int drawW = static_cast<int>(std::lround(imgW * s));
+        const int drawH = static_cast<int>(std::lround(imgH * s));
+
+        int rangeX = 0, rangeY = 0;
+        BgManualRange(imgW, imgH, dstW, dstH, m, rangeX, rangeY);
+
+        // 三个锚点（横向，纵向同理）：
+        //   offset = -100 -> dstX = 0            图左边贴住区域左边
+        //   offset =    0 -> dstX = -rangeX      居中
+        //   offset = +100 -> dstX = -2*rangeX    图右边贴住区域右边
+        // 用 long long 算中间量：rangeX 在极端 dpi 下可能到几万，乘 100 之后再
+        // 叠加仍在 int 内，但留点余量更稳妥。
+        const int dstX = -rangeX - static_cast<int>(
+                             static_cast<long long>(rangeX) * m.offsetXPct / 100);
+        const int dstY = -rangeY - static_cast<int>(
+                             static_cast<long long>(rangeY) * m.offsetYPct / 100);
+
+        // 源**不裁**（整图都参与）：手动模式下"看到图的哪一块"完全由
+        // dst 的位置决定 —— 把裁剪也放进 src 会让两套坐标都要维护，
+        // 而绘制侧只需要一个 dst 矩形。
+        p.src = RECT{ 0, 0, imgW, imgH };
+        p.dst = RECT{ dstX, dstY, dstX + drawW, dstY + drawH };
+        p.tile = false;
+        return p;
+    }
 
     case BgFit::Cover:
     case BgFit::Contain:

@@ -30,10 +30,30 @@ enum class BgFit : int {
     Contain = 1,   // 整图可见，居中留边
     Stretch = 2,   // 拉伸到目标尺寸（会变形）
     Tile    = 3,   // 原尺寸平铺
+    Manual  = 4,   // 用户自己拖出来的构图（见 BgManual）
 };
 
 constexpr int kBgFitMin = 0;
-constexpr int kBgFitMax = 3;
+constexpr int kBgFitMax = 4;
+
+// 手动构图的参数。
+//
+// ⚠️ 全部存**百分比**，不存像素。
+//
+// 【为什么】面板尺寸是会变的（用户拖窗口、换 dpi、换预设里的面板大小），
+// 存像素的话用户拖一次窗口、或者换台机器，构图就整体偏掉了 ——
+// 而且偏得没规律，看起来像"图的定位坏了"。
+// 存百分比则永远相对：缩放是"相对于刚好铺满"，偏移是"相对于还能移动的范围"。
+struct BgManual {
+    int zoomPct    = 100;   // 缩放。100 = 刚好铺满（下限，再小就露边）
+    int offsetXPct = 0;     // -100 = 图左边贴住区域左边；+100 = 图右边贴住右边
+    int offsetYPct = 0;     // 同上，纵向。0 = 居中
+};
+
+constexpr int kBgZoomMinPct    = 100;   // 100 = 刚好铺满。小于它会露出没图盖住的边
+constexpr int kBgZoomMaxPct    = 400;   // 再往上就是一块纯色了，没有意义
+constexpr int kBgOffsetMinPct  = -100;
+constexpr int kBgOffsetMaxPct  = 100;
 
 // 背景图的参数范围。
 constexpr int kBgBlurMin     = 0;
@@ -51,13 +71,30 @@ struct BgPlacement {
     bool valid = false;
 };
 
-// 算适配。四种方式都返回**同一套** src/dst，绘制侧不必分支 ——
-// 只有 Tile 特殊（它靠 tile 标志，由绘制侧循环贴）。
+// 算适配。四种自动方式 + 手动构图都返回**同一套** src/dst，
+// 绘制侧不必分支 —— 只有 Tile 特殊（它靠 tile 标志，由绘制侧循环贴）。
 //
 // 【为什么值得单独测】这是最容易差一像素的地方：Cover 的裁剪要
 // "宁可少一像素也不要越界"，Contain 的居中要处理奇数差（不能用整数除 2 了事，
 // 否则 3 像素的差会偏 1 像素，图看着就是歪的）。
-BgPlacement ComputeBgPlacement(int imgW, int imgH, int dstW, int dstH, BgFit fit);
+BgPlacement ComputeBgPlacement(int imgW, int imgH, int dstW, int dstH, BgFit fit,
+                               const BgManual& manual = BgManual{});
+
+// 夹取手动参数。**保证图始终完全覆盖区域**。
+//
+// 【为什么"覆盖"是硬约束】留出没图盖住的边，露出来的是面板底色 ——
+// 那看起来像"图没加载全"，而不像"用户拖多了"。
+// 所以缩放有下限（100 = 刚好铺满）、偏移有范围（两边都不能拖出空白）。
+//
+// ⚠️ 必须在**用之前**夹，而不是在存的时候才夹 —— 用户拖动过程中每一帧
+//    都要过这里，否则拖到边界会先画出一块空白再被拉回来。
+BgManual ClampBgManual(const BgManual& m);
+
+// 手动构图的"可移动范围"（像素，单边）。
+// 供预览控件把鼠标位移换算成 offset 百分比 —— 它必须和 ComputeBgPlacement
+// 用**同一个**范围，否则预览里拖到底和面板里拖到底是两个位置。
+void BgManualRange(int imgW, int imgH, int dstW, int dstH, const BgManual& m,
+                   int& outRangeX, int& outRangeY);
 
 // 盒式模糊（原地），作用在 BGRA 缓冲上。radius 是 96dpi 逻辑像素，内部按
 // scale 放大成物理像素。
