@@ -149,6 +149,11 @@ constexpr int kHitClickThrough = -40;
 //    两段编号首尾相接时，边界上那个值会同时属于两边。
 constexpr int kHitBgAspect = -50;
 
+// 翻转 / 旋转（D-133）。编号继续留空档 —— 每一段都隔开（D-113 的教训：
+// 两段首尾相接时，边界上那个值会同时属于两边，而那种 bug 极难看出来）。
+constexpr int kHitBgFlip   = -60;
+constexpr int kHitBgRotate = -61;
+
 // 预览框宽高比的可调范围（×100）。
 // 50 = 0.5:1（竖着的窄条），800 = 8:1（超宽）。
 // 比这更极端的比例下预览框会变成一条线，反而看不出构图。
@@ -643,6 +648,8 @@ int CLyricusPrefsDlg::HitTest(POINT pt) const {
     if (inside(L.bgBlurSlider))    return kHitBgBlur;
     if (inside(L.bgDimSlider))     return kHitBgDim;
     if (inside(L.bgAspectSlider))  return kHitBgAspect;
+    if (inside(L.bgFlip))          return kHitBgFlip;
+    if (inside(L.bgRotate))        return kHitBgRotate;
 
     // ⚠️ 角手柄要**先于**预览区判 —— 手柄贴在图的四角上，
     //    顺序反了的话它们永远会被预览区先吃掉，拖角就变成了平移。
@@ -1222,6 +1229,31 @@ void CLyricusPrefsDlg::DrawBgArea(HDC dc, const PrefsLayout& L) {
             kHitBgDim, m_edited.bgDim, kBgDimMin, kBgDimMax,
             L"压暗（保证歌词可读）", L"%");
 
+    // 翻转 / 旋转（D-133）。和「适配方式」一样是点击循环 ——
+    // 各只有 4 个离散值，循环点三下转一圈，比拖滑块准也快。
+    //
+    // ⚠️ 名字表的长度要**用 sizeof 推**，不要另写一个常量。
+    //    「适配方式」那边踩过：加 BgFit::Manual 时把上限从 3 改成 4、
+    //    却忘了给数组补第 5 项，于是 f == 4 读到数组外的垃圾指针，
+    //    在 wcslen 里访问违例。而当时的 `if (f > kBgFitMax)` 挡不住 ——
+    //    它把 f 夹到"合法的最大值"，而上限本身已经越界。
+    if (!empty(L.bgFlip)) {
+        static const wchar_t* kFlipNames[] = { L"无", L"水平", L"垂直", L"水平+垂直" };
+        const int n = static_cast<int>(sizeof(kFlipNames) / sizeof(kFlipNames[0]));
+        // 位编码：bit0 = 水平，bit1 = 垂直
+        int f = (m_edited.bgFlipH ? 1 : 0) | (m_edited.bgFlipV ? 2 : 0);
+        if (f < 0 || f >= n) f = 0;
+        const std::wstring cap = std::wstring(L"翻转：") + kFlipNames[f] + L"（点击切换）";
+        DrawButton(dc, L.bgFlip, cap.c_str(), kHitBgFlip, T, false);
+    }
+    if (!empty(L.bgRotate)) {
+        static const wchar_t* kRotNames[] = { L"0 度", L"90 度", L"180 度", L"270 度" };
+        const int n = static_cast<int>(sizeof(kRotNames) / sizeof(kRotNames[0]));
+        int r = m_edited.bgRotate90 % n;
+        if (r < 0) r += n;
+        const std::wstring cap = std::wstring(L"旋转：") + kRotNames[r] + L"（点击切换）";
+        DrawButton(dc, L.bgRotate, cap.c_str(), kHitBgRotate, T, false);
+    }
     // 预览比例（D-132）。**不走 drawOne** —— 它的值住在独立 cfg 里
     //（预览框的长宽比只影响这一个页面，不属于"浮动面板外观"那份快照；
     //  混进去会让每次拖这个滑块都触发一轮面板重绘）。
@@ -1303,6 +1335,9 @@ bool CLyricusPrefsDlg::PreviewImageRect(const PrefsLayout& L, const BgManual& mI
 BgManual CLyricusPrefsDlg::CurrentManual() const {
     BgManual m;
     m.zoomPct    = m_edited.bgZoomPct;
+    m.flipH      = m_edited.bgFlipH;
+    m.flipV      = m_edited.bgFlipV;
+    m.rotate90   = m_edited.bgRotate90;
     m.locked     = m_edited.bgLocked;
     m.lockedW    = m_edited.bgLockedW;
     m.offsetXPct = m_edited.bgOffsetXPct;
@@ -1819,6 +1854,30 @@ void CLyricusPrefsDlg::OnLButtonUp(UINT /*flags*/, CPoint pt) {
         return;
     }
 
+    // ---- 翻转 / 旋转（D-133）----
+    //
+    // 都是"点一下跳到下一个值"。翻转用**位编码**循环：
+    //     0 无 -> 1 水平 -> 2 垂直 -> 3 水平+垂直 -> 0
+    // 比"两个独立开关"少一个控件，顺序也符合直觉（先试水平，
+    // 再试垂直，最后两者）。
+    if (hit == kHitBgFlip) {
+        int f = (m_edited.bgFlipH ? 1 : 0) | (m_edited.bgFlipV ? 2 : 0);
+        f = (f + 1) & 3;
+        m_edited.bgFlipH = (f & 1) != 0;
+        m_edited.bgFlipV = (f & 2) != 0;
+        NotifyChanged();
+        Repaint();
+        return;
+    }
+    if (hit == kHitBgRotate) {
+        int r = m_edited.bgRotate90 % 4;
+        if (r < 0) r += 4;
+        m_edited.bgRotate90 = (r + 1) % 4;
+        NotifyChanged();
+        Repaint();
+        return;
+    }
+
     // ---- 控件配色（D-093）----
     // 基色块的索引从 100 起，和上面那 6 个配色色块（0..5）不重叠，
     // 所以这一段放在它们的判断之前之后都行。
@@ -1889,6 +1948,9 @@ AppearancePreset CLyricusPrefsDlg::SnapshotAppearance(const std::wstring& name) 
     p.bgOpacity  = m_edited.bgOpacity;
     // 手动构图（D-103）
     p.bgZoomPct    = m_edited.bgZoomPct;
+    p.bgFlipH      = m_edited.bgFlipH;
+    p.bgFlipV      = m_edited.bgFlipV;
+    p.bgRotate90   = m_edited.bgRotate90;
     p.bgLocked     = m_edited.bgLocked;
     p.bgLockedW    = m_edited.bgLockedW;
     p.bgOffsetXPct = m_edited.bgOffsetXPct;

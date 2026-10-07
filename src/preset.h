@@ -122,6 +122,11 @@ struct AppearancePreset {
     int bgZoomPct    = 100;
     // 锁定显示尺寸（D-132）。两个字段一起进预设 —— 它们是**构图**的一部分，
     // 和缩放/偏移同类；不像背景图路径那样是机器相关的（D-098）。
+    // 镜像与旋转（D-133）。和缩放/偏移同类 —— 是**构图**的一部分，
+    // 所以进预设；不像背景图路径那样机器相关（D-098）。
+    bool bgFlipH    = false;
+    bool bgFlipV    = false;
+    int  bgRotate90 = 0;
     bool bgLocked  = false;
     int  bgLockedW = 0;
     int bgOffsetXPct = 0;

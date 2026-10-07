@@ -201,6 +201,9 @@ void ApplyAppearancePreset(const AppearancePreset& p) {
     a.bgOpacity  = p.bgOpacity;
     // 手动构图（D-103）
     a.bgZoomPct    = p.bgZoomPct;
+    a.bgFlipH      = p.bgFlipH;
+    a.bgFlipV      = p.bgFlipV;
+    a.bgRotate90   = p.bgRotate90;
     a.bgLocked     = p.bgLocked;
     a.bgLockedW    = p.bgLockedW;
     a.bgOffsetXPct = p.bgOffsetXPct;

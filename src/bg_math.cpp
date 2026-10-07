@@ -30,6 +30,9 @@ BgManual ClampBgManual(const BgManual& m) {
     // 百分比模式，不会算出一张 32 像素的图。
     if (r.lockedW < 0) r.lockedW = 0;
     if (r.lockedW > kBgLockedWMax) r.lockedW = kBgLockedWMax;
+    // 旋转倍数要取模而不是夹取（D-133）—— 夹取的话 4 会变成 3（270°），
+    // 而 4 按定义就是 0（转一整圈）。手改配置写个 5 也不该变成 270°。
+    r.rotate90 = ((r.rotate90 % 4) + 4) % 4;
     return r;
 }
 
@@ -37,12 +40,19 @@ double BgManualScale(int imgW, int imgH, int dstH, const BgManual& mIn) {
     if (imgW <= 0 || imgH <= 0 || dstH <= 0) return 1.0;
     const BgManual m = ClampBgManual(mIn);
 
+    // ⚠️ 用**变换后**的有效尺寸（D-133）。90°/270° 旋转宽高互换，
+    //    继续按原图算的话"高度铺满"的基准就错了 —— 表现是转一下
+    //    图突然放大或缩小，而用户只是转了个方向。
+    int effW = 0, effH = 0;
+    BgEffectiveSize(imgW, imgH, m, effW, effH);
+
     // 锁定：用绝对宽度。**不乘 dstH** —— 那正是它存在的意义。
+    // 注意这里除以 effW 也得是有效宽 —— lockedW 说的是"转完之后多宽"。
     if (m.locked && m.lockedW > 0) {
-        return static_cast<double>(m.lockedW) / imgW;
+        return static_cast<double>(m.lockedW) / effW;
     }
     // 默认：高度铺满 × 百分比
-    return (static_cast<double>(dstH) / imgH) * (m.zoomPct / 100.0);
+    return (static_cast<double>(dstH) / effH) * (m.zoomPct / 100.0);
 }
 
 void BgManualRange(int imgW, int imgH, int dstW, int dstH, const BgManual& m,
@@ -61,10 +71,69 @@ void BgManualRange(int imgW, int imgH, int dstW, int dstH, const BgManual& m,
     // 图比区域小时是"能往外挪多少"（D-112）。
     // ⚠️ 两种情形的幅度都必须是正数 —— 图小时返回 0 的话拖动会**完全没反应**，
     //    而"拖不动"和"已经到边了"在用户那边看着一模一样。
-    const int halfW = (static_cast<int>(std::lround(imgW * s)) - dstW) / 2;
-    const int halfH = (static_cast<int>(std::lround(imgH * s)) - dstH) / 2;
+    //
+    // ⚠️ 用**变换后**的有效尺寸（D-133）。这里的幅度必须和
+    //    ComputeBgPlacement 画出来的图一致，否则预览里拖到底、
+    //    实际画出来却不在那个位置（D-108 记过这类"两边各算一份"的不一致）。
+    int effW = 0, effH = 0;
+    BgEffectiveSize(imgW, imgH, c, effW, effH);
+    const int halfW = (static_cast<int>(std::lround(effW * s)) - dstW) / 2;
+    const int halfH = (static_cast<int>(std::lround(effH * s)) - dstH) / 2;
     outRangeX = (halfW >= 0) ? halfW : -halfW;
     outRangeY = (halfH >= 0) ? halfH : -halfH;
+}
+
+void ApplyFlipRotate(std::vector<unsigned char>& px, int& w, int& h,
+                     bool flipH, bool flipV, int rotate90) {
+    if (w <= 0 || h <= 0) return;
+    if (px.size() < static_cast<size_t>(w) * h * 4) return;
+
+    // ---- 镜像：就地 ----
+    if (flipH) {
+        for (int y = 0; y < h; ++y) {
+            unsigned char* row = px.data() + static_cast<size_t>(y) * w * 4;
+            for (int x = 0, x2 = w - 1; x < x2; ++x, --x2) {
+                for (int c = 0; c < 4; ++c) std::swap(row[x * 4 + c], row[x2 * 4 + c]);
+            }
+        }
+    }
+    if (flipV) {
+        const size_t stride = static_cast<size_t>(w) * 4;
+        for (int y = 0, y2 = h - 1; y < y2; ++y, --y2) {
+            unsigned char* a = px.data() + static_cast<size_t>(y)  * stride;
+            unsigned char* b = px.data() + static_cast<size_t>(y2) * stride;
+            for (size_t i = 0; i < stride; ++i) std::swap(a[i], b[i]);
+        }
+    }
+
+    // ---- 旋转 ----
+    const int r = ((rotate90 % 4) + 4) % 4;
+    if (r == 0) return;
+
+    const int nw = (r == 2) ? w : h;
+    const int nh = (r == 2) ? h : w;
+    std::vector<unsigned char> out(static_cast<size_t>(nw) * nh * 4);
+
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            int nx = 0, ny = 0;
+            switch (r) {
+            case 1:  nx = h - 1 - y; ny = x;         break;   // 顺时针 90°
+            case 2:  nx = w - 1 - x; ny = h - 1 - y; break;   // 180°
+            default: nx = y;         ny = w - 1 - x; break;   // 顺时针 270°
+            }
+            const unsigned char* s =
+                px.data() + (static_cast<size_t>(y) * w + x) * 4;
+            unsigned char* d =
+                out.data() + (static_cast<size_t>(ny) * nw + nx) * 4;
+            // 用 std::copy 而不是 memcpy —— 这一层不想为了 4 字节引入 <cstring>，
+            // 而 <algorithm> 本来就在（上面用了 std::swap）。
+            std::copy(s, s + 4, d);
+        }
+    }
+    px.swap(out);
+    w = nw;
+    h = nh;
 }
 
 BgPlacement ComputeBgPlacement(int imgW, int imgH, int dstW, int dstH, BgFit fit,
@@ -115,8 +184,13 @@ BgPlacement ComputeBgPlacement(int imgW, int imgH, int dstW, int dstH, BgFit fit
         //    两处（这里和 BgManualRange）必须同一份实现，所以抽出去了。
         const double s = BgManualScale(imgW, imgH, dstH, m);
 
-        const int drawW = static_cast<int>(std::lround(imgW * s));
-        const int drawH = static_cast<int>(std::lround(imgH * s));
+        // ⚠️ 用**变换后**的有效尺寸（D-133）。90°/270° 旋转宽高互换，
+        //    这里还按原图算的话目标矩形的宽高就是反的 ——
+        //    表现是转一下图突然变形或者尺寸跳变，而用户只是转了个方向。
+        int effW = 0, effH = 0;
+        BgEffectiveSize(imgW, imgH, m, effW, effH);
+        const int drawW = static_cast<int>(std::lround(effW * s));
+        const int drawH = static_cast<int>(std::lround(effH * s));
         // ⚠️ 给缩放结果**封顶**（D-105）。
         //
         // 手动缩放最大 400%，而 base 本身就可能很大（一张小图铺满大面板）——

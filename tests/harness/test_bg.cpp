@@ -571,6 +571,156 @@ void TestManual() {
     }
 }
 
+// ---- 镜像与旋转（D-133）----
+//
+// 【为什么值得测】"旋转把像素搬对位置了没有"是那种**看着对、实际差一格**
+// 的地方：一张风景图转 90° 之后，你没法靠肉眼判断左右是不是反了。
+// 而它一旦错了，用户要到很久以后才会发现（或者永远发现不了）。
+//
+// 手法：造一张每个像素带**唯一编号**的小图，转完逐个查编号落在哪。
+// 编号就是"这个像素原来在哪个位置"，一查便知对错。
+static std::vector<unsigned char> MakeTagged(int w, int h) {
+    std::vector<unsigned char> px(static_cast<size_t>(w) * h * 4);
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            unsigned char* p = px.data() + (static_cast<size_t>(y) * w + x) * 4;
+            const int tag = y * w + x;                              // 唯一
+            p[0] = static_cast<unsigned char>(tag & 0xFF);          // B
+            p[1] = static_cast<unsigned char>((tag >> 8) & 0xFF);   // G
+            p[2] = 0xAB;                                            // R 哨兵
+            p[3] = 255;
+        }
+    }
+    return px;
+}
+static int TagAt(const std::vector<unsigned char>& px, int w, int x, int y) {
+    const unsigned char* p = px.data() + (static_cast<size_t>(y) * w + x) * 4;
+    return p[0] | (p[1] << 8);
+}
+
+void TestFlipRotate() {
+    // --- 有效尺寸：只有 90/270 互换 ---
+    {
+        BgManual m;
+        int w = 0, h = 0;
+        m.rotate90 = 0; BgEffectiveSize(640, 480, m, w, h);
+        Check(w == 640 && h == 480, "有效尺寸 0 度 = 原尺寸");
+        m.rotate90 = 1; BgEffectiveSize(640, 480, m, w, h);
+        Check(w == 480 && h == 640, "★ 有效尺寸 90 度宽高互换");
+        m.rotate90 = 2; BgEffectiveSize(640, 480, m, w, h);
+        Check(w == 640 && h == 480, "有效尺寸 180 度不变");
+        m.rotate90 = 3; BgEffectiveSize(640, 480, m, w, h);
+        Check(w == 480 && h == 640, "★ 有效尺寸 270 度宽高互换");
+    }
+
+    // --- ★ 缩放基准要用**有效高**，不是原图高 ---
+    //
+    // 这是"转一下图突然放大/缩小"的直接来源：基准若还按原图的高算，
+    // 90 度之后图的高度变成了原来的宽，比例就整个错了。
+    {
+        BgManual m;
+        m.rotate90 = 0;
+        const double s0 = BgManualScale(400, 100, 200, m);   // 高度铺满 200/100 = 2
+        Check(s0 > 1.99 && s0 < 2.01, "0 度缩放基准 = dstH / 原图高");
+
+        m.rotate90 = 1;                                       // 有效高变成 400
+        const double s1 = BgManualScale(400, 100, 200, m);
+        Check(s1 > 0.49 && s1 < 0.51, "★ 90 度缩放基准 = dstH / 原图宽（有效高）");
+        Check(s1 < s0, "★ 同一张图转 90 度后缩放因子跟着变（否则图会突然放大）");
+    }
+
+    // --- 旋转倍数的取模 ---
+    {
+        BgManual m;
+        m.rotate90 = 4;
+        Check(ClampBgManual(m).rotate90 == 0,
+              "★ rotate90=4 取模成 0（转一整圈），不是夹到 3");
+        m.rotate90 = -1;
+        Check(ClampBgManual(m).rotate90 == 3, "rotate90=-1 取模成 3");
+        m.rotate90 = 7;
+        Check(ClampBgManual(m).rotate90 == 3, "rotate90=7 取模成 3");
+    }
+
+    // --- 像素：用带编号的 3x2 图验证每个像素去哪了 ---
+    //
+    // 原图（x 向右，y 向下）：
+    //     0 1 2
+    //     3 4 5
+    {
+        std::vector<unsigned char> px = MakeTagged(3, 2);
+        int w = 3, h = 2;
+        ApplyFlipRotate(px, w, h, true, false, 0);
+        Check(w == 3 && h == 2, "水平镜像不改尺寸");
+        Check(TagAt(px, w, 0, 0) == 2 && TagAt(px, w, 2, 0) == 0,
+              "★ 水平镜像：第 0 行变成 2 1 0");
+        Check(TagAt(px, w, 0, 1) == 5 && TagAt(px, w, 2, 1) == 3,
+              "★ 水平镜像：第 1 行变成 5 4 3");
+    }
+    {
+        std::vector<unsigned char> px = MakeTagged(3, 2);
+        int w = 3, h = 2;
+        ApplyFlipRotate(px, w, h, false, true, 0);
+        Check(TagAt(px, w, 0, 0) == 3 && TagAt(px, w, 0, 1) == 0,
+              "★ 垂直镜像：上下两行互换");
+    }
+    {
+        // 顺时针 90：原 (x,y) -> 新 (h-1-y, x)，新宽=原高=2、新高=原宽=3
+        std::vector<unsigned char> px = MakeTagged(3, 2);
+        int w = 3, h = 2;
+        ApplyFlipRotate(px, w, h, false, false, 1);
+        Check(w == 2 && h == 3, "★ 顺时针 90 度后尺寸互换（3x2 -> 2x3）");
+        Check(TagAt(px, w, 1, 0) == 0, "★ 90 度：原 (0,0) 到新 (1,0)");
+        Check(TagAt(px, w, 1, 1) == 1, "★ 90 度：原 (1,0) 到新 (1,1)");
+        Check(TagAt(px, w, 1, 2) == 2, "★ 90 度：原 (2,0) 到新 (1,2)");
+        Check(TagAt(px, w, 0, 0) == 3, "★ 90 度：原 (0,1) 到新 (0,0)");
+        Check(TagAt(px, w, 0, 2) == 5, "★ 90 度：原 (2,1) 到新 (0,2)");
+    }
+    {
+        std::vector<unsigned char> px = MakeTagged(3, 2);
+        int w = 3, h = 2;
+        ApplyFlipRotate(px, w, h, false, false, 2);
+        Check(w == 3 && h == 2, "180 度不改尺寸");
+        Check(TagAt(px, w, 0, 0) == 5 && TagAt(px, w, 2, 1) == 0,
+              "★ 180 度：左上和右下互换");
+    }
+    {
+        std::vector<unsigned char> px = MakeTagged(3, 2);
+        int w = 3, h = 2;
+        ApplyFlipRotate(px, w, h, false, false, 3);
+        Check(w == 2 && h == 3, "270 度尺寸互换");
+        Check(TagAt(px, w, 0, 0) == 2, "★ 270 度：原 (2,0) 到新 (0,0)");
+    }
+
+    // --- 幂等性 / 周期性：比逐个查位置更能抓住"大致对但有偏差"的实现 ---
+    {
+        const std::vector<unsigned char> orig = MakeTagged(5, 3);
+
+        std::vector<unsigned char> a = orig;
+        int wa = 5, ha = 3;
+        ApplyFlipRotate(a, wa, ha, true, false, 0);
+        ApplyFlipRotate(a, wa, ha, true, false, 0);
+        Check(wa == 5 && ha == 3 && a == orig, "★ 水平镜像两次 = 原图（幂等）");
+
+        std::vector<unsigned char> b = orig;
+        int wb = 5, hb = 3;
+        for (int i = 0; i < 4; ++i) ApplyFlipRotate(b, wb, hb, false, false, 1);
+        Check(wb == 5 && hb == 3 && b == orig, "★ 旋转 90 度连做四次 = 原图");
+    }
+
+    // --- 空 / 非法输入不该崩 ---
+    {
+        std::vector<unsigned char> empty;
+        int w = 0, h = 0;
+        ApplyFlipRotate(empty, w, h, true, true, 1);
+        Check(w == 0 && h == 0 && empty.empty(), "空图：不动也不崩");
+
+        std::vector<unsigned char> shortBuf(8, 0);   // 不够 4x4x4
+        int sw = 4, sh = 4;
+        ApplyFlipRotate(shortBuf, sw, sh, false, false, 1);
+        Check(sw == 4 && sh == 4, "缓冲比声明的尺寸小：原样返回，不改尺寸");
+    }
+}
+
 } // namespace
 
 int main() {
@@ -580,6 +730,7 @@ int main() {
     TestBlur();
     TestDimOpacity();
     TestBlend();
+    TestFlipRotate();
     std::printf("\n----------------------------------------\n");
     std::printf("通过 %d，失败 %d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;

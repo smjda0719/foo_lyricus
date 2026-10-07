@@ -66,7 +66,56 @@ struct BgManual {
     //   决定的那个；用户脑子里想的是"这张图多大"，宽度更直观。
     bool locked  = false;
     int  lockedW = 0;       // 锁定时的图宽度（**物理**像素）
+
+    // ---- 镜像与旋转（D-133）----
+    //
+    // 【为什么也放在 BgManual 里】它们和缩放/偏移一样是**构图参数**：
+    //   改了要重算、要跟着预设走、要进 GetPanelBackground 的缓存键。
+    //   而 BgManual 有 operator==，加进来就自动满足最后一条 ——
+    //   不用再去改那个"参数比对"函数（那正是最容易漏的地方）。
+    //
+    // 【实现方式】两者都作用在**缩放之后**的像素上（见 bg_image.cpp），
+    //   转完之后下游拿到的就是"最终那张图"。好处是
+    //   ComputeBgPlacement / BlitInto **一行都不用改** —— 它们只认"图多大"，
+    //   而转完的尺寸自然是对的。
+    //
+    // ⚠️ 旋转 90/270 会让**宽高互换**，所以"图多大"必须用 BgEffectiveSize()
+    //    算，不能直接用原图尺寸 —— 否则转一下图就突然放大/缩小。
+    bool flipH    = false;   // 水平翻转（左右镜像）
+    bool flipV    = false;   // 垂直翻转（上下镜像）
+    int  rotate90 = 0;       // 顺时针 90° 的**倍数**：0 / 1 / 2 / 3
 };
+
+// 变换后的**有效尺寸**（D-133）。
+//
+// 90° 和 270° 把宽高换过来；0° 和 180° 不变。
+// 几何层（"高度铺满"的基准、目标矩形的宽高）必须用它。
+inline void BgEffectiveSize(int imgW, int imgH, const BgManual& m,
+                            int& outW, int& outH) {
+    if (m.rotate90 == 1 || m.rotate90 == 3) { outW = imgH; outH = imgW; }
+    else                                    { outW = imgW; outH = imgH; }
+}
+
+constexpr int kBgRotateMin = 0;
+constexpr int kBgRotateMax = 3;
+
+// 对像素做镜像与旋转（D-133）。**就地**改 px，并更新 w/h。
+//
+// 【为什么住在这一层而不是 bg_image】它只操作 `vector<unsigned char>`，
+//   不碰 WIC、不碰 SDK —— 按本项目的分层依据（"能不能进离线单测台"），
+//   它属于纯逻辑层。放在 bg_image 里的话那一整套坐标映射都没法测，
+//   而"旋转把像素搬对位置了没有"正是最容易差一个像素、
+//   又最难靠肉眼发现的地方。
+//
+// 【镜像就地，旋转不行】水平翻转是每行内部首尾交换，垂直翻转是行与行交换，
+//   两者都不需要额外缓冲。90°/270° 是**行列互换**，就地做会覆盖还没读的像素，
+//   必须借一块同样大的临时缓冲 —— 那次分配省不掉，唯一的替代是让贴图循环
+//   按旋转公式去访问源像素，而那会把 BlitInto 里整套越界检查推翻重做
+//  （D-105 刚在那上面栽过）。
+//
+// rotate90 是顺时针 90° 的倍数（0..3）。90° 和 270° 会让 w/h 互换。
+void ApplyFlipRotate(std::vector<unsigned char>& px, int& w, int& h,
+                     bool flipH, bool flipV, int rotate90);
 
 // 锁定尺寸的下限 / 上限（物理像素）。
 //

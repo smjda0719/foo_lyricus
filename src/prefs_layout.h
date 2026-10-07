@@ -46,7 +46,7 @@ constexpr int kPrefsWidth96  = 380;
 // ⚠️ 这个值**必须跟着内容走**：它同时是"页面建议尺寸"和"滚动内容高度"，
 //    写小了的话最后那一区会被切掉（测试里那条"所有元素都落在客户区内"
 //    就是钉这个的，它扫的起点正是这个常量 —— 所以常量错了它会红）。
-constexpr int kPrefsHeight96 = 1262;   // 含「面板行为」(+52) 与「预览比例」那一行(+30)
+constexpr int kPrefsHeight96 = 1322;   // 含「面板行为」(+52)、「预览比例」(+30)、「翻转/旋转」两行(+60)
 
 // 首选项页上所有需要定位的元素。
 //
@@ -114,6 +114,10 @@ struct PrefsLayout {
     // 预览比例（D-132）：宽高比 ×100。0 = 跟随实际面板。
     // 用滑块而不是点击循环 —— "面板拖成了 3.42:1"这种值循环不出来。
     RECT bgAspectLabel{}, bgAspectValue{}, bgAspectSlider{};
+
+    // 镜像与旋转（D-133）：两行，都是点击循环（和「适配方式」同一套交互）。
+    RECT bgFlip{};      // 翻转：无 / 水平 / 垂直 / 两者
+    RECT bgRotate{};    // 旋转：0 / 90 / 180 / 270
     RECT bgOpacityLabel{}, bgOpacityValue{}, bgOpacitySlider{};
     RECT bgBlurLabel{},    bgBlurValue{},    bgBlurSlider{};
     RECT bgDimLabel{},     bgDimValue{},     bgDimSlider{};

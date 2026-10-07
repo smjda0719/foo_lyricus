@@ -172,6 +172,14 @@ PrefsLayout ComputePrefsLayout(int width, int height, int dpi, int previewAspect
         out.bgAspectSlider = RECT{ padX + lblW + Sx(8), y,
                                    width - padX - valW - Sx(8), y + Sx(24) };
     }
+    y += Sx(24) + Sx(6);
+
+    // 翻转 / 旋转（D-133）。都是**点击循环**而不是滑块 ——
+    // 各只有 4 个离散值，循环点三下转一圈，比拖滑块准且快。
+    // 和「适配方式」放在一起：三者都是"这张图怎么摆"。
+    out.bgFlip = RECT{ padX, y, width - padX, y + Sx(24) };
+    y += Sx(24) + Sx(6);
+    out.bgRotate = RECT{ padX, y, width - padX, y + Sx(24) };
     y += Sx(24) + Sx(14);
 
     // 三个参数滑块。和上面的不透明度滑块用同一套排布（标题左、数值右、滑块整行）。

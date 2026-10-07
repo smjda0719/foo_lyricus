@@ -83,6 +83,11 @@ cfg_var_modern::cfg_int    cfg_app_click_through({0x1a7c3e90,0x2b41,0x4c58,{0x9d
 cfg_var_modern::cfg_int    cfg_app_bg_locked  ({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x59}}, 0);
 cfg_var_modern::cfg_int    cfg_app_bg_lockedw ({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x5A}}, 0);
 
+// 镜像与旋转（D-133）。
+cfg_var_modern::cfg_int    cfg_app_bg_fliph  ({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x5C}}, 0);
+cfg_var_modern::cfg_int    cfg_app_bg_flipv  ({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x5D}}, 0);
+cfg_var_modern::cfg_int    cfg_app_bg_rotate ({0x1a7c3e90,0x2b41,0x4c58,{0x9d,0x6e,0x0f,0x1a,0x2b,0x3c,0x4d,0x5E}}, 0);
+
 // 预览框的宽高比 × 100（D-132）。0 = 跟随实际面板尺寸。
 //
 // ⚠️ 它**不进 PanelAppearance** —— 那是"浮动面板长什么样"的快照，
@@ -137,6 +142,9 @@ PanelAppearance GetPanelAppearance() {
     a.bgDim     = ClampInt(static_cast<int>(cfg_app_bg_dim.get()),     kBgDimMin,     kBgDimMax);
     a.clickThrough = (cfg_app_click_through.get() != 0);
     a.bgLocked  = (cfg_app_bg_locked.get() != 0);
+    a.bgFlipH    = (cfg_app_bg_fliph.get() != 0);
+    a.bgFlipV    = (cfg_app_bg_flipv.get() != 0);
+    a.bgRotate90 = ClampInt(static_cast<int>(cfg_app_bg_rotate.get()), 0, kBgRotateMax);
     a.bgLockedW = ClampInt(static_cast<int>(cfg_app_bg_lockedw.get()), 0, kBgLockedWMax);
     a.bgOpacity = ClampInt(static_cast<int>(cfg_app_bg_opacity.get()), kBgOpacityMin, kBgOpacityMax);
 
@@ -177,6 +185,9 @@ void SetPanelAppearance(const PanelAppearance& a) {
     cfg_app_bg_dim     = ClampInt(a.bgDim,     kBgDimMin,     kBgDimMax);
     cfg_app_click_through = a.clickThrough ? 1 : 0;
     cfg_app_bg_locked  = a.bgLocked ? 1 : 0;
+    cfg_app_bg_fliph   = a.bgFlipH ? 1 : 0;
+    cfg_app_bg_flipv   = a.bgFlipV ? 1 : 0;
+    cfg_app_bg_rotate  = ClampInt(a.bgRotate90, 0, kBgRotateMax);
     cfg_app_bg_lockedw = ClampInt(a.bgLockedW, 0, kBgLockedWMax);
     cfg_app_bg_opacity = ClampInt(a.bgOpacity, kBgOpacityMin, kBgOpacityMax);
 

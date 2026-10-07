@@ -274,8 +274,11 @@ const BgBitmap* GetPanelBackground(const std::wstring& path,
 
     // ---- 缩放 ----
     // Tile 不缩放（原尺寸平铺是它的语义）；其余按 place.dst 的尺寸缩。
-    const int drawW = (place.tile ? srcW : place.dst.right - place.dst.left);
-    const int drawH = (place.tile ? srcH : place.dst.bottom - place.dst.top);
+    //
+    // ⚠️ **不是 const** —— 下面的旋转会把宽高互换（D-133）。
+    //    而它俩之后要同时喂给模糊、压暗和 BlitInto，所以就地改最省事。
+    int drawW = (place.tile ? srcW : place.dst.right - place.dst.left);
+    int drawH = (place.tile ? srcH : place.dst.bottom - place.dst.top);
     if (drawW <= 0 || drawH <= 0) {
         g_lastError = L"缩放目标为空";
         DebugLog("背景图：%ls", g_lastError.c_str());
@@ -343,6 +346,19 @@ const BgBitmap* GetPanelBackground(const std::wstring& path,
     //
     //    顺带还解决了一个观感问题：整幅图都参与模糊（包括之后会被裁掉的部分），
     //    边缘不会因为"只模糊可见区"而在接缝处出现色差。
+    //
+    // ---- 镜像与旋转（D-133）：必须在模糊之前 ----
+    //
+    // 【为什么在这里】上面那句"整幅图都参与模糊"加这一条才完整：
+    //    镜像/旋转改的是图**自己**的像素排布，模糊跟着一起转，
+    //    于是"模糊的边界"和"最终显示的边界"是同一个方向。
+    //    反过来的话（先模糊再转）模糊的边界方向和显示方向对不上，
+    //    重采样在边缘会有肉眼可见的差异 —— 尤其是磨砂强度大的时候。
+    //
+    // ⚠️ drawW/drawH 会被就地互换（90°/270°），所以后面几步拿到的
+    //    已经是旋转后的尺寸，不需要各自再判一次。
+    ApplyFlipRotate(pixels, drawW, drawH, manual.flipH, manual.flipV, manual.rotate90);
+
     if (blurPx > 0) {
         BoxBlurBgra(pixels.data(), drawW, drawH, blurPx);
     }

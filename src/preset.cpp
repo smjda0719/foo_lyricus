@@ -93,12 +93,18 @@ AppearancePreset ClampPreset(AppearancePreset p) {
     {
         BgManual m;
         m.zoomPct    = p.bgZoomPct;
+    m.flipH      = p.bgFlipH;
+    m.flipV      = p.bgFlipV;
+    m.rotate90   = p.bgRotate90;
     m.locked     = p.bgLocked;
     m.lockedW    = p.bgLockedW;
         m.offsetXPct = p.bgOffsetXPct;
         m.offsetYPct = p.bgOffsetYPct;
         const BgManual c = ClampBgManual(m);
         p.bgZoomPct    = c.zoomPct;
+    p.bgFlipH      = c.flipH;
+    p.bgFlipV      = c.flipV;
+    p.bgRotate90   = c.rotate90;
     p.bgLocked     = c.locked;
     p.bgLockedW    = c.lockedW;
         p.bgOffsetXPct = c.offsetXPct;
@@ -273,6 +279,11 @@ std::string FormatPresets(const std::vector<AppearancePreset>& presets) {
                 s += ";bgZoom=";  s += std::to_string(p.bgZoomPct);
     // 锁定尺寸（D-132）。只写一次布尔 —— 老版本读到这里会当未知 key 忽略，
     // 所以加了它们不会让旧版本读不了新预设文件（同一条约定见 preset.h 顶部）。
+    // 镜像与旋转（D-133）。老版本读到未知 key 会忽略，所以加它们
+    // 不会让旧版本读不了新预设（同一条约定见 preset.h 顶部）。
+    s += ";bgFlipH="; s += (p.bgFlipH ? "1" : "0");
+    s += ";bgFlipV="; s += (p.bgFlipV ? "1" : "0");
+    s += ";bgRot=";   s += std::to_string(p.bgRotate90);
     s += ";bgLock=";  s += (p.bgLocked ? "1" : "0");
     s += ";bgLockW="; s += std::to_string(p.bgLockedW);
                 s += ";bgOffX=";  s += std::to_string(p.bgOffsetXPct);
@@ -355,6 +366,9 @@ std::vector<AppearancePreset> ParsePresets(const std::string& text) {
         // ⚠️ ParseInt 只吃 int —— 布尔要借一个临时变量，
         //    直接把 bool 传进去会编译不过（而如果哪天有人给它加了个
         //    bool 重载，"2" 这种越界值就会静默变成 true）。
+        else if (k == "bgFlipH") { int b = 0; ParseInt(v, b); p.bgFlipH = (b != 0); }
+        else if (k == "bgFlipV") { int b = 0; ParseInt(v, b); p.bgFlipV = (b != 0); }
+        else if (k == "bgRot")     ParseInt(v, p.bgRotate90);
         else if (k == "bgLock")  { int b = 0; ParseInt(v, b); p.bgLocked = (b != 0); }
         else if (k == "bgLockW")   ParseInt(v, p.bgLockedW);
             else if (k == "bgOffX")    ParseInt(v, p.bgOffsetXPct);

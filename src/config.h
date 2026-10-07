@@ -64,6 +64,9 @@ extern cfg_var_modern::cfg_int  cfg_app_bg_dim;
 extern cfg_var_modern::cfg_int  cfg_app_click_through;
 extern cfg_var_modern::cfg_int  cfg_app_bg_locked;
 extern cfg_var_modern::cfg_int  cfg_app_bg_lockedw;
+extern cfg_var_modern::cfg_int  cfg_app_bg_fliph;
+extern cfg_var_modern::cfg_int  cfg_app_bg_flipv;
+extern cfg_var_modern::cfg_int  cfg_app_bg_rotate;
 
 // 预览框的宽高比 × 100（D-132）。0 = 跟随实际面板尺寸。
 //
@@ -304,6 +307,10 @@ struct PanelAppearance {
     //   防的是"换机器/换 dpi 时构图偏掉"，而锁定尺寸是用户**明确要求**
     //   "这张图就按这么大显示" —— 他要的就是绝对值不随环境变。
     //   默认仍走百分比，只有主动勾了锁才走像素。
+    // ---- 镜像与旋转（D-133）----
+    bool     bgFlipH    = false;
+    bool     bgFlipV    = false;
+    int      bgRotate90 = 0;     // 顺时针 90° 的倍数 0..3
     bool     bgLocked  = false;
     int      bgLockedW = 0;      // 锁定时的图宽度（物理像素）
 
@@ -320,6 +327,8 @@ struct PanelAppearance {
                bgZoomPct == o.bgZoomPct &&
                bgOffsetXPct == o.bgOffsetXPct && bgOffsetYPct == o.bgOffsetYPct &&
                bgLocked == o.bgLocked && bgLockedW == o.bgLockedW &&
+               bgFlipH == o.bgFlipH && bgFlipV == o.bgFlipV &&
+               bgRotate90 == o.bgRotate90 &&
                clickThrough == o.clickThrough;
     }
     bool operator!=(const PanelAppearance& o) const { return !(*this == o); }
