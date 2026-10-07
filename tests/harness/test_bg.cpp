@@ -719,6 +719,43 @@ void TestFlipRotate() {
         ApplyFlipRotate(shortBuf, sw, sh, false, false, 1);
         Check(sw == 4 && sh == 4, "缓冲比声明的尺寸小：原样返回，不改尺寸");
     }
+
+    // --- ★ BgManual::operator==：缓存比对的唯一入口 ---
+    //
+    // 【为什么单独钉这一组】D-133 的实测 bug 就出在这里：缓存比对
+    // （bg_image.cpp 的 SameParams）从前是**手写逐字段**的，加了
+    // flipH/flipV/rotate90 却忘了往那里补 —— 于是**改了翻转，预览纹丝不动**
+    //（缓存认为"参数没变"），而症状看起来像"预览不刷新"。
+    //
+    // 现在 SameParams 改成整体比（`e.manual == manual`），
+    // 这几条断言保证"再加字段时 operator== 会一起长大"。
+    // ⚠️ 加字段的人如果只改了结构体、没改 operator==，这里会红。
+    {
+        const BgManual a;
+        BgManual b;
+        Check(a == b, "默认构造的两个 BgManual 相等");
+
+        b = BgManual{}; b.zoomPct = 200;
+        Check(a != b, "改 zoomPct 判为不等");
+        b = BgManual{}; b.offsetXPct = 30;
+        Check(a != b, "改 offsetXPct 判为不等");
+        b = BgManual{}; b.offsetYPct = -30;
+        Check(a != b, "改 offsetYPct 判为不等");
+        b = BgManual{}; b.flipH = true;
+        Check(a != b, "★ 只改 flipH 也必须判为不等（否则缓存不失效、预览不刷新）");
+        b = BgManual{}; b.flipV = true;
+        Check(a != b, "★ 只改 flipV 也必须判为不等");
+        b = BgManual{}; b.rotate90 = 1;
+        Check(a != b, "★ 只改 rotate90 也必须判为不等");
+        b = BgManual{}; b.locked = true;
+        Check(a != b, "★ 只改 locked 也必须判为不等");
+        b = BgManual{}; b.lockedW = 600;
+        Check(a != b, "★ 只改 lockedW 也必须判为不等");
+
+        // 反向：全同才相等（防止 operator== 被写成恒 true）
+        b = a;
+        Check(a == b, "逐字段相同 -> 相等");
+    }
 }
 
 } // namespace

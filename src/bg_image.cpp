@@ -65,14 +65,19 @@ bool EnsureCom() {
 bool SameParams(const CacheEntry& e, const std::wstring& path, int dstW, int dstH,
                 BgFit fit, const BgManual& manual,
                 int blur, int dim, int opacity) {
-    // ⚠️ manual 的三个值必须一起比 —— 它们是「构图」这一件事的三个分量，
-    //    漏比任何一个都会让「拖了没反应」，而拖动的正是被漏掉的那个。
+    // ⚠️ manual **整体比**（BgManual::operator==），不逐字段列。
+    //
+    // 这条从前是手写逐字段的，注释还写着"三个值必须一起比"。D-133 加
+    // 翻转/旋转时忘了往这里补 —— 于是**改了翻转，预览纹丝不动**
+    //（缓存认为"参数没变"），而症状看起来像"预览不刷新"。
+    //
+    // 换成整体比之后，以后再往 BgManual 加字段自动生效。
+    // 这正是把"必须记得同步"从注释挪进类型系统的做法 —— 和 D-132
+    // 把缩放基准收进 BgManualScale 是同一个思路。
     return e.valid && e.path == path &&
            e.dstW == dstW && e.dstH == dstH &&
            e.fit == fit &&
-           e.manual.zoomPct    == manual.zoomPct &&
-           e.manual.offsetXPct == manual.offsetXPct &&
-           e.manual.offsetYPct == manual.offsetYPct &&
+           e.manual == manual &&
            e.blur == blur && e.dim == dim && e.opacity == opacity;
 }
 
@@ -273,12 +278,35 @@ const BgBitmap* GetPanelBackground(const std::wstring& path,
     }
 
     // ---- 缩放 ----
-    // Tile 不缩放（原尺寸平铺是它的语义）；其余按 place.dst 的尺寸缩。
+    // Tile 不缩放（原尺寸平铺是它的语义）。
     //
-    // ⚠️ **不是 const** —— 下面的旋转会把宽高互换（D-133）。
-    //    而它俩之后要同时喂给模糊、压暗和 BlitInto，所以就地改最省事。
-    int drawW = (place.tile ? srcW : place.dst.right - place.dst.left);
-    int drawH = (place.tile ? srcH : place.dst.bottom - place.dst.top);
+    // ⚠️ **其余模式要缩到"旋转前"的尺寸**（D-133）。
+    //
+    // 【为什么不能用 place.dst】place.dst 是**旋转之后**的目标矩形
+    //（ComputeBgPlacement 已经走过 BgEffectiveSize）。而旋转是在**缩放之后**
+    //  才做的（ApplyFlipRotate 作用在 pixels 上）—— 拿旋转后的尺寸当缩放目标，
+    //  WIC 就会把原图方向的 srcW×srcH 拉成旋转方向的比例。
+    //  表现是**图被拉扁/拉长**，而用户只是转了个方向。
+    //
+    // 所以 90°/270° 时把宽高**换回来**：place.dst 是 (H,W) 方向，
+    // 旋转前就是 (dstH, dstW)。
+    //
+    // ⚠️ **不是 const** —— 下面的旋转会把它们再换回去（换两次 = 原样）。
+    int drawW = 0, drawH = 0;
+    if (place.tile) {
+        drawW = srcW;
+        drawH = srcH;
+    } else {
+        const int dstW_ = place.dst.right - place.dst.left;
+        const int dstH_ = place.dst.bottom - place.dst.top;
+        if (manual.rotate90 == 1 || manual.rotate90 == 3) {
+            drawW = dstH_;          // 旋转前：宽 = 旋转后的高
+            drawH = dstW_;
+        } else {
+            drawW = dstW_;
+            drawH = dstH_;
+        }
+    }
     if (drawW <= 0 || drawH <= 0) {
         g_lastError = L"缩放目标为空";
         DebugLog("背景图：%ls", g_lastError.c_str());

@@ -84,6 +84,29 @@ struct BgManual {
     bool flipH    = false;   // 水平翻转（左右镜像）
     bool flipV    = false;   // 垂直翻转（上下镜像）
     int  rotate90 = 0;       // 顺时针 90° 的**倍数**：0 / 1 / 2 / 3
+
+    // ★ 整体相等 —— **凡是"这组构图参数变了没有"的判断都必须用它**。
+    //
+    // 【为什么必须有】GetPanelBackground 的缓存比对从前是**手写逐字段**的
+    //   （bg_image.cpp 的 SameParams），而那种写法每加一个字段就多一处
+    //   可能漏掉的地方。D-133 就是这么栽的：加了 flipH/flipV/rotate90，
+    //   忘了往 SameParams 里补 —— 于是**改了翻转，预览纹丝不动**
+    //  （缓存认为"参数没变"）。而症状看起来像"预览不刷新"，
+    //   完全联想不到是缓存比对漏了字段。
+    //
+    // 有了它之后 SameParams 只要写 `e.manual == manual`，
+    // 以后再往 BgManual 加字段**自动生效**。
+    bool operator==(const BgManual& o) const {
+        return zoomPct    == o.zoomPct    &&
+               offsetXPct == o.offsetXPct &&
+               offsetYPct == o.offsetYPct &&
+               locked     == o.locked     &&
+               lockedW    == o.lockedW    &&
+               flipH      == o.flipH      &&
+               flipV      == o.flipV      &&
+               rotate90   == o.rotate90;
+    }
+    bool operator!=(const BgManual& o) const { return !(*this == o); }
 };
 
 // 变换后的**有效尺寸**（D-133）。
